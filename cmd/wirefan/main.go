@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/EthanY33/wirefan/internal/server"
 )
 
 func main() {
@@ -19,8 +21,7 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	slog.Info("wirefan starting")
-	<-ctx.Done()
-	slog.Info("wirefan shutdown complete")
-	return nil
+	addr := ":8080"
+	s := server.New(addr)
+	return s.Run(ctx)
 }
