@@ -1,24 +1,31 @@
-# `relay` — Design Specification
+# `wirefan` — Design Specification
 
-**Project**: `relay` — single-binary Go WebSocket fanout server
+**Project**: `wirefan` — single-binary Go WebSocket fanout server
 **Author**: Ethan Yucetepe
 **Date**: 2026-05-04
 **Status**: Pre-implementation design, awaiting user review
+
+> Working repo location: `C:\Users\ethan\Desktop\relay\` (kept as the on-disk dir; the GitHub repo and binary will be named `wirefan`). If user picks `socketrelay` or sticks with `relay`, replace globally before implementation.
 
 ---
 
 ## Purpose
 
-`relay` is a portfolio-quality real-time fanout server, built primarily to serve as the centerpiece engineering artifact in a Big Tech new-grad SWE application portfolio (target companies: Datadog, Stripe, Google, etc.). It is intended to demonstrate idiomatic Go backend engineering: WebSocket-based pub/sub, careful concurrency, graceful shutdown, instrumented performance characteristics, and reproducible benchmarks.
+`wirefan` is a portfolio-quality real-time fanout server, built primarily to serve as the centerpiece engineering artifact in a Big Tech new-grad SWE application portfolio (target companies: Datadog, Stripe, Google, etc.). It is intended to demonstrate idiomatic Go backend engineering: WebSocket-based pub/sub, careful concurrency, graceful shutdown, instrumented performance characteristics, and reproducible benchmarks.
 
-Functionally, `relay` is a generic fanout server: clients connect, authenticate, subscribe to named channels, and broadcast/receive opaque messages on those channels. The server does not interpret payload content. The model is roughly Pusher / Centrifugo lite, with deliberate scope reduction.
+Functionally, `wirefan` is a generic fanout server: clients connect, authenticate, subscribe to named channels, and broadcast/receive opaque messages on those channels. The server does not interpret payload content. The model is roughly Pusher / Centrifugo lite, with deliberate scope reduction.
 
 ## Decisions to lock before implementation
 
 These are user-decision blockers — implementation should not start until each is resolved:
 
-1. **Hosting target.** Fly.io requires a credit card (~$3/mo with volume). Alternatives: a Hetzner / Vultr / DigitalOcean VPS (~$4/mo, more manual setup), or Railway / Render trial credits (idle-sleep risk). The live demo must stay up for months during job-hunt — the choice affects the deploy work. Spec assumes **Fly.io** unless redirected.
+1. **Hosting target ($0 ongoing budget).** The live demo must stay up for months during the job-hunt at zero ongoing cost.
+   - **Primary: Oracle Cloud Always Free (Ampere A1).** 4 ARM vCPUs / 24 GB RAM permanently free, supports anything, never expires. CC required for sign-up verification but never charged. Strongest engineering signal of the free options.
+   - **Backup: Cloudflare Tunnel from an always-on home machine (desktop / Pi / NAS).** $0 if hardware exists, public URL via `cloudflared`, real engineering signal. Demo availability tied to that machine's uptime.
+   - **Fallback: Fly.io with $5 trial credit.** ~6 weeks runway before CC needed; useful if Oracle sign-up stalls. Migrate to Oracle once approved.
+   - Rejected: Render free (idle-sleep kills WS), Railway (per-usage credit burn), AWS/GCP free tiers (12-mo expiry on AWS; GCP e2-micro is too small).
 2. **Time budget.** Locked-in scope is ~40–50 focused hours of evening work. New-to-Go would roughly double that. Realistic target: **3 weeks of evenings** (1–2 hours/day) with 2 weeks as a stretch.
+3. **Repo name.** `relay` collides with Facebook's GraphQL client; portfolio reads cleaner with a distinctive name. Verified availability on `EthanY33`: all candidates are free. Recommended: **`wirefan`** (distinctive, memorable, no major OSS collisions) or **`socketrelay`** (most descriptive, zero exact-name matches anywhere on GitHub). Spec assumes `wirefan` unless redirected.
 
 ## Scope
 
@@ -36,9 +43,9 @@ These are user-decision blockers — implementation should not start until each 
    - `Fanout`: `PerConnFanout` (per-connection buffered chan) vs `ShardedPoolFanout` (NumCPU×2 worker pool drawing from sharded queues). **Default: `--fanout=per-conn`** (classic Go pattern, simpler reasoning). Switchable via flag.
    - `Registry`: `SyncMapRegistry` (sync.Map) vs `ShardedMapRegistry` (16-shard `RWMutex+map`). **Default: `--registry=sync-map`** (simpler default; sharded selected only when benchmarks justify it). Switchable via flag.
    - `Store`: `sqliteStore` (default, durable) vs `memoryStore` (tests, ephemeral deploy mode). Selected via `--store=sqlite|memory`.
-10. `_relay-stats` reserved system channel — server publishes its own connection count / msg/s / drop count to the channel; clients with valid API key may *subscribe* (read-only). Demo client subscribes to it: the system dogfoods itself, recruiter sees live numbers arriving via the same fanout being demonstrated.
+10. `_wirefan-stats` reserved system channel — server publishes its own connection count / msg/s / drop count to the channel; clients with valid API key may *subscribe* (read-only). Demo client subscribes to it: the system dogfoods itself, recruiter sees live numbers arriving via the same fanout being demonstrated.
 11. Browser demo client at `/`: vanilla JS, three panels (connection, messages, live-stats), capped stress-test button (50 phantom connections per browser tab, 10-second time bound, server-side cap of 200 phantom connections per source IP).
-12. Single-binary deploy: multi-stage Dockerfile, `fly.toml`, persistent volume for `relay.db`.
+12. Single-binary deploy: multi-stage Dockerfile, `fly.toml`, persistent volume for `wirefan.db`.
 
 ### Deliberately deferred
 
@@ -65,9 +72,9 @@ A reproducible **benchmark report** comparing two fanout strategies on identical
 ### Repository layout
 
 ```
-relay/
+wirefan/
 ├── cmd/
-│   ├── relay/        # main binary entrypoint
+│   ├── wirefan/      # main binary entrypoint
 │   └── loadtest/     # standalone WS client load generator
 ├── internal/
 │   ├── server/       # HTTP routing, WS upgrade handler
@@ -140,7 +147,7 @@ JSON over WebSocket. Documented in `PROTOCOL.md`. Versioned via `version` field 
 
 - `public-*` or unprefixed: any client with valid API key may subscribe.
 - `private-*`: requires server-signed HMAC token bound to the subscriber's `socket_id`.
-- Reserved: `_relay-stats` (read-only for clients; only the server publishes to it).
+- Reserved: `_wirefan-stats` (read-only for clients; only the server publishes to it).
 
 ### Limits
 
@@ -181,13 +188,13 @@ Applied to per-connection `send` chan (default capacity 64). Default policy is `
 
 ### API-key-as-query-string tradeoff
 
-Query-string credentials show up in proxy access logs. `relay` accepts the tradeoff (Pusher does too) and documents the alternative in DESIGN.md: `Sec-WebSocket-Protocol`-as-bearer is browser-compatible and considered, but rejected for protocol simplicity at this scope.
+Query-string credentials show up in proxy access logs. `wirefan` accepts the tradeoff (Pusher does too) and documents the alternative in DESIGN.md: `Sec-WebSocket-Protocol`-as-bearer is browser-compatible and considered, but rejected for protocol simplicity at this scope.
 
 ### Auth flow
 
-1. Operator boots `relay --admin-token-print` → admin Bearer printed once on stdout.
+1. Operator boots `wirefan --admin-token-print` → admin Bearer printed once on stdout.
 2. Operator creates API keys via REST → returns `key_id` + `secret`.
-3. Application server (the relay's customer) holds the `secret`, calls `POST /v1/auth/sign` with `{socket_id, channel}` to issue HMAC tokens for browser clients subscribing to private channels.
+3. Application server (the server's customer) holds the `secret`, calls `POST /v1/auth/sign` with `{socket_id, channel}` to issue HMAC tokens for browser clients subscribing to private channels.
 4. Browser client connects WS with `?key=<key_id>`, receives `connected` with `socket_id`, then sends `subscribe` for the private channel including the HMAC token from step 3.
 
 ## Data flow
@@ -242,13 +249,13 @@ Query-string credentials show up in proxy access logs. `relay` accepts the trade
 
 ### Operability metrics (Prometheus)
 
-- `relay_connections_total` — gauge, current open connections
-- `relay_channels_total` — gauge, current active channels
-- `relay_messages_published_total` — counter
-- `relay_messages_dropped_total{reason}` — counter (`reason` ∈ `slow_consumer` | `rate_limit` | `oversize`)
-- `relay_broadcast_latency_seconds` — histogram (p50/p99/p999)
-- `relay_upgrade_rejected_total{reason}` — counter (`bad_key` | `bad_origin` | `phantom_cap`)
-- `relay_auth_failures_total` — counter
+- `wirefan_connections_total` — gauge, current open connections
+- `wirefan_channels_total` — gauge, current active channels
+- `wirefan_messages_published_total` — counter
+- `wirefan_messages_dropped_total{reason}` — counter (`reason` ∈ `slow_consumer` | `rate_limit` | `oversize`)
+- `wirefan_broadcast_latency_seconds` — histogram (p50/p99/p999)
+- `wirefan_upgrade_rejected_total{reason}` — counter (`bad_key` | `bad_origin` | `phantom_cap`)
+- `wirefan_auth_failures_total` — counter
 
 ## Testing
 
@@ -276,26 +283,87 @@ Query-string credentials show up in proxy access logs. `relay` accepts the trade
 
 `make bench-compare` runs the same matrix against `centrifugo` and emits a side-by-side comparison. Marked stretch — pursue only if primary scope ships ahead of schedule. Bench harness must support pluggable target.
 
+## Tooling & Quality Gates
+
+Implementation must use every applicable Claude Code skill. This is not optional — the skills exist to prevent the "tutorial-grade" pattern recruiters filter on. Each phase has a required skill set; nothing ships without passing every applicable gate.
+
+### Mandatory skill invocations by phase
+
+| Phase | Skill | Purpose |
+|---|---|---|
+| Plan generation | `superpowers:writing-plans` | Break this spec into ordered, TDD-gated implementation tasks |
+| Per-task execution | `superpowers:test-driven-development` | Tests precede implementation for every task |
+| Architecture writeup | `supermind:sm-init` then `living-docs` | Generate `ARCHITECTURE.md` and keep it in sync after every code change |
+| Demo client design | `frontend-design` + `ui-ux-pro-max` | The `/` page must be distinctive — no AI-generic dark-mode-with-blue-accents look |
+| README hero & layout | `frontend-design` + `ui-ux-pro-max` | Treat the README as a landing page for the project; design accordingly |
+| Repo social-preview card | `frontend-design` + `screenshot-tripwire` | The OG card recruiters see when the repo is shared on LinkedIn / X |
+| Architecture diagram | `frontend-design` (SVG) | Committed `docs/architecture.svg`, not a hand-drawn whiteboard photo |
+| README copy | `copy-tripwire` | Catch AI-default tells before publishing |
+| Screenshots / banner art | `screenshot-tripwire` | Validate dimensions, no transparent corners, no monochrome flat palette |
+| Demo screencast (.gif/.mp4) | `trailer-tripwire` | Pattern-check the screencast before embedding in README |
+| Implementation review | `pr-review-toolkit:code-reviewer` | Architectural review against SOLID, idiomatic Go, testability |
+| Type design | `pr-review-toolkit:type-design-analyzer` | Run on every new type added in `internal/` |
+| Error handling | `pr-review-toolkit:silent-failure-hunter` | Run on every PR / merge that touches `catch` / `if err != nil` paths |
+| Test coverage thoroughness | `pr-review-toolkit:pr-test-analyzer` | Required before declaring any feature "done" |
+| Comment audit | `pr-review-toolkit:comment-analyzer` | After writing godocs / inline comments |
+| Code simplification | `pr-review-toolkit:code-simplifier` | After completing any logical chunk |
+| CLAUDE.md authoring | `claude-md-management:revise-claude-md` | Once the project codebase exists; document conventions for future sessions |
+| Skill usage enforcement | `superpowers:using-superpowers` | Auto-loaded at session start to enforce skill discipline |
+
+### Skipped (with rationale)
+
+- `atelier` — goneIdle-specific brand source-of-truth. `wirefan` is a clean-break project; introducing atelier would require a separate brand kit, overkill for 2 weeks. Direct `frontend-design` + `ui-ux-pro-max` calls cover the same ground.
+- `linkedin-post`, `steam-announcement`, `patch-notes`, `changelog` — goneIdle/TideWane-specific.
+- `webview2-debug`, `gameplay-trailer`, etc. — game-specific.
+
+### Quality gates (each must pass before commit)
+
+1. All tests pass under `-race`. No exceptions.
+2. `golangci-lint run` clean.
+3. `code-reviewer` agent reports zero remaining issues. Re-run after fixes until clean.
+4. `silent-failure-hunter` reports zero unaddressed findings on changed error-handling code.
+5. For UI / README / asset changes: `ui-ux-pro-max` review pass + `screenshot-tripwire` clean + `copy-tripwire` clean.
+6. For doc changes affecting architecture: `living-docs` rerun to keep `ARCHITECTURE.md` in sync.
+7. Goroutine-leak unit test passes (`runtime.NumGoroutine()` returns to baseline).
+
+### Treat the GitHub repo as a designed product
+
+The repo is a portfolio asset, not a code dump. Every recruiter-visible surface — README hero, architecture diagram, demo client, social-preview OG card, even the commit message style — gets the same design discipline as the code. The skills above are the enforcement mechanism: don't ship a recruiter-visible artifact without invoking the relevant skill.
+
 ## Deployment
 
-### Fly.io (default plan)
+### Oracle Cloud Always Free (default plan, $0)
 
-- Multi-stage Dockerfile: `golang:1.25-alpine` builder → `gcr.io/distroless/static`
-- `fly.toml`: `auto_stop_machines=false`, single 1-vCPU + 256 MB machine, persistent volume mounted for `relay.db`
-- Secrets via `flyctl secrets`: admin token, API-key signing secret
-- TLS auto-provisioned by Fly
-- Domain: `relay-ethany33.fly.dev` (custom domain deferred)
-- Cost: ~$3/mo (machine + volume)
+- Provision Ampere A1 instance (1 OCPU / 6 GB minimum free allocation; up to 4 OCPU / 24 GB available)
+- Multi-stage Dockerfile: `golang:1.25-alpine` builder → `gcr.io/distroless/static`, ARM64 image
+- Run via `systemd` unit (`/etc/systemd/system/wirefan.service`) for restart-on-crash + boot-start
+- Secrets via systemd `EnvironmentFile=` pointing at a 0600-permissioned `.env`
+- TLS via Caddy reverse proxy (auto-Let's Encrypt) listening on `:443`, proxying to local `wirefan` on `:8080`
+- Domain: `wirefan.ethanyucetepe.dev` (free Cloudflare DNS — user already owns the apex per memory) OR a free `*.duckdns.org` subdomain
+- Cost: $0/mo permanently
 
-### Alternatives (decision pending)
+### Backup: Cloudflare Tunnel from a home machine
 
-- **Hetzner / Vultr / DigitalOcean**: ~$4/mo, manual systemd setup, higher ops, predictable cost
-- **Railway / Render**: trial credits, idle-sleep risk; not recommended for long-lived demo
+- `cloudflared tunnel` runs on user's always-on machine, exposes local `wirefan` to a public URL
+- Zero infra to manage, public TLS automatic
+- Tradeoff: demo availability tracks the home machine's uptime
+
+### Fallback: Fly.io trial ($5 credit, ~6 weeks)
+
+- Same Dockerfile, `fly.toml` with `auto_stop_machines=false`
+- Migrate to Oracle once Always Free is approved
+
+### Alternatives explicitly rejected
+
+- Render free (idle-sleep kills WS)
+- Railway free credit (per-usage credit burn for always-on)
+- AWS Free Tier (12-mo expiry)
+- GCP e2-micro (too small; only certain regions)
 
 ### Demo client polish
 
 - `/` serves a single embedded HTML page (vanilla JS + WebSocket API, no framework)
-- Three panels: connection (status + socket_id + channels), messages (live log + send box), live-stats (subscribed to `_relay-stats`)
+- Three panels: connection (status + socket_id + channels), messages (live log + send box), live-stats (subscribed to `_wirefan-stats`)
 - "Stress test" button:
   - Cap: 50 phantom connections per browser tab
   - Time bound: 10 seconds, then auto-disconnect
@@ -305,9 +373,9 @@ Query-string credentials show up in proxy access logs. `relay` accepts the trade
 ## README structure
 
 ```
-# relay
+# wirefan
 
-[Live demo: https://relay-ethany33.fly.dev]
+[Live demo: https://wirefan.ethanyucetepe.dev]
 [30-second screencast.gif inline]
 
 > Single-binary Go WebSocket fanout server.
@@ -315,7 +383,7 @@ Query-string credentials show up in proxy access logs. `relay` accepts the trade
 > on a 1-vCPU machine. Zero runtime dependencies.
 
 ## Quickstart
-$ docker run -p 8080:8080 ethany33/relay
+$ docker run -p 8080:8080 ethany33/wirefan
 
 ## Architecture       [diagram.svg]
 ## Performance        [headline table from BENCHMARKS.md + flamegraph link]
@@ -338,13 +406,13 @@ $ docker run -p 8080:8080 ethany33/relay
 - Description: "Single-binary WebSocket fanout server in Go"
 - Topics: `websocket`, `golang`, `real-time`, `pubsub`, `fanout-server`
 - README first 3 lines = live demo URL + screencast GIF + headline performance number (the 5-second-test pass)
-- Pin on EthanY33 profile: replaces one of the current 5 (decide closer to ship — most likely `relay` takes top-left, `news-bias-analyzer` takes another slot, drop one tripwire)
+- Pin on EthanY33 profile: replaces one of the current 5 (decide closer to ship — most likely `wirefan` takes top-left, `news-bias-analyzer` takes another slot, drop one tripwire)
 
 ## Stretch goals
 
 1. **Centrifugo head-to-head perf comparison** in `BENCHMARKS.md` — 2–3 days, only if primary scope ships ahead
 2. **OTel exporter active** (currently flag-wired but dormant) — flip on when implementation buffer permits
-3. **Custom domain** (`relay.ethanyucetepe.dev` or similar) — polish step
+3. **Custom domain** (`wirefan.ethanyucetepe.dev` or similar) — polish step
 
 ## Out of scope
 
@@ -362,7 +430,7 @@ Explicit non-goals (referenced repeatedly to prevent scope creep):
 
 ## Open questions
 
-- **Hosting choice**: Fly.io vs VPS vs Railway — user decides before deploy
+- **Hosting confirmation**: spec defaults to Oracle Cloud Always Free; user confirms or picks an alternative (Cloudflare Tunnel from home / Fly.io trial)
+- **Repo name confirmation**: spec defaults to `wirefan`; user confirms or picks `socketrelay` (also free, more descriptive)
 - **Time budget**: 2 weeks tight, 3 weeks comfortable — user picks the realistic target
-- **Pin slot strategy**: which of the current 5 to drop when `relay` and `news-bias-analyzer` are pinned — defer until ship
-- **Repo name availability**: `EthanY33/relay` likely available; verify before code; alternates: `relay-go`, `wirefan`, `chanrelay`
+- **Pin slot strategy**: which of the current 5 to drop when `wirefan` and `news-bias-analyzer` are pinned — defer until ship
