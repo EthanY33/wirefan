@@ -1,0 +1,38 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test
+*.test
+*.out
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local
+*.db
+*.db-journal
+.env
+.env.local
+
+# Profiles
+*.prof
+docs/profiles/*.png
+!docs/profiles/.gitkeep
+
+# Build
+relay
+loadtest

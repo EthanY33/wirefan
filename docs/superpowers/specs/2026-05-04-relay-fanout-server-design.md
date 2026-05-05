@@ -1,0 +1,368 @@
+# `relay` — Design Specification
+
+**Project**: `relay` — single-binary Go WebSocket fanout server
+**Author**: Ethan Yucetepe
+**Date**: 2026-05-04
+**Status**: Pre-implementation design, awaiting user review
+
+---
+
+## Purpose
+
+`relay` is a portfolio-quality real-time fanout server, built primarily to serve as the centerpiece engineering artifact in a Big Tech new-grad SWE application portfolio (target companies: Datadog, Stripe, Google, etc.). It is intended to demonstrate idiomatic Go backend engineering: WebSocket-based pub/sub, careful concurrency, graceful shutdown, instrumented performance characteristics, and reproducible benchmarks.
+
+Functionally, `relay` is a generic fanout server: clients connect, authenticate, subscribe to named channels, and broadcast/receive opaque messages on those channels. The server does not interpret payload content. The model is roughly Pusher / Centrifugo lite, with deliberate scope reduction.
+
+## Decisions to lock before implementation
+
+These are user-decision blockers — implementation should not start until each is resolved:
+
+1. **Hosting target.** Fly.io requires a credit card (~$3/mo with volume). Alternatives: a Hetzner / Vultr / DigitalOcean VPS (~$4/mo, more manual setup), or Railway / Render trial credits (idle-sleep risk). The live demo must stay up for months during job-hunt — the choice affects the deploy work. Spec assumes **Fly.io** unless redirected.
+2. **Time budget.** Locked-in scope is ~40–50 focused hours of evening work. New-to-Go would roughly double that. Realistic target: **3 weeks of evenings** (1–2 hours/day) with 2 weeks as a stretch.
+
+## Scope
+
+### Locked-in features
+
+1. WebSocket server using `coder/websocket` (formerly `nhooyr.io/websocket`); JSON wire protocol documented in `PROTOCOL.md`.
+2. Channel-based publish/subscribe; server does not interpret message bodies.
+3. API-key auth via REST control plane; HMAC-SHA256–signed channel tokens for `private-*` channels, **bound to the connection's `socket_id`** (Pusher pattern, prevents token replay across connections).
+4. Per-connection buffered `send` chan with **configurable slow-consumer policy** (`disconnect` | `drop-oldest` | `drop-newest`).
+5. Heartbeat: 30s ping interval, 60s pong timeout. Read deadline reset on any inbound message.
+6. Graceful shutdown: connection drain (30s grace), full ctx cancellation, WaitGroup-tracked goroutines, **zero-leak verified by test**.
+7. Observability: `slog` structured logs + `/metrics` (Prometheus) + `/debug/pprof`. **`--otel-endpoint=` flag** wired with optional exporter — dormant when flag empty, recruiter-readable as "instrumented for tracing."
+8. Resource limits (all flag-configurable): `--max-channels-per-conn=64`, `--max-subscribers-per-channel=10000`, `--max-frame-bytes=65536`, per-API-key publish rate limit (token bucket, default 100 msg/s, burst 200).
+9. Pluggable interfaces, both implementations of each shipped and benchmarked:
+   - `Fanout`: `PerConnFanout` (per-connection buffered chan) vs `ShardedPoolFanout` (NumCPU×2 worker pool drawing from sharded queues). **Default: `--fanout=per-conn`** (classic Go pattern, simpler reasoning). Switchable via flag.
+   - `Registry`: `SyncMapRegistry` (sync.Map) vs `ShardedMapRegistry` (16-shard `RWMutex+map`). **Default: `--registry=sync-map`** (simpler default; sharded selected only when benchmarks justify it). Switchable via flag.
+   - `Store`: `sqliteStore` (default, durable) vs `memoryStore` (tests, ephemeral deploy mode). Selected via `--store=sqlite|memory`.
+10. `_relay-stats` reserved system channel — server publishes its own connection count / msg/s / drop count to the channel; clients with valid API key may *subscribe* (read-only). Demo client subscribes to it: the system dogfoods itself, recruiter sees live numbers arriving via the same fanout being demonstrated.
+11. Browser demo client at `/`: vanilla JS, three panels (connection, messages, live-stats), capped stress-test button (50 phantom connections per browser tab, 10-second time bound, server-side cap of 200 phantom connections per source IP).
+12. Single-binary deploy: multi-stage Dockerfile, `fly.toml`, persistent volume for `relay.db`.
+
+### Deliberately deferred
+
+Mentioned as "next steps" in `DESIGN.md`, with the design sketch:
+
+- **Multi-server scaling via Redis pub-sub.** Sticky-vs-stateless decisions, deduplication, fan-in ordering, cluster failover — easily a week alone.
+- **Message history / replay on reconnect.** Requires a per-channel ring buffer, message IDs, gap detection, `Last-Event-ID`-style protocol.
+- **Presence with join/leave diffs.** Phoenix-Channels-style; CRDT or naive O(N) — both have real gotchas.
+- **Polished client SDK** with auto-reconnect, exponential backoff, subscription replay, in-flight queue. Itself a 1-week project; raw browser demo only for now.
+
+### Distinctive engineering artifact
+
+A reproducible **benchmark report** comparing two fanout strategies on identical hardware:
+
+- `PerConnFanout` vs `ShardedPoolFanout`
+- Test matrix: 10k / 25k / 50k connections × 100 / 1000 channels × 10 / 100 msg/s/conn
+- Captured: p50 / p99 / p999 broadcast latency (publisher-write → last-subscriber-receive), CPU%, RSS, goroutine count
+- Output: `BENCHMARKS.md` with tables, line-chart PNGs, pprof CPU + heap flamegraphs in `docs/profiles/`, declared winner with hot-path explanation
+- Separate set of benches for `SyncMapRegistry` vs `ShardedMapRegistry` on the channel-lookup hot path
+- `make bench` reproduces the runs end-to-end
+
+## Architecture
+
+### Repository layout
+
+```
+relay/
+├── cmd/
+│   ├── relay/        # main binary entrypoint
+│   └── loadtest/     # standalone WS client load generator
+├── internal/
+│   ├── server/       # HTTP routing, WS upgrade handler
+│   ├── hub/          # central channel registry + Channel struct
+│   ├── fanout/       # Fanout interface + two implementations
+│   ├── registry/     # Registry interface + two implementations
+│   ├── auth/         # API keys, HMAC channel tokens, socket_id binding
+│   ├── store/        # Store interface + sqliteStore + memoryStore
+│   ├── ratelimit/    # token-bucket per-key publish limiter
+│   └── metrics/      # Prometheus collectors + OTel hook
+├── web/              # embedded demo client (HTML + JS via embed.FS)
+├── docs/             # DESIGN.md, PROTOCOL.md, BENCHMARKS.md, profiles/
+├── Dockerfile
+├── fly.toml
+├── Makefile
+└── go.mod
+```
+
+### Core components
+
+- **Hub** — owns the `Registry` (which holds `Channel`s by name). Coordinates subscribe / unsubscribe / lookup. Hot-path methods are wrapped behind the Registry interface; the chosen implementation is configured at boot via flag.
+- **Channel** — subscriber set + per-channel mutex. Broadcast iteration locks the channel, which serializes broadcasts on a single channel and preserves FIFO ordering from any single publisher. Self-cleans when subscriber count hits 0.
+- **Connection** — wraps a single WS conn:
+  - read goroutine: pulls frames, parses JSON, dispatches by type
+  - write goroutine: pulls from `send chan []byte` (size 64), writes with deadline, owns the ping ticker
+  - both tracked via Hub's WaitGroup
+- **Fanout** — interface:
+  ```go
+  type Fanout interface {
+      Broadcast(ctx context.Context, channel string, msg []byte)
+  }
+  ```
+  - `PerConnFanout`: lookup channel, iterate subscribers, push onto each conn's `send` chan; backpressure policy resolved per-conn.
+  - `ShardedPoolFanout`: enqueue broadcast job onto a per-channel-shard worker queue; worker pool drains queues, iterates subscribers, applies policy.
+- **Auth** — Bearer API key for REST endpoints. `socket_id` (ULID) assigned at upgrade and sent in `connected` message. HMAC-SHA256 signs `socket_id|channel`; tokens expire 5 min after issuance.
+- **Store** — interface:
+  ```go
+  type Store interface {
+      CreateKey(ctx, name) (Key, error)
+      LookupKey(ctx, keyID) (Key, error)
+      RevokeKey(ctx, keyID) error
+      ListKeys(ctx) ([]Key, error)
+  }
+  ```
+  Default: `sqliteStore` (single file, durable). `memoryStore` for tests + ephemeral-deploy mode.
+
+## Wire protocol
+
+JSON over WebSocket. Documented in `PROTOCOL.md`. Versioned via `version` field in the `connected` message (current: `"v1"`).
+
+### Message shapes
+
+```jsonc
+// Server → Client (sent immediately after upgrade)
+{"type": "connected", "socket_id": "01HZ...", "version": "v1"}
+
+// Client → Server
+{"type": "subscribe",   "channel": "chat-1", "token": "<HMAC>"}  // token only for "private-*"
+{"type": "unsubscribe", "channel": "chat-1"}
+{"type": "publish",     "channel": "chat-1", "data": {...}}
+
+// Server → Client
+{"type": "subscribed",   "channel": "chat-1"}
+{"type": "unsubscribed", "channel": "chat-1"}
+{"type": "event",        "channel": "chat-1", "data": {...}, "id": "01HZ..."}
+{"type": "error",        "code": "AUTH_FAILED", "message": "..."}
+```
+
+### Channel naming
+
+- `public-*` or unprefixed: any client with valid API key may subscribe.
+- `private-*`: requires server-signed HMAC token bound to the subscriber's `socket_id`.
+- Reserved: `_relay-stats` (read-only for clients; only the server publishes to it).
+
+### Limits
+
+- Max frame size: 64 KB
+- Max channels per connection: 64
+- Max subscribers per channel: 10,000
+- Publish rate limit: 100 msg/s, burst 200, per API key
+
+### Ordering guarantee
+
+FIFO is preserved for messages from any single publisher to any single subscriber on a single channel (enforced by the per-channel broadcast mutex). Cross-publisher ordering is **not** guaranteed. Cross-channel ordering is **not** guaranteed.
+
+### Backpressure policies
+
+Applied to per-connection `send` chan (default capacity 64). Default policy is `disconnect`; configurable globally via flag and per-channel via REST control-plane attribute.
+
+- `disconnect` — close 1008 with reason `"slow_consumer"` on full chan
+- `drop-oldest` — pop oldest message from chan, push new
+- `drop-newest` — drop incoming msg, log, increment metric
+
+## HTTP API
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/` | none | embedded demo client |
+| GET | `/v1/connect?key=<api_key>` | API key (query string) | WebSocket upgrade |
+| POST | `/v1/auth/sign` | API secret (Bearer) | issue HMAC token; body: `{socket_id, channel}` |
+| POST | `/v1/keys` | admin Bearer | create API key |
+| GET | `/v1/keys` | admin Bearer | list keys |
+| DELETE | `/v1/keys/:id` | admin Bearer | revoke key |
+| GET | `/v1/health` | none | liveness; **returns 503 during shutdown drain** |
+| GET | `/metrics` | none | Prometheus exposition |
+| GET | `/debug/pprof/*` | localhost-only | pprof endpoints |
+
+### Origin allowlist
+
+`--allowed-origins=` flag (default `*` for the public demo). DESIGN.md flags this as a production hardening.
+
+### API-key-as-query-string tradeoff
+
+Query-string credentials show up in proxy access logs. `relay` accepts the tradeoff (Pusher does too) and documents the alternative in DESIGN.md: `Sec-WebSocket-Protocol`-as-bearer is browser-compatible and considered, but rejected for protocol simplicity at this scope.
+
+### Auth flow
+
+1. Operator boots `relay --admin-token-print` → admin Bearer printed once on stdout.
+2. Operator creates API keys via REST → returns `key_id` + `secret`.
+3. Application server (the relay's customer) holds the `secret`, calls `POST /v1/auth/sign` with `{socket_id, channel}` to issue HMAC tokens for browser clients subscribing to private channels.
+4. Browser client connects WS with `?key=<key_id>`, receives `connected` with `socket_id`, then sends `subscribe` for the private channel including the HMAC token from step 3.
+
+## Data flow
+
+### Publish path
+
+1. Client sends `{type:"publish", channel:"X", data:{...}}` over WS
+2. Read goroutine parses JSON, validates type
+3. Auth check: connection must be subscribed to the channel
+4. Rate-limit check: token bucket for the API key; on exhaustion, send `error{code:"RATE_LIMITED"}` and drop
+5. Generate ULID msg ID; wrap as `event` message
+6. `Registry.Lookup(channel)` → `*Channel`
+7. `Channel.Broadcast(msg)` invokes the configured Fanout impl
+8. Each subscriber's `send` chan receives; write goroutine flushes per its deadline
+9. If a subscriber's chan is full, the configured backpressure policy applies
+
+### Connection lifecycle
+
+1. WS upgrade at `/v1/connect?key=...`
+2. Validate API key + check origin allowlist → upgrade or 401/403
+3. Assign `socket_id` (ULID); start write goroutine; enqueue `connected` message
+4. Start read goroutine; start ping ticker
+5. Process `subscribe` / `unsubscribe` / `publish` until close
+6. On close: remove from all channel subscriber sets, close send chan, write goroutine drains pending then exits, read goroutine exits, WaitGroup decrements
+
+### Shutdown sequence
+
+1. SIGTERM → root ctx canceled
+2. HTTP listener stops accepting new connections; `/v1/connect` returns 503
+3. `/v1/health` returns 503 (load balancer deroutes)
+4. All connections sent close-frame 1001; 30s grace
+5. WaitGroup waits for all goroutines; force-close stragglers after grace
+6. Hub clears state; SQLite closes; exit 0
+
+## Error handling
+
+### WS error class table
+
+| Trigger | Server response |
+|---|---|
+| Bad API key on upgrade | HTTP 401, no upgrade |
+| Origin denied | HTTP 403, no upgrade |
+| Bad HMAC on private subscribe | `error{code:"AUTH_FAILED"}`, **don't close** |
+| Publish to non-subscribed channel | `error{code:"NOT_SUBSCRIBED"}`, don't close |
+| Publish rate-limited | `error{code:"RATE_LIMITED"}`, don't close |
+| Duplicate subscribe | reply `subscribed` (idempotent no-op), don't close |
+| Malformed JSON frame | `error` then close 1003 (Unsupported Data) |
+| Frame > 64 KB | close 1009 (Message Too Big) |
+| Send chan full + policy=disconnect | close 1008 (Policy Violation), reason `"slow_consumer"` |
+| Pong timeout (60s) | close 1001 (Going Away) |
+| Server shutdown | close 1001 with 30s drain |
+
+### Operability metrics (Prometheus)
+
+- `relay_connections_total` — gauge, current open connections
+- `relay_channels_total` — gauge, current active channels
+- `relay_messages_published_total` — counter
+- `relay_messages_dropped_total{reason}` — counter (`reason` ∈ `slow_consumer` | `rate_limit` | `oversize`)
+- `relay_broadcast_latency_seconds` — histogram (p50/p99/p999)
+- `relay_upgrade_rejected_total{reason}` — counter (`bad_key` | `bad_origin` | `phantom_cap`)
+- `relay_auth_failures_total` — counter
+
+## Testing
+
+### Layers
+
+| Layer | Tools | What |
+|---|---|---|
+| Unit | stdlib + testify, `-race` always on | Hub subscribe/unsubscribe/broadcast under concurrency; auth HMAC roundtrip; rate-limit; both Store impls; both Fanout impls; both Registry impls |
+| Integration | `httptest` + `coder/websocket` test client | subscribe→publish→receive; private-channel HMAC flow; multi-subscriber fanout; reconnect cleanup; shutdown drain |
+| Concurrency proof | stdlib | **Headline test**: 1k connection-churn cycles → shutdown → assert `runtime.NumGoroutine()` returns to baseline within 1s |
+| Stress | custom | Parallel subscribe/unsubscribe at 10k QPS; per-publisher monotonic-ID ordering verifier; backpressure-policy enforcement verifier |
+
+### Test discipline
+
+- All tests pass under `-race`. No exceptions.
+- Goroutine-leak test runs in CI as a regular unit test.
+- No `time.Sleep` — use `synctest` (Go 1.25 stdlib) or channel-based synchronization.
+- Coverage gate: 70% on internal packages.
+
+### Benchmark methodology
+
+`cmd/loadtest/` Go binary; `make bench` reproduces. Matrix: 10k / 25k / 50k connections × 100 / 1000 channels × 10 / 100 msg/s/conn. Hardware: 1-vCPU Fly machine (or equivalent local Docker). Captured: p50 / p99 / p999 broadcast latency, CPU%, RSS, goroutine count. Written to `BENCHMARKS.md`.
+
+### Stretch: Centrifugo head-to-head
+
+`make bench-compare` runs the same matrix against `centrifugo` and emits a side-by-side comparison. Marked stretch — pursue only if primary scope ships ahead of schedule. Bench harness must support pluggable target.
+
+## Deployment
+
+### Fly.io (default plan)
+
+- Multi-stage Dockerfile: `golang:1.25-alpine` builder → `gcr.io/distroless/static`
+- `fly.toml`: `auto_stop_machines=false`, single 1-vCPU + 256 MB machine, persistent volume mounted for `relay.db`
+- Secrets via `flyctl secrets`: admin token, API-key signing secret
+- TLS auto-provisioned by Fly
+- Domain: `relay-ethany33.fly.dev` (custom domain deferred)
+- Cost: ~$3/mo (machine + volume)
+
+### Alternatives (decision pending)
+
+- **Hetzner / Vultr / DigitalOcean**: ~$4/mo, manual systemd setup, higher ops, predictable cost
+- **Railway / Render**: trial credits, idle-sleep risk; not recommended for long-lived demo
+
+### Demo client polish
+
+- `/` serves a single embedded HTML page (vanilla JS + WebSocket API, no framework)
+- Three panels: connection (status + socket_id + channels), messages (live log + send box), live-stats (subscribed to `_relay-stats`)
+- "Stress test" button:
+  - Cap: 50 phantom connections per browser tab
+  - Time bound: 10 seconds, then auto-disconnect
+  - Server-side cap: 200 phantom connections per source IP (further upgrades rejected with HTTP 429)
+- "Open two tabs to see fanout" instructions visible above the fold
+
+## README structure
+
+```
+# relay
+
+[Live demo: https://relay-ethany33.fly.dev]
+[30-second screencast.gif inline]
+
+> Single-binary Go WebSocket fanout server.
+> 50k concurrent connections, p99 broadcast latency 4 ms
+> on a 1-vCPU machine. Zero runtime dependencies.
+
+## Quickstart
+$ docker run -p 8080:8080 ethany33/relay
+
+## Architecture       [diagram.svg]
+## Performance        [headline table from BENCHMARKS.md + flamegraph link]
+## Wire protocol      [→ PROTOCOL.md]
+## Why these choices  [3-5 design decisions w/ one-line justifications]
+## Deferred           [next-step list]
+## Build & test       [Make targets]
+```
+
+### Other docs
+
+- `DESIGN.md` — full architecture, fanout-strategy comparison, registry-primitive comparison, alternatives considered (custom epoll loop, Redis multi-server, etc.), open questions, future work
+- `PROTOCOL.md` — wire-format spec, auth flow, error codes, message-size + rate limits, ordering semantics
+- `BENCHMARKS.md` — methodology, results, charts, pprof links, declared winner + hot-path rationale
+- `CONTRIBUTING.md` — short, dev setup only
+- `LICENSE` — MIT
+
+## GitHub repo settings
+
+- Description: "Single-binary WebSocket fanout server in Go"
+- Topics: `websocket`, `golang`, `real-time`, `pubsub`, `fanout-server`
+- README first 3 lines = live demo URL + screencast GIF + headline performance number (the 5-second-test pass)
+- Pin on EthanY33 profile: replaces one of the current 5 (decide closer to ship — most likely `relay` takes top-left, `news-bias-analyzer` takes another slot, drop one tripwire)
+
+## Stretch goals
+
+1. **Centrifugo head-to-head perf comparison** in `BENCHMARKS.md` — 2–3 days, only if primary scope ships ahead
+2. **OTel exporter active** (currently flag-wired but dormant) — flip on when implementation buffer permits
+3. **Custom domain** (`relay.ethanyucetepe.dev` or similar) — polish step
+
+## Out of scope
+
+Explicit non-goals (referenced repeatedly to prevent scope creep):
+
+- Multi-server scaling (Redis pub-sub, etc.)
+- Message history / replay
+- Presence with join/leave diffs
+- Client-side SDK (raw WS only)
+- WebTransport / HTTP/3 transport
+- MessagePack / Protobuf wire formats
+- Custom epoll/kqueue event loop (gnet, nbio)
+- Pusher-protocol drop-in compatibility
+- Exactly-once / ordered delivery across reconnects
+
+## Open questions
+
+- **Hosting choice**: Fly.io vs VPS vs Railway — user decides before deploy
+- **Time budget**: 2 weeks tight, 3 weeks comfortable — user picks the realistic target
+- **Pin slot strategy**: which of the current 5 to drop when `relay` and `news-bias-analyzer` are pinned — defer until ship
+- **Repo name availability**: `EthanY33/relay` likely available; verify before code; alternates: `relay-go`, `wirefan`, `chanrelay`
