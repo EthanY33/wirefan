@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/EthanY33/wirefan/internal/store"
 )
 
 type Server struct {
@@ -13,11 +15,13 @@ type Server struct {
 	health *HealthHandler
 	mux    *http.ServeMux
 	srv    *http.Server
+	store  store.Store
 }
 
-func New(addr string) *Server {
-	s := &Server{addr: addr, health: NewHealthHandler(), mux: http.NewServeMux()}
+func New(addr string, st store.Store, adminToken string) *Server {
+	s := &Server{addr: addr, health: NewHealthHandler(), mux: http.NewServeMux(), store: st}
 	s.mux.Handle("/v1/health", s.health)
+	NewRestHandler(st, adminToken).Register(s.mux)
 	s.srv = &http.Server{Addr: addr, Handler: s.mux}
 	return s
 }

@@ -8,7 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/server"
+	"github.com/EthanY33/wirefan/internal/store"
 )
 
 func main() {
@@ -22,6 +24,12 @@ func main() {
 
 func run(ctx context.Context) error {
 	addr := ":8080"
-	s := server.New(addr)
+	st := store.NewMemory()
+	adminToken, err := auth.GenerateSecret()
+	if err != nil {
+		return err
+	}
+	slog.Info("admin token (use as Bearer for /v1/keys)", "token", adminToken)
+	s := server.New(addr, st, adminToken)
 	return s.Run(ctx)
 }
