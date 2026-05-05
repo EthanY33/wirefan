@@ -10,7 +10,7 @@ func (s *syncMapReg) GetOrCreate(name string) *Channel {
 	if v, ok := s.m.Load(name); ok {
 		return v.(*Channel)
 	}
-	c := &Channel{Name: name}
+	c := newChannel(name)
 	actual, _ := s.m.LoadOrStore(name, c)
 	return actual.(*Channel)
 }

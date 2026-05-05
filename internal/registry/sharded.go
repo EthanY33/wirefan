@@ -41,7 +41,7 @@ func (r *shardedReg) GetOrCreate(name string) *Channel {
 	if c, ok := s.chans[name]; ok {
 		return c
 	}
-	c := &Channel{Name: name}
+	c := newChannel(name)
 	s.chans[name] = c
 	return c
 }

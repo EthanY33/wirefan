@@ -1,8 +1,21 @@
 package registry
 
+import "sync"
+
 type Channel struct {
-	Name string
-	// additional fields wired in Task 9 (subscribers, mutex, etc.)
+	Name        string
+	BroadcastMu sync.Mutex // serialize broadcasts (FIFO)
+	SubsMu      sync.RWMutex
+	Subscribers map[Subscriber]struct{}
+}
+
+type Subscriber interface {
+	Send([]byte) error
+	Close()
+}
+
+func newChannel(name string) *Channel {
+	return &Channel{Name: name, Subscribers: map[Subscriber]struct{}{}}
 }
 
 type Registry interface {
