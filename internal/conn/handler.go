@@ -69,6 +69,10 @@ func (c *Conn) handleSubscribe(msg incoming) {
 }
 
 func (c *Conn) handlePublish(msg incoming) {
+	if strings.HasPrefix(msg.Channel, "_") {
+		c.sendError("RESERVED_CHANNEL", "channel name reserved for server use")
+		return
+	}
 	c.subsMu.Lock()
 	ch, ok := c.subs[msg.Channel]
 	c.subsMu.Unlock()

@@ -53,5 +53,10 @@ func run(ctx context.Context) error {
 	defer rl.Close()
 	h := hub.New()
 	s := server.New(addr, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{}, h)
+	// Start stats publisher in background; goroutine exits when ctx is canceled.
+	go hub.PublishStatsLoop(ctx, reg, 5*time.Second, func() map[string]int64 {
+		// TODO: wire to actual prometheus collector values via testutil
+		return map[string]int64{}
+	})
 	return s.Run(ctx)
 }
