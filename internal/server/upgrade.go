@@ -5,8 +5,10 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/store"
 	"github.com/coder/websocket"
+	"github.com/oklog/ulid/v2"
 )
 
 type UpgradeHandler struct {
@@ -37,6 +39,6 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	// TODO Task 11: hand to Connection lifecycle
-	c.Close(websocket.StatusNormalClosure, "not implemented yet")
+	sid := ulid.Make().String()
+	_ = conn.Run(r.Context(), c, sid)
 }
