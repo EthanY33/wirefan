@@ -19,4 +19,4 @@ loadtest:
 	go build -o bin/loadtest ./cmd/loadtest
 
 bench: build loadtest
-	@echo "Run: ./bin/loadtest --key=<api-key-id> --conns=1000 --channels=100 --rate=10 --dur=30s"
+	@bash scripts/bench.sh

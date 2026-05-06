@@ -36,3 +36,6 @@ docs/profiles/*.png
 # Build
 /relay
 /loadtest
+
+# Benchmark outputs
+/results/
