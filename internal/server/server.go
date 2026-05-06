@@ -22,6 +22,7 @@ func New(addr string, st store.Store, adminToken string) *Server {
 	s := &Server{addr: addr, health: NewHealthHandler(), mux: http.NewServeMux(), store: st}
 	s.mux.Handle("/v1/health", s.health)
 	NewRestHandler(st, adminToken).Register(s.mux)
+	s.mux.Handle("/v1/connect", NewUpgradeHandler(st, []string{"*"}))
 	s.srv = &http.Server{Addr: addr, Handler: s.mux}
 	return s
 }
