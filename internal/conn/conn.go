@@ -11,6 +11,7 @@ import (
 
 	"github.com/EthanY33/wirefan/internal/fanout"
 	"github.com/EthanY33/wirefan/internal/hub"
+	"github.com/EthanY33/wirefan/internal/metrics"
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/coder/websocket"
@@ -73,6 +74,9 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 		subs:          map[string]*registry.Channel{},
 		maxChannels:   defaultMaxChannelsPerConn,
 	}
+
+	metrics.Connections.Inc()
+	defer metrics.Connections.Dec()
 
 	h.Add(c)
 	defer h.Remove(c)

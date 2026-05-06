@@ -8,6 +8,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/fanout"
 	"github.com/EthanY33/wirefan/internal/hub"
+	"github.com/EthanY33/wirefan/internal/metrics"
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/store"
@@ -42,11 +43,13 @@ func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, 
 func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	keyID := r.URL.Query().Get("key")
 	if keyID == "" {
+		metrics.UpgradeRej.WithLabelValues("bad_key").Inc()
 		http.Error(w, "missing key", http.StatusUnauthorized)
 		return
 	}
 	k, err := h.store.LookupKey(r.Context(), keyID)
 	if err != nil || k.RevokedAt != nil {
+		metrics.UpgradeRej.WithLabelValues("bad_key").Inc()
 		http.Error(w, "invalid key", http.StatusUnauthorized)
 		return
 	}

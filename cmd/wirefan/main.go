@@ -13,6 +13,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/fanout"
 	"github.com/EthanY33/wirefan/internal/hub"
+	"github.com/EthanY33/wirefan/internal/metrics"
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/server"
@@ -39,6 +40,12 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// OTel is dormant when endpoint is empty — returns a no-op shutdown.
+	otelShutdown, err := metrics.InitOTel(ctx, "")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = otelShutdown(context.Background()) }()
 	slog.Info("admin token (use as Bearer for /v1/keys)", "token", adminToken)
 	reg := registry.NewSyncMap()
 	fan := fanout.NewPerConn()

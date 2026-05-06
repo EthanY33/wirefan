@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/hub"
+	"github.com/EthanY33/wirefan/internal/metrics"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -39,6 +41,7 @@ func (c *Conn) handle(raw []byte) {
 func (c *Conn) handleSubscribe(msg incoming) {
 	if strings.HasPrefix(msg.Channel, "private-") {
 		if err := auth.VerifyToken(c.signingSecret, c.socketID, msg.Channel, msg.Token); err != nil {
+			metrics.AuthFails.Inc()
 			c.sendError("AUTH_FAILED", "invalid token")
 			return
 		}
@@ -84,7 +87,10 @@ func (c *Conn) handlePublish(msg incoming) {
 		"data":    msg.Data,
 		"id":      id,
 	})
+	start := time.Now()
+	metrics.Published.Inc()
 	c.fanout.Broadcast(context.Background(), ch, out)
+	metrics.Latency.Observe(time.Since(start).Seconds())
 }
 
 func (c *Conn) handleUnsubscribe(msg incoming) {
@@ -130,6 +136,7 @@ func (c *Conn) Send(b []byte) error {
 	}
 	err := c.policy.Apply(c.send, b, nil)
 	if errors.Is(err, ErrSlowConsumer) {
+		metrics.Dropped.WithLabelValues("slow_consumer").Inc()
 		// Non-blocking: if a previous Send already signaled, skip.
 		select {
 		case c.closeReq <- struct{}{}:
