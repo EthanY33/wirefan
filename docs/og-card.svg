@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 1200 630"
+     preserveAspectRatio="xMidYMid meet"
+     role="img"
+     aria-labelledby="og-title og-desc">
+  <title id="og-title">wirefan — single-binary Go WebSocket fanout server</title>
+  <desc id="og-desc">Social preview card. Headline "wirefan", tagline "single-binary Go WebSocket fanout server", target stat "50k conns · p99 4ms · 1 vCPU".</desc>
+
+  <defs>
+    <style><![CDATA[
+      .paper       { fill: #f5f1ea; }
+      .ink         { fill: #2b2b2b; }
+      .ink-soft    { fill: #3a3f31; }
+      .dim         { fill: #7a7560; }
+      .accent      { fill: #c25b1a; }
+      .accent-soft { fill: #e9dfcb; }
+
+      .stroke-ink    { stroke: #2b2b2b; fill: none; stroke-width: 1.5; }
+      .stroke-dim    { stroke: #7a7560; fill: none; stroke-width: 1; }
+      .stroke-accent { stroke: #c25b1a; fill: none; stroke-width: 2.5; }
+
+      .t-wordmark { font-family: "Iowan Old Style", "Palatino", "Georgia", "Cambria", serif;
+                    font-weight: 700; font-size: 168px; letter-spacing: -3px; }
+      .t-tag      { font-family: "Iowan Old Style", "Palatino", "Georgia", serif;
+                    font-style: italic; font-size: 36px; }
+      .t-stat     { font-family: "JetBrains Mono", "SFMono-Regular", "Menlo", "Consolas", monospace;
+                    font-size: 30px; letter-spacing: 1px; }
+      .t-url      { font-family: "JetBrains Mono", "SFMono-Regular", "Menlo", "Consolas", monospace;
+                    font-size: 20px; letter-spacing: 0.5px; }
+      .t-edge     { font-family: "JetBrains Mono", "SFMono-Regular", "Menlo", "Consolas", monospace;
+                    font-size: 16px; letter-spacing: 2px; text-transform: uppercase; }
+
+      .grid-dot { fill: #2b2b2b; opacity: 0.10; }
+
+      .node-hub   { fill: #c25b1a; }
+      .node-leaf  { fill: #2b2b2b; }
+    ]]></style>
+
+    <!-- subtle dotted grid pattern -->
+    <pattern id="dots" x="0" y="0" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" class="grid-dot"/>
+    </pattern>
+  </defs>
+
+  <!-- background paper + subtle grid -->
+  <rect class="paper" width="1200" height="630"/>
+  <rect width="1200" height="630" fill="url(#dots)"/>
+
+  <!-- left rust bar -->
+  <rect class="accent" x="0" y="0" width="14" height="630"/>
+
+  <!-- corner edge labels -->
+  <text class="ink t-edge" x="48" y="62">v1 · MIT · Go 1.23</text>
+  <text class="dim t-edge" x="1152" y="62" text-anchor="end">single binary</text>
+
+  <!-- decorative fanout graph: one publisher hub on the left, fanned out to
+       eight subscribers on the right. This is the literal protocol shape. -->
+  <g transform="translate(820, 360)">
+    <!-- subscriber nodes (x=160), spaced vertically -->
+    <line class="stroke-accent" x1="0" y1="0" x2="160" y2="-160"/>
+    <line class="stroke-accent" x1="0" y1="0" x2="160" y2="-114"/>
+    <line class="stroke-accent" x1="0" y1="0" x2="160" y2="-68"/>
+    <line class="stroke-accent" x1="0" y1="0" x2="160" y2="-22"/>
+    <line class="stroke-accent" x1="0" y1="0" x2="160" y2="24"/>
+    <line class="stroke-accent" x1="0" y1="0" x2="160" y2="70"/>
+    <line class="stroke-accent" x1="0" y1="0" x2="160" y2="116"/>
+    <line class="stroke-accent" x1="0" y1="0" x2="160" y2="162"/>
+
+    <!-- subscriber dots -->
+    <circle class="node-leaf" cx="160" cy="-160" r="7"/>
+    <circle class="node-leaf" cx="160" cy="-114" r="7"/>
+    <circle class="node-leaf" cx="160" cy="-68"  r="7"/>
+    <circle class="node-leaf" cx="160" cy="-22"  r="7"/>
+    <circle class="node-leaf" cx="160" cy="24"   r="7"/>
+    <circle class="node-leaf" cx="160" cy="70"   r="7"/>
+    <circle class="node-leaf" cx="160" cy="116"  r="7"/>
+    <circle class="node-leaf" cx="160" cy="162"  r="7"/>
+
+    <!-- publisher hub -->
+    <circle class="node-hub" cx="0" cy="0" r="14"/>
+    <circle class="stroke-accent" cx="0" cy="0" r="26"/>
+  </g>
+
+  <!-- wordmark + tagline + stat block -->
+  <g transform="translate(70, 0)">
+    <!-- wordmark with rust underline accent -->
+    <text class="ink t-wordmark" x="0" y="280">wirefan</text>
+    <rect class="accent" x="4" y="298" width="120" height="6"/>
+
+    <!-- tagline -->
+    <text class="ink-soft t-tag" x="0" y="358">single-binary Go WebSocket fanout server</text>
+
+    <!-- target-stat strip on accent-soft background -->
+    <rect class="accent-soft" x="0" y="408" width="660" height="62" rx="2"/>
+    <text class="ink t-stat" x="20" y="450">50k conns · p99 4 ms · 1 vCPU</text>
+  </g>
+
+  <!-- bottom rule + URL -->
+  <line class="stroke-dim" x1="70" y1="556" x2="1130" y2="556"/>
+  <text class="dim t-url" x="70" y="592">github.com/EthanY33/wirefan</text>
+  <text class="dim t-url" x="1130" y="592" text-anchor="end">zero runtime deps</text>
+</svg>
