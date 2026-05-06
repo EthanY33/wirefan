@@ -64,9 +64,10 @@ func (c *Conn) handleUnsubscribe(msg incoming) {
 	delete(c.subs, msg.Channel)
 	c.subsMu.Unlock()
 	hub.Unsubscribe(ch, c)
-	if hub.SubscriberCount(ch) == 0 {
-		c.registry.Delete(msg.Channel)
-	}
+	// NOTE: empty channels are intentionally NOT deleted from the registry here.
+	// A cross-conn TOCTOU race with concurrent GetOrCreate could orphan a Channel
+	// reference. Empty channels are kept and reused; a GC pass for genuinely
+	// abandoned channels can land in a later task.
 	c.sendAck("unsubscribed", msg.Channel)
 }
 
@@ -89,6 +90,9 @@ func (c *Conn) sendError(code, message string) {
 // Send satisfies the registry.Subscriber interface. Returns ErrSlowConsumer
 // when the per-conn send buffer is full; Task 15's policy hooks here.
 func (c *Conn) Send(b []byte) error {
+	if c.closed.Load() {
+		return ErrSlowConsumer
+	}
 	select {
 	case c.send <- b:
 		return nil

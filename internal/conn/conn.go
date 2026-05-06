@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/EthanY33/wirefan/internal/hub"
@@ -33,6 +34,7 @@ type Conn struct {
 	signingSecret string
 	subs          map[string]*registry.Channel
 	subsMu        sync.Mutex
+	closed        atomic.Bool
 }
 
 // Run owns the conn for its lifetime. Returns when ctx is canceled or peer disconnects.
@@ -70,17 +72,20 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID string, reg registry.
 		slog.Debug("conn closed", "socket_id", socketID, "err", err)
 	}
 
+	// Mark closed BEFORE cleaning up subs, so any in-flight Broadcast snapshots
+	// that still reference this conn will get ErrSlowConsumer from Send rather
+	// than silently enqueueing into a dead chan.
+	c.closed.Store(true)
+
 	// Cleanup: unsubscribe from all channels on exit so registry doesn't leak
-	// references to a dead conn.
+	// references to a dead conn. We intentionally do NOT delete empty channels
+	// from the registry here — see handleUnsubscribe for the TOCTOU rationale.
 	c.subsMu.Lock()
 	subs := c.subs
 	c.subs = nil
 	c.subsMu.Unlock()
-	for name, ch := range subs {
+	for _, ch := range subs {
 		hub.Unsubscribe(ch, c)
-		if hub.SubscriberCount(ch) == 0 {
-			c.registry.Delete(name)
-		}
 	}
 
 	return err

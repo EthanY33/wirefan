@@ -133,3 +133,20 @@ func TestDuplicateSubscribeIdempotent(t *testing.T) {
 		t.Fatalf("second ack: %+v", second)
 	}
 }
+
+func TestUnsubscribeRoundTrip(t *testing.T) {
+	ws, _ := newTestConn(t, "test-secret")
+	sendJSON(t, ws, map[string]any{"type": "subscribe", "channel": "public-x"})
+	if got := readJSON(t, ws); got["type"] != "subscribed" {
+		t.Fatalf("expected subscribed, got %+v", got)
+	}
+	sendJSON(t, ws, map[string]any{"type": "unsubscribe", "channel": "public-x"})
+	if got := readJSON(t, ws); got["type"] != "unsubscribed" || got["channel"] != "public-x" {
+		t.Fatalf("expected unsubscribed/public-x, got %+v", got)
+	}
+	// Idempotent — unsubscribe again should still ack
+	sendJSON(t, ws, map[string]any{"type": "unsubscribe", "channel": "public-x"})
+	if got := readJSON(t, ws); got["type"] != "unsubscribed" {
+		t.Fatalf("expected idempotent unsubscribed, got %+v", got)
+	}
+}
