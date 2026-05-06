@@ -1,11 +1,26 @@
 package hub
 
-import "github.com/EthanY33/wirefan/internal/registry"
+import (
+	"errors"
 
-func Subscribe(c *registry.Channel, s registry.Subscriber) {
+	"github.com/EthanY33/wirefan/internal/registry"
+)
+
+// ErrTooManySubs is returned by Subscribe when the channel already has the
+// maximum number of subscribers.
+var ErrTooManySubs = errors.New("too many subscribers")
+
+// Subscribe adds s to c. Returns ErrTooManySubs if the channel already has max
+// subscribers. The caller-supplied max enforces the per-channel cap (spec:
+// 10000 — hardcoded at call sites until flag wiring lands).
+func Subscribe(c *registry.Channel, s registry.Subscriber, max int) error {
 	c.SubsMu.Lock()
+	defer c.SubsMu.Unlock()
+	if len(c.Subscribers) >= max {
+		return ErrTooManySubs
+	}
 	c.Subscribers[s] = struct{}{}
-	c.SubsMu.Unlock()
+	return nil
 }
 
 func Unsubscribe(c *registry.Channel, s registry.Subscriber) {

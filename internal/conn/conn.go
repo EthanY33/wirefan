@@ -42,7 +42,14 @@ type Conn struct {
 	subs          map[string]*registry.Channel
 	subsMu        sync.Mutex
 	closed        atomic.Bool
+	maxChannels   int
 }
+
+// Spec'd resource limits. Hardcoded until flag wiring lands.
+const (
+	defaultMaxChannelsPerConn   = 64
+	defaultMaxSubsPerChannel    = 10000
+)
 
 // Run owns the conn for its lifetime. Returns when ctx is canceled or peer disconnects.
 func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol Policy) error {
@@ -58,6 +65,7 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 		policy:        pol,
 		closeReq:      make(chan struct{}, 1),
 		subs:          map[string]*registry.Channel{},
+		maxChannels:   defaultMaxChannelsPerConn,
 	}
 
 	hello, _ := json.Marshal(map[string]string{

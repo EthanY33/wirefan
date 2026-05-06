@@ -29,8 +29,12 @@ func (f *fakeSub) Close() {}
 func TestChannelSubscribeBroadcast(t *testing.T) {
 	c := registry.NewSyncMap().GetOrCreate("test")
 	a, b := &fakeSub{}, &fakeSub{}
-	Subscribe(c, a)
-	Subscribe(c, b)
+	if err := Subscribe(c, a, 100); err != nil {
+		t.Fatalf("subscribe a: %v", err)
+	}
+	if err := Subscribe(c, b, 100); err != nil {
+		t.Fatalf("subscribe b: %v", err)
+	}
 	Broadcast(c, []byte("hello"))
 	if len(a.received) != 1 || len(b.received) != 1 {
 		t.Fatalf("a=%d b=%d", len(a.received), len(b.received))
@@ -40,10 +44,25 @@ func TestChannelSubscribeBroadcast(t *testing.T) {
 func TestChannelUnsubscribe(t *testing.T) {
 	c := registry.NewSyncMap().GetOrCreate("test")
 	s := &fakeSub{}
-	Subscribe(c, s)
+	if err := Subscribe(c, s, 100); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	Unsubscribe(c, s)
 	Broadcast(c, []byte("hi"))
 	if len(s.received) != 0 {
 		t.Fatal("should not receive after unsubscribe")
+	}
+}
+
+func TestSubscribeRespectsMax(t *testing.T) {
+	c := registry.NewSyncMap().GetOrCreate("test")
+	a, b := &fakeSub{}, &fakeSub{}
+	if err := Subscribe(c, a, 1); err != nil {
+		t.Fatalf("first subscribe: %v", err)
+	}
+	if err := Subscribe(c, b, 1); err == nil {
+		t.Fatal("expected ErrTooManySubs")
+	} else if !errors.Is(err, ErrTooManySubs) {
+		t.Fatalf("expected ErrTooManySubs, got %v", err)
 	}
 }

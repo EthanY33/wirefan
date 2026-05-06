@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -135,6 +136,22 @@ func TestDuplicateSubscribeIdempotent(t *testing.T) {
 	second := readJSON(t, c)
 	if second["type"] != "subscribed" || second["channel"] != "public-dup" {
 		t.Fatalf("second ack: %+v", second)
+	}
+}
+
+func TestLimitChannelsPerConn(t *testing.T) {
+	ws, _ := newTestConn(t, "test-secret")
+	for i := 0; i < 64; i++ {
+		sendJSON(t, ws, map[string]any{"type": "subscribe", "channel": fmt.Sprintf("public-%d", i)})
+		if got := readJSON(t, ws); got["type"] != "subscribed" {
+			t.Fatalf("subscribe %d: %+v", i, got)
+		}
+	}
+	// 65th — expect LIMIT_CHANNELS error
+	sendJSON(t, ws, map[string]any{"type": "subscribe", "channel": "public-overflow"})
+	got := readJSON(t, ws)
+	if got["type"] != "error" || got["code"] != "LIMIT_CHANNELS" {
+		t.Fatalf("expected LIMIT_CHANNELS, got %+v", got)
 	}
 }
 

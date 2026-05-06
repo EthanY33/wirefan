@@ -13,8 +13,12 @@ func TestShardedPoolFanout(t *testing.T) {
 	r := registry.NewSyncMap()
 	c := r.GetOrCreate("ch")
 	a, b := &capSub{}, &capSub{}
-	hub.Subscribe(c, a)
-	hub.Subscribe(c, b)
+	if err := hub.Subscribe(c, a, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Subscribe(c, b, 100); err != nil {
+		t.Fatal(err)
+	}
 	f.Broadcast(context.Background(), c, []byte("hi"))
 	f.Close() // synchronously waits for workers to drain
 	if len(a.received) != 1 || len(b.received) != 1 {

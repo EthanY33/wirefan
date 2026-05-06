@@ -26,8 +26,12 @@ func TestPerConnFanout(t *testing.T) {
 	r := registry.NewSyncMap()
 	c := r.GetOrCreate("ch")
 	a, b := &capSub{}, &capSub{}
-	hub.Subscribe(c, a)
-	hub.Subscribe(c, b)
+	if err := hub.Subscribe(c, a, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Subscribe(c, b, 100); err != nil {
+		t.Fatal(err)
+	}
 	NewPerConn().Broadcast(context.Background(), c, []byte("hi"))
 	if len(a.received) != 1 || len(b.received) != 1 {
 		t.Fatalf("a=%d b=%d", len(a.received), len(b.received))

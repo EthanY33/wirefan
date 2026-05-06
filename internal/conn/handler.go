@@ -49,8 +49,17 @@ func (c *Conn) handleSubscribe(msg incoming) {
 		c.sendAck("subscribed", msg.Channel)
 		return
 	}
+	if len(c.subs) >= c.maxChannels {
+		c.subsMu.Unlock()
+		c.sendError("LIMIT_CHANNELS", "max channels per conn")
+		return
+	}
 	ch := c.registry.GetOrCreate(msg.Channel)
-	hub.Subscribe(ch, c)
+	if err := hub.Subscribe(ch, c, defaultMaxSubsPerChannel); err != nil {
+		c.subsMu.Unlock()
+		c.sendError("LIMIT_SUBSCRIBERS", "max subscribers per channel")
+		return
+	}
 	c.subs[msg.Channel] = ch
 	c.subsMu.Unlock()
 	c.sendAck("subscribed", msg.Channel)
