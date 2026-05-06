@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>wirefan &mdash; live demo</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-row">
+      <div class="brand">
+        <span class="brand-mark">&#9698;</span>
+        <span class="brand-name">wirefan</span>
+        <span class="brand-sub">/ a small WebSocket fanout server</span>
+      </div>
+      <div class="masthead-meta">
+        <span class="meta-pill" id="meta-build">build &mdash;</span>
+        <span class="meta-pill"><a href="https://github.com/EthanY33/wirefan">source &rarr;</a></span>
+      </div>
+    </div>
+    <div class="masthead-rule"></div>
+    <div class="masthead-row tagline-row">
+      <p class="tagline">
+        Single-binary Go relay. Publish to a channel from one tab,
+        watch it arrive in another. Open this page in
+        <strong>two tabs</strong> to see the fanout.
+      </p>
+      <p class="tagline-arrow" aria-hidden="true">&larr; open in two tabs</p>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- Connection panel -->
+    <section class="panel panel-conn" aria-labelledby="conn-h">
+      <div class="panel-head">
+        <span class="panel-num">01</span>
+        <h2 id="conn-h" class="panel-title">Connection</h2>
+        <span class="panel-status" id="status-pill" data-state="idle">idle</span>
+      </div>
+      <div class="panel-body">
+        <label class="field">
+          <span class="field-label">api key</span>
+          <input type="text" id="apiKey" autocomplete="off" spellcheck="false"
+                 placeholder="paste a key, or pass ?key= in URL">
+        </label>
+        <div class="row">
+          <button id="btnConnect" class="btn btn-primary" type="button">connect</button>
+          <button id="btnDisconnect" class="btn btn-ghost" type="button" disabled>disconnect</button>
+        </div>
+        <dl class="kv">
+          <dt>socket_id</dt><dd id="socketId" class="mono">&mdash;</dd>
+          <dt>endpoint</dt><dd id="wsEndpoint" class="mono">&mdash;</dd>
+          <dt>subscribed</dt><dd id="subList" class="mono">&mdash;</dd>
+        </dl>
+      </div>
+    </section>
+
+    <!-- Messages panel -->
+    <section class="panel panel-msg" aria-labelledby="msg-h">
+      <div class="panel-head">
+        <span class="panel-num">02</span>
+        <h2 id="msg-h" class="panel-title">Messages</h2>
+        <span class="panel-status mono" id="msgCount">0 received</span>
+      </div>
+      <div class="panel-body">
+        <div class="row">
+          <label class="field grow">
+            <span class="field-label">channel</span>
+            <input type="text" id="channelName" value="demo" autocomplete="off" spellcheck="false">
+          </label>
+          <button id="btnSubscribe" class="btn btn-ghost" type="button" disabled>subscribe</button>
+        </div>
+        <label class="field">
+          <span class="field-label">payload</span>
+          <textarea id="msgBody" rows="3" spellcheck="false">{"hello":"world"}</textarea>
+        </label>
+        <div class="row">
+          <button id="btnPublish" class="btn btn-primary" type="button" disabled>publish</button>
+          <button id="btnStress" class="btn btn-warn" type="button" disabled>
+            stress: open 50 phantom conns
+          </button>
+          <span id="stressStatus" class="mono dim">&mdash;</span>
+        </div>
+        <div class="log" id="log" aria-live="polite">
+          <div class="log-empty">no frames yet. subscribe and publish to see a fanout.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stats panel -->
+    <aside class="panel panel-stats" aria-labelledby="stats-h">
+      <div class="panel-head">
+        <span class="panel-num">03</span>
+        <h2 id="stats-h" class="panel-title">Live stats</h2>
+        <span class="panel-status mono" id="statsAge">&mdash;</span>
+      </div>
+      <div class="panel-body">
+        <p class="caption">streamed from the <span class="mono">_wirefan-stats</span> system channel.</p>
+        <div class="stats-grid" id="statsGrid">
+          <div class="stat">
+            <div class="stat-label">connections</div>
+            <div class="stat-value mono" data-stat="connections">&mdash;</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">channels</div>
+            <div class="stat-value mono" data-stat="channels">&mdash;</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">published</div>
+            <div class="stat-value mono" data-stat="published">&mdash;</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">dropped</div>
+            <div class="stat-value mono" data-stat="dropped">&mdash;</div>
+          </div>
+        </div>
+        <pre class="raw" id="statsRaw">awaiting first snapshot&hellip;</pre>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-row">
+      <span class="mono">vanilla js. no build step. <a href="/client.js">view source &rarr;</a></span>
+      <span class="mono dim">a portfolio piece by ethan</span>
+    </div>
+  </footer>
+
+  <script src="/client.js" defer></script>
+</body>
+</html>

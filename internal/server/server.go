@@ -15,6 +15,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/store"
+	"github.com/EthanY33/wirefan/web"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -40,6 +41,11 @@ func New(addr string, st store.Store, adminToken string, reg registry.Registry, 
 	s.mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	s.mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	s.mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	// Static demo client (served from embed.FS). Mounted at "/" so it's the
+	// fallback for any unmatched path; the more-specific API/metrics/pprof
+	// routes above take precedence.
+	s.mux.Handle("/", http.FileServerFS(web.Files))
 
 	s.srv = &http.Server{Addr: addr, Handler: s.mux}
 	return s
