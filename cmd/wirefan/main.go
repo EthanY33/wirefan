@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/conn"
@@ -40,7 +41,8 @@ func run(ctx context.Context) error {
 	slog.Info("admin token (use as Bearer for /v1/keys)", "token", adminToken)
 	reg := registry.NewSyncMap()
 	fan := fanout.NewPerConn()
-	rl := ratelimit.New()
+	rl := ratelimit.New(100, 200, time.Hour)
+	defer rl.Close()
 	s := server.New(addr, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{})
 	return s.Run(ctx)
 }

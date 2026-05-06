@@ -20,6 +20,8 @@ import (
 func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 	t.Helper()
 	const socketID = "01HTEST"
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 		if err != nil {
@@ -27,7 +29,7 @@ func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = Run(ctx, c, socketID, "test-key", registry.NewSyncMap(), signingSecret, fanout.NewPerConn(), ratelimit.New(), PolicyDisconnect{})
+		_ = Run(ctx, c, socketID, "test-key", registry.NewSyncMap(), signingSecret, fanout.NewPerConn(), rl, PolicyDisconnect{})
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)

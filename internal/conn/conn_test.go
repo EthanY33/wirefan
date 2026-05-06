@@ -20,10 +20,13 @@ func TestConnectedMessageSent(t *testing.T) {
 	var got map[string]any
 	var gotMu sync.Mutex
 
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+
 	handler := func(c *websocket.Conn) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = Run(ctx, c, "01HTEST", "test-key", registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), ratelimit.New(), PolicyDisconnect{})
+		_ = Run(ctx, c, "01HTEST", "test-key", registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), rl, PolicyDisconnect{})
 	}
 
 	srv := httptest.NewServer(websocketHandler(handler))

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/conn"
@@ -33,7 +34,9 @@ func TestUpgradeSucceeds(t *testing.T) {
 	s := store.NewMemory()
 	secret, _ := auth.GenerateSecret()
 	k, _ := s.CreateKey(context.Background(), "t", auth.HashSecret(secret))
-	h := NewUpgradeHandler(s, []string{"*"}, registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), ratelimit.New(), conn.PolicyDisconnect{})
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	h := NewUpgradeHandler(s, []string{"*"}, registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), rl, conn.PolicyDisconnect{})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key=" + k.ID
@@ -45,5 +48,7 @@ func TestUpgradeSucceeds(t *testing.T) {
 }
 
 func newTestUpgrader(t *testing.T) http.Handler {
-	return NewUpgradeHandler(store.NewMemory(), []string{"*"}, registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), ratelimit.New(), conn.PolicyDisconnect{})
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	return NewUpgradeHandler(store.NewMemory(), []string{"*"}, registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), rl, conn.PolicyDisconnect{})
 }
