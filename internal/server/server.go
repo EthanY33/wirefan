@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/store"
 )
 
@@ -18,11 +19,11 @@ type Server struct {
 	store  store.Store
 }
 
-func New(addr string, st store.Store, adminToken string) *Server {
+func New(addr string, st store.Store, adminToken string, reg registry.Registry, signingSecret string) *Server {
 	s := &Server{addr: addr, health: NewHealthHandler(), mux: http.NewServeMux(), store: st}
 	s.mux.Handle("/v1/health", s.health)
 	NewRestHandler(st, adminToken).Register(s.mux)
-	s.mux.Handle("/v1/connect", NewUpgradeHandler(st, []string{"*"}))
+	s.mux.Handle("/v1/connect", NewUpgradeHandler(st, []string{"*"}, reg, signingSecret))
 	s.srv = &http.Server{Addr: addr, Handler: s.mux}
 	return s
 }

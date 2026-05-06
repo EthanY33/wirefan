@@ -40,7 +40,7 @@ func (c *Conn) readPump(ctx context.Context) error {
 	c.ws.SetReadLimit(64 * 1024)
 	for {
 		rctx, cancel := context.WithTimeout(ctx, readDeadline)
-		_, _, err := c.ws.Read(rctx)
+		_, raw, err := c.ws.Read(rctx)
 		cancel()
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -48,6 +48,6 @@ func (c *Conn) readPump(ctx context.Context) error {
 			}
 			return err
 		}
-		// TODO Task 12: parse JSON, dispatch to subscribe/publish handlers
+		c.handle(raw)
 	}
 }

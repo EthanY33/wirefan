@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/EthanY33/wirefan/internal/conn"
+	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/store"
 	"github.com/coder/websocket"
 	"github.com/oklog/ulid/v2"
@@ -14,10 +15,17 @@ import (
 type UpgradeHandler struct {
 	store          store.Store
 	allowedOrigins []string
+	registry       registry.Registry
+	signingSecret  string
 }
 
-func NewUpgradeHandler(st store.Store, origins []string) *UpgradeHandler {
-	return &UpgradeHandler{store: st, allowedOrigins: origins}
+func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string) *UpgradeHandler {
+	return &UpgradeHandler{
+		store:          st,
+		allowedOrigins: origins,
+		registry:       reg,
+		signingSecret:  signingSecret,
+	}
 }
 
 func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,5 +48,5 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := ulid.Make().String()
-	_ = conn.Run(r.Context(), c, sid)
+	_ = conn.Run(r.Context(), c, sid, h.registry, h.signingSecret)
 }

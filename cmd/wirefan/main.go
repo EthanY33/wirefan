@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/EthanY33/wirefan/internal/auth"
+	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/server"
 	"github.com/EthanY33/wirefan/internal/store"
 )
@@ -29,7 +30,12 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	signingSecret, err := auth.GenerateSecret()
+	if err != nil {
+		return err
+	}
 	slog.Info("admin token (use as Bearer for /v1/keys)", "token", adminToken)
-	s := server.New(addr, st, adminToken)
+	reg := registry.NewSyncMap()
+	s := server.New(addr, st, adminToken, reg, signingSecret)
 	return s.Run(ctx)
 }
