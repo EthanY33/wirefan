@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/EthanY33/wirefan/internal/auth"
+	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/fanout"
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
@@ -40,6 +41,6 @@ func run(ctx context.Context) error {
 	reg := registry.NewSyncMap()
 	fan := fanout.NewPerConn()
 	rl := ratelimit.New()
-	s := server.New(addr, st, adminToken, reg, signingSecret, fan, rl)
+	s := server.New(addr, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{})
 	return s.Run(ctx)
 }

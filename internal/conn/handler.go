@@ -3,6 +3,7 @@ package conn
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/EthanY33/wirefan/internal/auth"
@@ -111,18 +112,22 @@ func (c *Conn) sendError(code, message string) {
 	}
 }
 
-// Send satisfies the registry.Subscriber interface. Returns ErrSlowConsumer
-// when the per-conn send buffer is full; Task 15's policy hooks here.
+// Send satisfies the registry.Subscriber interface. Delegates to the configured
+// backpressure Policy. On ErrSlowConsumer, signals Run to close the conn with
+// 1008 (PolicyViolation).
 func (c *Conn) Send(b []byte) error {
 	if c.closed.Load() {
 		return ErrSlowConsumer
 	}
-	select {
-	case c.send <- b:
-		return nil
-	default:
-		return ErrSlowConsumer
+	err := c.policy.Apply(c.send, b, nil)
+	if errors.Is(err, ErrSlowConsumer) {
+		// Non-blocking: if a previous Send already signaled, skip.
+		select {
+		case c.closeReq <- struct{}{}:
+		default:
+		}
 	}
+	return err
 }
 
 // Close satisfies the registry.Subscriber interface. Intentionally a no-op:

@@ -23,7 +23,7 @@ func TestConnectedMessageSent(t *testing.T) {
 	handler := func(c *websocket.Conn) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = Run(ctx, c, "01HTEST", "test-key", registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), ratelimit.New())
+		_ = Run(ctx, c, "01HTEST", "test-key", registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), ratelimit.New(), PolicyDisconnect{})
 	}
 
 	srv := httptest.NewServer(websocketHandler(handler))

@@ -37,13 +37,15 @@ type Conn struct {
 	signingSecret string
 	fanout        fanout.Fanout
 	rateLimit     *ratelimit.Limiter
+	policy        Policy
+	closeReq      chan struct{}
 	subs          map[string]*registry.Channel
 	subsMu        sync.Mutex
 	closed        atomic.Bool
 }
 
 // Run owns the conn for its lifetime. Returns when ctx is canceled or peer disconnects.
-func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter) error {
+func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol Policy) error {
 	c := &Conn{
 		ws:            ws,
 		socketID:      socketID,
@@ -53,6 +55,8 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 		signingSecret: signingSecret,
 		fanout:        fan,
 		rateLimit:     rl,
+		policy:        pol,
+		closeReq:      make(chan struct{}, 1),
 		subs:          map[string]*registry.Channel{},
 	}
 
@@ -73,9 +77,27 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 	errc := make(chan error, 2)
 	go func() { errc <- c.writePump(runCtx) }()
 	go func() { errc <- c.readPump(runCtx) }()
-	err := <-errc
-	cancel()
-	<-errc
+
+	var err error
+	select {
+	case err = <-errc:
+		cancel()
+		<-errc // drain the other pump
+	case <-c.closeReq:
+		err = ErrSlowConsumer
+		cancel()
+		// Neither pump has reported yet; drain both.
+		<-errc
+		<-errc
+	}
+
+	// On a slow-consumer disconnect, close the underlying ws with a
+	// PolicyViolation code so the peer sees 1008. Pump-driven exits already
+	// closed the ws (NormalClosure / GoingAway) inside their own returns.
+	if errors.Is(err, ErrSlowConsumer) {
+		_ = ws.Close(websocket.StatusPolicyViolation, "slow consumer")
+	}
+
 	if err != nil {
 		slog.Debug("conn closed", "socket_id", socketID, "err", err)
 	}

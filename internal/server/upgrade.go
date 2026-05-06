@@ -21,9 +21,10 @@ type UpgradeHandler struct {
 	signingSecret  string
 	fanout         fanout.Fanout
 	rateLimit      *ratelimit.Limiter
+	policy         conn.Policy
 }
 
-func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter) *UpgradeHandler {
+func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy) *UpgradeHandler {
 	return &UpgradeHandler{
 		store:          st,
 		allowedOrigins: origins,
@@ -31,6 +32,7 @@ func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, 
 		signingSecret:  signingSecret,
 		fanout:         fan,
 		rateLimit:      rl,
+		policy:         pol,
 	}
 }
 
@@ -54,5 +56,5 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := ulid.Make().String()
-	_ = conn.Run(r.Context(), c, sid, k.ID, h.registry, h.signingSecret, h.fanout, h.rateLimit)
+	_ = conn.Run(r.Context(), c, sid, k.ID, h.registry, h.signingSecret, h.fanout, h.rateLimit, h.policy)
 }
