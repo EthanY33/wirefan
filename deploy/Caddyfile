@@ -1,0 +1,19 @@
+# deploy/Caddyfile
+# Caddy reverse proxy fronting wirefan with auto-Let's Encrypt TLS.
+# Replace wirefan.ethanyucetepe.dev with your actual hostname.
+
+wirefan.ethanyucetepe.dev {
+    encode gzip
+
+    # Forward client IP for the per-IP phantom-conn cap (Task 23).
+    # wirefan reads X-Forwarded-For when --trust-proxy is set (TBD flag).
+    reverse_proxy localhost:8080 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+        flush_interval -1
+    }
+
+    # Block direct localhost access to internal endpoints from the public domain.
+    @internal path /debug/pprof*
+    respond @internal "Not Found" 404
+}

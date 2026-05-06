@@ -1,0 +1,40 @@
+# wirefan deployment artifacts
+
+This directory is the source of truth for deployment configuration. Files here
+are intended for the Oracle Cloud Always Free Ampere A1 instance, but most are
+adaptable to any Linux ARM64 / amd64 host.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Multi-stage build, Debian Bookworm builder + distroless base runtime, cgo-enabled for sqlite3 |
+| `Caddyfile` | Reverse proxy with auto-Let's Encrypt TLS, WS-friendly buffering, X-Forwarded-For passthrough |
+| `wirefan.service` | systemd unit with hardening flags and persistent volume mount |
+| `.env.example` | Template for `/etc/wirefan/env` (sourced by systemd) |
+
+## Quick deploy outline (Oracle Ampere A1)
+
+See `docs/DEPLOY.md` (created in Task 32) for the full runbook. Short version:
+
+1. Provision Ampere A1 (1 OCPU / 6 GB) via Oracle console
+2. Install Docker + Caddy
+3. Build image: `docker build -t wirefan:latest -f deploy/Dockerfile .`
+4. Push to ghcr.io: `docker tag wirefan:latest ghcr.io/ethany33/wirefan:latest && docker push ...`
+5. On the host: `docker pull ...`, set up `/etc/wirefan/env`, create `wirefan` user + `/var/lib/wirefan` dir, install `wirefan.service`, `systemctl enable --now wirefan`
+6. Set up Caddyfile, point DNS, verify TLS at `https://<your-domain>/v1/health`
+
+## Cross-build for ARM64 from x86 dev box
+
+```bash
+# From repo root, if developing on x86_64:
+docker buildx build --platform linux/arm64 -t wirefan:arm64 -f deploy/Dockerfile .
+```
+
+## Verifying the image locally
+
+```bash
+docker run --rm -p 8080:8080 wirefan:latest
+# Then in another shell:
+curl -i http://localhost:8080/v1/health
+```
