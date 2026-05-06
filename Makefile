@@ -1,4 +1,4 @@
-.PHONY: build test test-race lint clean loadtest bench
+.PHONY: build test test-race lint clean loadtest bench docs-sync
 
 build:
 	go build -o bin/wirefan ./cmd/wirefan
@@ -20,3 +20,9 @@ loadtest:
 
 bench: build loadtest
 	@bash scripts/bench.sh
+
+docs-sync:
+	@echo "Manual reminder: keep ARCHITECTURE.md / DESIGN.md / PROTOCOL.md in sync."
+	@echo "If you added or removed a package, update the repo map in ARCHITECTURE.md."
+	@echo "If you changed wire-level behavior, update PROTOCOL.md."
+	@echo "If you changed an architectural decision, update DESIGN.md."
