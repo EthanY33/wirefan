@@ -13,6 +13,7 @@ import (
 
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/fanout"
+	"github.com/EthanY33/wirefan/internal/hub"
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/coder/websocket"
@@ -30,7 +31,7 @@ func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = Run(ctx, c, socketID, "test-key", registry.NewSyncMap(), signingSecret, fanout.NewPerConn(), rl, PolicyDisconnect{})
+		_ = Run(ctx, c, socketID, "test-key", registry.NewSyncMap(), signingSecret, fanout.NewPerConn(), rl, PolicyDisconnect{}, hub.New())
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)

@@ -12,6 +12,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/fanout"
+	"github.com/EthanY33/wirefan/internal/hub"
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/server"
@@ -43,6 +44,7 @@ func run(ctx context.Context) error {
 	fan := fanout.NewPerConn()
 	rl := ratelimit.New(100, 200, time.Hour)
 	defer rl.Close()
-	s := server.New(addr, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{})
+	h := hub.New()
+	s := server.New(addr, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{}, h)
 	return s.Run(ctx)
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/fanout"
+	"github.com/EthanY33/wirefan/internal/hub"
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/store"
@@ -22,9 +23,10 @@ type UpgradeHandler struct {
 	fanout         fanout.Fanout
 	rateLimit      *ratelimit.Limiter
 	policy         conn.Policy
+	hub            *hub.Hub
 }
 
-func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy) *UpgradeHandler {
+func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy, h *hub.Hub) *UpgradeHandler {
 	return &UpgradeHandler{
 		store:          st,
 		allowedOrigins: origins,
@@ -33,6 +35,7 @@ func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, 
 		fanout:         fan,
 		rateLimit:      rl,
 		policy:         pol,
+		hub:            h,
 	}
 }
 
@@ -56,5 +59,5 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := ulid.Make().String()
-	_ = conn.Run(r.Context(), c, sid, k.ID, h.registry, h.signingSecret, h.fanout, h.rateLimit, h.policy)
+	_ = conn.Run(r.Context(), c, sid, k.ID, h.registry, h.signingSecret, h.fanout, h.rateLimit, h.policy, h.hub)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/fanout"
+	"github.com/EthanY33/wirefan/internal/hub"
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/store"
@@ -35,6 +36,7 @@ func TestNoGoroutineLeakAfterChurn(t *testing.T) {
 		fanout.NewPerConn(),
 		rl,
 		conn.PolicyDisconnect{},
+		hub.New(),
 	)
 	srv := httptest.NewServer(h)
 	defer srv.Close()

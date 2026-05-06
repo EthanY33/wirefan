@@ -51,8 +51,14 @@ const (
 	defaultMaxSubsPerChannel    = 10000
 )
 
+// CloseFrame implements the hub.closer interface — used by Hub.Drain to broadcast
+// shutdown closes to all tracked conns.
+func (c *Conn) CloseFrame(code websocket.StatusCode, reason string) {
+	_ = c.ws.Close(code, reason)
+}
+
 // Run owns the conn for its lifetime. Returns when ctx is canceled or peer disconnects.
-func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol Policy) error {
+func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol Policy, h *hub.Hub) error {
 	c := &Conn{
 		ws:            ws,
 		socketID:      socketID,
@@ -67,6 +73,9 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 		subs:          map[string]*registry.Channel{},
 		maxChannels:   defaultMaxChannelsPerConn,
 	}
+
+	h.Add(c)
+	defer h.Remove(c)
 
 	hello, _ := json.Marshal(map[string]string{
 		"type":      "connected",
