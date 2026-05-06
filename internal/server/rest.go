@@ -86,7 +86,7 @@ func (h *RestHandler) sign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	k, err := h.store.LookupKey(r.Context(), parts[0])
-	if err != nil || !auth.VerifySecret(parts[1], k.SecretHash) {
+	if err != nil || k.RevokedAt != nil || !auth.VerifySecret(parts[1], k.SecretHash) {
 		http.Error(w, "bad credentials", http.StatusUnauthorized)
 		return
 	}
