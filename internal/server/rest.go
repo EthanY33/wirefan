@@ -4,24 +4,27 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/store"
 )
 
 type RestHandler struct {
-	store      store.Store
-	adminToken string
+	store         store.Store
+	adminToken    string
+	signingSecret string
 }
 
-func NewRestHandler(s store.Store, adminToken string) *RestHandler {
-	return &RestHandler{store: s, adminToken: adminToken}
+func NewRestHandler(s store.Store, adminToken, signingSecret string) *RestHandler {
+	return &RestHandler{store: s, adminToken: adminToken, signingSecret: signingSecret}
 }
 
 func (h *RestHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/keys", h.requireAdmin(h.create))
 	mux.HandleFunc("GET /v1/keys", h.requireAdmin(h.list))
 	mux.HandleFunc("DELETE /v1/keys/{id}", h.requireAdmin(h.revoke))
+	mux.HandleFunc("POST /v1/auth/sign", h.sign)
 }
 
 func (h *RestHandler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -72,4 +75,33 @@ func (h *RestHandler) revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *RestHandler) sign(w http.ResponseWriter, r *http.Request) {
+	ah := r.Header.Get("Authorization")
+	creds := strings.TrimPrefix(ah, "Bearer ")
+	parts := strings.SplitN(creds, ":", 2)
+	if len(parts) != 2 {
+		http.Error(w, "bad credentials", http.StatusUnauthorized)
+		return
+	}
+	k, err := h.store.LookupKey(r.Context(), parts[0])
+	if err != nil || !auth.VerifySecret(parts[1], k.SecretHash) {
+		http.Error(w, "bad credentials", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		SocketID string `json:"socket_id"`
+		Channel  string `json:"channel"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	tok, err := auth.SignToken(h.signingSecret, body.SocketID, body.Channel, time.Now().Add(5*time.Minute))
+	if err != nil {
+		http.Error(w, "sign failed", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"token": tok})
 }

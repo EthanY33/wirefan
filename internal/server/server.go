@@ -25,7 +25,7 @@ type Server struct {
 func New(addr string, st store.Store, adminToken string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy) *Server {
 	s := &Server{addr: addr, health: NewHealthHandler(), mux: http.NewServeMux(), store: st}
 	s.mux.Handle("/v1/health", s.health)
-	NewRestHandler(st, adminToken).Register(s.mux)
+	NewRestHandler(st, adminToken, signingSecret).Register(s.mux)
 	s.mux.Handle("/v1/connect", NewUpgradeHandler(st, []string{"*"}, reg, signingSecret, fan, rl, pol))
 	s.srv = &http.Server{Addr: addr, Handler: s.mux}
 	return s
