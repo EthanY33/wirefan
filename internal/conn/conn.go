@@ -9,7 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/EthanY33/wirefan/internal/fanout"
 	"github.com/EthanY33/wirefan/internal/hub"
+	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/coder/websocket"
 )
@@ -29,22 +31,28 @@ var ErrSlowConsumer = errors.New("slow consumer")
 type Conn struct {
 	ws            *websocket.Conn
 	socketID      string
+	apiKeyID      string
 	send          chan []byte
 	registry      registry.Registry
 	signingSecret string
+	fanout        fanout.Fanout
+	rateLimit     *ratelimit.Limiter
 	subs          map[string]*registry.Channel
 	subsMu        sync.Mutex
 	closed        atomic.Bool
 }
 
 // Run owns the conn for its lifetime. Returns when ctx is canceled or peer disconnects.
-func Run(ctx context.Context, ws *websocket.Conn, socketID string, reg registry.Registry, signingSecret string) error {
+func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter) error {
 	c := &Conn{
 		ws:            ws,
 		socketID:      socketID,
+		apiKeyID:      apiKeyID,
 		send:          make(chan []byte, sendChanSize),
 		registry:      reg,
 		signingSecret: signingSecret,
+		fanout:        fan,
+		rateLimit:     rl,
 		subs:          map[string]*registry.Channel{},
 	}
 

@@ -6,6 +6,8 @@ import (
 	"net/http"
 
 	"github.com/EthanY33/wirefan/internal/conn"
+	"github.com/EthanY33/wirefan/internal/fanout"
+	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/store"
 	"github.com/coder/websocket"
@@ -17,14 +19,18 @@ type UpgradeHandler struct {
 	allowedOrigins []string
 	registry       registry.Registry
 	signingSecret  string
+	fanout         fanout.Fanout
+	rateLimit      *ratelimit.Limiter
 }
 
-func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string) *UpgradeHandler {
+func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter) *UpgradeHandler {
 	return &UpgradeHandler{
 		store:          st,
 		allowedOrigins: origins,
 		registry:       reg,
 		signingSecret:  signingSecret,
+		fanout:         fan,
+		rateLimit:      rl,
 	}
 }
 
@@ -48,5 +54,5 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := ulid.Make().String()
-	_ = conn.Run(r.Context(), c, sid, h.registry, h.signingSecret)
+	_ = conn.Run(r.Context(), c, sid, k.ID, h.registry, h.signingSecret, h.fanout, h.rateLimit)
 }

@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"github.com/EthanY33/wirefan/internal/auth"
+	"github.com/EthanY33/wirefan/internal/fanout"
+	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/server"
 	"github.com/EthanY33/wirefan/internal/store"
@@ -36,6 +38,8 @@ func run(ctx context.Context) error {
 	}
 	slog.Info("admin token (use as Bearer for /v1/keys)", "token", adminToken)
 	reg := registry.NewSyncMap()
-	s := server.New(addr, st, adminToken, reg, signingSecret)
+	fan := fanout.NewPerConn()
+	rl := ratelimit.New()
+	s := server.New(addr, st, adminToken, reg, signingSecret, fan, rl)
 	return s.Run(ctx)
 }

@@ -1,11 +1,13 @@
 package conn
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/hub"
+	"github.com/oklog/ulid/v2"
 )
 
 type incoming struct {
@@ -27,7 +29,7 @@ func (c *Conn) handle(raw []byte) {
 	case "unsubscribe":
 		c.handleUnsubscribe(msg)
 	case "publish":
-		c.sendError("NOT_IMPLEMENTED", "publish handled in Task 13")
+		c.handlePublish(msg)
 	default:
 		c.sendError("BAD_TYPE", "unknown message type")
 	}
@@ -51,6 +53,28 @@ func (c *Conn) handleSubscribe(msg incoming) {
 	c.subs[msg.Channel] = ch
 	c.subsMu.Unlock()
 	c.sendAck("subscribed", msg.Channel)
+}
+
+func (c *Conn) handlePublish(msg incoming) {
+	c.subsMu.Lock()
+	ch, ok := c.subs[msg.Channel]
+	c.subsMu.Unlock()
+	if !ok {
+		c.sendError("NOT_SUBSCRIBED", "must subscribe before publish")
+		return
+	}
+	if !c.rateLimit.Allow(c.apiKeyID) {
+		c.sendError("RATE_LIMITED", "too many publishes")
+		return
+	}
+	id := ulid.Make().String()
+	out, _ := json.Marshal(map[string]any{
+		"type":    "event",
+		"channel": msg.Channel,
+		"data":    msg.Data,
+		"id":      id,
+	})
+	c.fanout.Broadcast(context.Background(), ch, out)
 }
 
 func (c *Conn) handleUnsubscribe(msg incoming) {

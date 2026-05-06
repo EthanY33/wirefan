@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EthanY33/wirefan/internal/fanout"
+	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/coder/websocket"
 )
@@ -21,7 +23,7 @@ func TestConnectedMessageSent(t *testing.T) {
 	handler := func(c *websocket.Conn) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = Run(ctx, c, "01HTEST", registry.NewSyncMap(), "test-signing-secret")
+		_ = Run(ctx, c, "01HTEST", "test-key", registry.NewSyncMap(), "test-signing-secret", fanout.NewPerConn(), ratelimit.New())
 	}
 
 	srv := httptest.NewServer(websocketHandler(handler))
