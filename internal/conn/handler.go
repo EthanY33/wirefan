@@ -81,8 +81,12 @@ func (c *Conn) handleSubscribe(msg incoming) {
 		return
 	}
 	if strings.HasPrefix(msg.Channel, "private-") {
-		if err := auth.VerifyToken(c.signingSecret, c.socketID, msg.Channel, msg.Token); err != nil {
+		if err := auth.VerifyTokenAgainst(c.signingSecret, c.socketID, msg.Channel, msg.Token, c.replayCache); err != nil {
 			metrics.AuthFails.Inc()
+			if errors.Is(err, auth.ErrTokenReplayed) {
+				c.sendError("AUTH_REPLAYED", "token already used")
+				return
+			}
 			c.sendError("AUTH_FAILED", "invalid token")
 			return
 		}

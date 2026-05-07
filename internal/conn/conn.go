@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/fanout"
 	"github.com/EthanY33/wirefan/internal/hub"
 	"github.com/EthanY33/wirefan/internal/metrics"
@@ -37,6 +38,7 @@ type Conn struct {
 	send          chan []byte
 	registry      registry.Registry
 	signingSecret string
+	replayCache   *auth.ReplayCache
 	fanout        fanout.Fanout
 	rateLimit     *ratelimit.Limiter // per-API-key bucket; shared across all conns owned by the key
 	connRate      *rate.Limiter      // per-conn bucket; bounds a single socket's throughput
@@ -70,7 +72,11 @@ func (c *Conn) CloseFrame(code websocket.StatusCode, reason string) {
 }
 
 // Run owns the conn for its lifetime. Returns when ctx is canceled or peer disconnects.
-func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol Policy, h *hub.Hub) error {
+//
+// replayCache may be nil; when nil, subscribe-token replay protection is
+// disabled (used by tests). Production callers pass a process-wide cache so
+// a leaked subscribe token cannot be reused within its 5-minute window.
+func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, replayCache *auth.ReplayCache, fan fanout.Fanout, rl *ratelimit.Limiter, pol Policy, h *hub.Hub) error {
 	c := &Conn{
 		ws:            ws,
 		socketID:      socketID,
@@ -78,6 +84,7 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 		send:          make(chan []byte, sendChanSize),
 		registry:      reg,
 		signingSecret: signingSecret,
+		replayCache:   replayCache,
 		fanout:        fan,
 		rateLimit:     rl,
 		connRate:      rate.NewLimiter(rate.Limit(defaultConnPublishRate), defaultConnPublishBurst),
