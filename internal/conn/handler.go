@@ -138,7 +138,11 @@ func (c *Conn) handlePublish(msg incoming) {
 		return
 	}
 	if !c.rateLimit.Allow(c.apiKeyID) {
-		c.sendError("RATE_LIMITED", "too many publishes")
+		c.sendError("RATE_LIMITED", "too many publishes for this API key")
+		return
+	}
+	if !c.connRate.Allow() {
+		c.sendError("RATE_LIMITED_CONN", "too many publishes on this connection")
 		return
 	}
 	id := ulid.Make().String()
