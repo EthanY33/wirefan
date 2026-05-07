@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,7 +33,10 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	addr := ":8080"
+	cfg, err := parseFlags()
+	if err != nil {
+		return err
+	}
 	st := store.NewMemory()
 	adminToken, err := resolveAdminToken()
 	if err != nil {
@@ -52,7 +57,7 @@ func run(ctx context.Context) error {
 	rl := ratelimit.New(100, 200, time.Hour)
 	defer rl.Close()
 	h := hub.New()
-	s := server.New(addr, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{}, h)
+	s := server.New(cfg, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{}, h)
 	// Start stats publisher in background; goroutine exits when ctx is canceled.
 	go hub.PublishStatsLoop(ctx, reg, 5*time.Second, func() map[string]int64 {
 		// TODO: wire to actual prometheus collector values via testutil
@@ -108,4 +113,50 @@ func resolveAdminToken() (string, error) {
 	}
 	slog.Info("admin token written", "path", tokenPath)
 	return t, nil
+}
+
+// parseFlags binds the listener and origin policy from CLI flags. Default
+// for --listen preserves the pre-flag :8080 behavior. The admin listener
+// defaults to 127.0.0.1:6060 so /metrics and /debug/pprof/* are no longer
+// reachable from a misconfigured ingress that bypasses the reverse proxy.
+//
+// --allowed-origins is required: refusing to start when it is "*" outside
+// --dev makes "skip origin check" an explicit choice rather than the
+// silent default it used to be.
+func parseFlags() (server.Config, error) {
+	fs := flag.NewFlagSet("wirefan", flag.ContinueOnError)
+	addr := fs.String("listen", ":8080", "public listener address (WS, /v1/auth/sign, /v1/health, static client)")
+	adminAddr := fs.String("admin-addr", "127.0.0.1:6060", "admin listener address (/metrics, /debug/pprof/*, /v1/keys); empty disables")
+	origins := fs.String("allowed-origins", "", "comma-separated WebSocket Origin allowlist (e.g. https://example.com,https://staging.example.com); '*' is rejected outside --dev")
+	dev := fs.Bool("dev", false, "developer mode: permits --allowed-origins=*")
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		return server.Config{}, err
+	}
+	if *origins == "" {
+		return server.Config{}, errors.New("--allowed-origins is required (use --allowed-origins=https://your.host or pass --dev with --allowed-origins=*)")
+	}
+	parts := strings.Split(*origins, ",")
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		cleaned = append(cleaned, p)
+	}
+	if len(cleaned) == 0 {
+		return server.Config{}, errors.New("--allowed-origins parsed to empty list")
+	}
+	if !*dev {
+		for _, o := range cleaned {
+			if o == "*" {
+				return server.Config{}, errors.New("--allowed-origins=* requires --dev")
+			}
+		}
+	}
+	return server.Config{
+		Addr:           *addr,
+		AdminAddr:      *adminAddr,
+		AllowedOrigins: cleaned,
+	}, nil
 }
