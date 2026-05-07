@@ -15,6 +15,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/coder/websocket"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -37,7 +38,8 @@ type Conn struct {
 	registry      registry.Registry
 	signingSecret string
 	fanout        fanout.Fanout
-	rateLimit     *ratelimit.Limiter
+	rateLimit     *ratelimit.Limiter // per-API-key bucket; shared across all conns owned by the key
+	connRate      *rate.Limiter      // per-conn bucket; bounds a single socket's throughput
 	policy        Policy
 	closeReq      chan struct{}
 	subs          map[string]*registry.Channel
@@ -48,8 +50,17 @@ type Conn struct {
 
 // Spec'd resource limits. Hardcoded until flag wiring lands.
 const (
-	defaultMaxChannelsPerConn   = 64
-	defaultMaxSubsPerChannel    = 10000
+	defaultMaxChannelsPerConn = 64
+	defaultMaxSubsPerChannel  = 10000
+
+	// Per-conn publish rate. The per-API-key bucket is shared across all
+	// conns owned by a key; this layer bounds what a single socket can push,
+	// independently of how many other conns the key has open. 50/s with a
+	// burst of 100 is generous for legitimate UI clients (a chat app sees
+	// far less) and well below what's needed to amplify a 64KB message into
+	// a meaningful broadcast DoS at 10k subscribers.
+	defaultConnPublishRate  = 50
+	defaultConnPublishBurst = 100
 )
 
 // CloseFrame implements the hub.closer interface — used by Hub.Drain to broadcast
@@ -69,6 +80,7 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 		signingSecret: signingSecret,
 		fanout:        fan,
 		rateLimit:     rl,
+		connRate:      rate.NewLimiter(rate.Limit(defaultConnPublishRate), defaultConnPublishBurst),
 		policy:        pol,
 		closeReq:      make(chan struct{}, 1),
 		subs:          map[string]*registry.Channel{},
