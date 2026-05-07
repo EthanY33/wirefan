@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -31,7 +32,13 @@ func (h *RestHandler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ah := r.Header.Get("Authorization")
 		const p = "Bearer "
-		if !strings.HasPrefix(ah, p) || ah[len(p):] != h.adminToken {
+		if !strings.HasPrefix(ah, p) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		got := []byte(ah[len(p):])
+		want := []byte(h.adminToken)
+		if len(got) != len(want) || subtle.ConstantTimeCompare(got, want) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
