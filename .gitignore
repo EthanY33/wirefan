@@ -27,6 +27,8 @@ Thumbs.db
 *.db-journal
 .env
 .env.local
+# Runtime state directory (admin token, sqlite db, etc — written at boot)
+cmd/wirefan/var/
 
 # Profiles
 *.prof

@@ -1,28 +1,21 @@
 # wirefan
 
-> Single-binary Go WebSocket fanout server. 50k concurrent connections,
-> p99 broadcast latency 4 ms on a 1-vCPU machine. Zero runtime dependencies.
-
-<!--
-Live demo + screencast GIF + final headline numbers land here after Task 32
-(Oracle Cloud deploy) and the post-deploy benchmark run. Until then the numbers
-above are the design target captured in docs/BENCHMARKS.md.
--->
+> Single-binary Go WebSocket fanout server. Channel-based pub/sub,
+> HMAC-bound subscribe tokens with replay protection, graceful drain,
+> zero runtime dependencies. Goroutine-leak invariant proven under
+> 1000-connection churn (`internal/server/leak_test.go`).
 
 ---
 
 ## Quickstart
 
 ```bash
-# Once published:
-docker run -p 8080:8080 ethany33/wirefan
-
-# Or from source:
 git clone https://github.com/EthanY33/wirefan
 cd wirefan
 make build
 ./bin/wirefan
-# Admin Bearer printed once on stdout.
+# Admin Bearer is printed once on stdout (and persisted to
+# cmd/wirefan/var/admin.token for ops continuity).
 # Open http://localhost:8080 in two tabs to see live fanout.
 ```
 
@@ -54,16 +47,20 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the rationale behind each choice.
 
 ## Performance
 
-Headline targets on the reference Oracle Cloud Always Free A1 instance
-(1 OCPU ARM64, 6 GB RAM):
+Methodology, the `Fanout × Registry` matrix runner (`scripts/bench.sh`), and
+the `cmd/loadtest` driver are in place. Reproducible numbers from a 1-vCPU
+ARM reference box are pending — the project is currently undeployed. See
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the methodology and target
+matrix; numbers will be filled in after the first hosted deploy.
 
-- 50k concurrent connections per instance
-- p99 broadcast latency 4 ms (publisher → first subscriber, loopback)
-- < 200 MB RSS at steady state
+What's verified today:
 
-Real numbers — p50 / p99 / p999 with flamegraph — land in
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) after the post-deploy run completes
-(Task 32). Methodology and the `make bench` driver are already in place.
+- Goroutine-leak invariant: 1000-connection churn under `-race` returns to
+  baseline within tolerance (`internal/server/leak_test.go`).
+- Per-channel FIFO ordering: enforced via per-channel broadcast mutex,
+  serialized iteration, and a publisher-monotonic test.
+- Graceful shutdown: 30 s drain, `WaitGroup`-tracked goroutines, no leaks
+  (covered by `internal/server/shutdown_test.go`).
 
 ---
 
