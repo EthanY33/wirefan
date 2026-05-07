@@ -1,12 +1,22 @@
 package registry
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 type Channel struct {
 	Name        string
 	BroadcastMu sync.Mutex // serialize broadcasts (FIFO)
 	SubsMu      sync.RWMutex
 	Subscribers map[Subscriber]struct{}
+
+	// Deleted is set true by Sweep when the channel has zero subscribers
+	// and is being removed from the registry. Subscribers acquired through
+	// GetOrCreate must verify Deleted is false under SubsMu before modifying
+	// Subscribers; otherwise the new entry would land on an orphaned channel
+	// reference and never receive broadcasts. See registry/sweep.go.
+	Deleted atomic.Bool
 }
 
 type Subscriber interface {
