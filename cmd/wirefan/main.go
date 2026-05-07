@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -32,7 +33,7 @@ func main() {
 func run(ctx context.Context) error {
 	addr := ":8080"
 	st := store.NewMemory()
-	adminToken, err := auth.GenerateSecret()
+	adminToken, err := resolveAdminToken()
 	if err != nil {
 		return err
 	}
@@ -46,7 +47,6 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = otelShutdown(context.Background()) }()
-	slog.Info("admin token (use as Bearer for /v1/keys)", "token", adminToken)
 	reg := registry.NewSyncMap()
 	fan := fanout.NewPerConn()
 	rl := ratelimit.New(100, 200, time.Hour)
@@ -59,4 +59,53 @@ func run(ctx context.Context) error {
 		return map[string]int64{}
 	})
 	return s.Run(ctx)
+}
+
+// resolveAdminToken returns the admin bearer token for /v1/keys, in priority
+// order:
+//
+//  1. WIREFAN_ADMIN_TOKEN environment variable, if non-empty. The operator is
+//     responsible for keeping the value out of process-listing tools.
+//  2. The contents of $WIREFAN_STATE_DIR/admin.token (or
+//     ./var/admin.token), if the file exists.
+//  3. A freshly-generated 32-byte hex token, written to that file with mode
+//     0600 so subsequent boots reuse it.
+//
+// The token is never logged. Operators retrieve it by reading the file or
+// supplying it via env. This replaces the previous behavior of logging the
+// freshly-generated token at slog.Info on every boot, which leaked it to
+// journald / container stdout / log aggregators.
+func resolveAdminToken() (string, error) {
+	if t := os.Getenv("WIREFAN_ADMIN_TOKEN"); t != "" {
+		return t, nil
+	}
+	stateDir := os.Getenv("WIREFAN_STATE_DIR")
+	if stateDir == "" {
+		stateDir = "var"
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return "", err
+	}
+	tokenPath := filepath.Join(stateDir, "admin.token")
+	if data, err := os.ReadFile(tokenPath); err == nil {
+		t := string(data)
+		// Trim trailing newline if the file was hand-edited.
+		for len(t) > 0 && (t[len(t)-1] == '\n' || t[len(t)-1] == '\r' || t[len(t)-1] == ' ') {
+			t = t[:len(t)-1]
+		}
+		if t != "" {
+			return t, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	t, err := auth.GenerateSecret()
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(tokenPath, []byte(t), 0o600); err != nil {
+		return "", err
+	}
+	slog.Info("admin token written", "path", tokenPath)
+	return t, nil
 }
