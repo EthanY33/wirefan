@@ -26,17 +26,18 @@ import (
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	cfg, err := parseFlags(os.Args[1:])
+	if err != nil {
+		slog.Error("fatal", "err", err)
+		os.Exit(1)
+	}
+	if err := run(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context) error {
-	cfg, err := parseFlags()
-	if err != nil {
-		return err
-	}
+func run(ctx context.Context, cfg server.Config) error {
 	st := store.NewMemory()
 	adminToken, err := resolveAdminToken()
 	if err != nil {
@@ -123,13 +124,13 @@ func resolveAdminToken() (string, error) {
 // --allowed-origins is required: refusing to start when it is "*" outside
 // --dev makes "skip origin check" an explicit choice rather than the
 // silent default it used to be.
-func parseFlags() (server.Config, error) {
+func parseFlags(args []string) (server.Config, error) {
 	fs := flag.NewFlagSet("wirefan", flag.ContinueOnError)
 	addr := fs.String("listen", ":8080", "public listener address (WS, /v1/auth/sign, /v1/health, static client)")
 	adminAddr := fs.String("admin-addr", "127.0.0.1:6060", "admin listener address (/metrics, /debug/pprof/*, /v1/keys); empty disables")
 	origins := fs.String("allowed-origins", "", "comma-separated WebSocket Origin allowlist (e.g. https://example.com,https://staging.example.com); '*' is rejected outside --dev")
 	dev := fs.Bool("dev", false, "developer mode: permits --allowed-origins=*")
-	if err := fs.Parse(os.Args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return server.Config{}, err
 	}
 	if *origins == "" {
