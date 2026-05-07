@@ -28,7 +28,7 @@ func TestDrainClosesAllConnections(t *testing.T) {
 
 	upgrader := NewUpgradeHandler(
 		s, []string{"*"}, registry.NewSyncMap(), "test-secret",
-		fanout.NewPerConn(), rl, conn.PolicyDisconnect{}, h,
+		nil, fanout.NewPerConn(), rl, conn.PolicyDisconnect{}, h,
 	)
 	srv := httptest.NewServer(upgrader)
 	defer srv.Close()

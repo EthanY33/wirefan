@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/fanout"
 	"github.com/EthanY33/wirefan/internal/hub"
@@ -31,6 +32,7 @@ type UpgradeHandler struct {
 	allowedOrigins []string
 	registry       registry.Registry
 	signingSecret  string
+	replayCache    *auth.ReplayCache
 	fanout         fanout.Fanout
 	rateLimit      *ratelimit.Limiter
 	policy         conn.Policy
@@ -42,12 +44,13 @@ type UpgradeHandler struct {
 	ipCap   int
 }
 
-func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy, h *hub.Hub) *UpgradeHandler {
+func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string, replayCache *auth.ReplayCache, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy, h *hub.Hub) *UpgradeHandler {
 	return &UpgradeHandler{
 		store:          st,
 		allowedOrigins: origins,
 		registry:       reg,
 		signingSecret:  signingSecret,
+		replayCache:    replayCache,
 		fanout:         fan,
 		rateLimit:      rl,
 		policy:         pol,
@@ -240,5 +243,5 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := ulid.Make().String()
-	_ = conn.Run(r.Context(), c, sid, k.ID, h.registry, h.signingSecret, h.fanout, h.rateLimit, h.policy, h.hub)
+	_ = conn.Run(r.Context(), c, sid, k.ID, h.registry, h.signingSecret, h.replayCache, h.fanout, h.rateLimit, h.policy, h.hub)
 }

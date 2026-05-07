@@ -8,6 +8,7 @@ import (
 	"net/http/pprof"
 	"time"
 
+	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/fanout"
 	"github.com/EthanY33/wirefan/internal/hub"
@@ -33,26 +34,29 @@ type Config struct {
 }
 
 type Server struct {
-	cfg      Config
-	health   *HealthHandler
-	mux      *http.ServeMux
-	adminMux *http.ServeMux
-	srv      *http.Server
-	adminSrv *http.Server
-	store    store.Store
-	hub      *hub.Hub
+	cfg         Config
+	health      *HealthHandler
+	mux         *http.ServeMux
+	adminMux    *http.ServeMux
+	srv         *http.Server
+	adminSrv    *http.Server
+	store       store.Store
+	hub         *hub.Hub
+	replayCache *auth.ReplayCache
 }
 
 // New builds the public and admin muxes. The admin listener is created
 // only when cfg.AdminAddr is non-empty.
 func New(cfg Config, st store.Store, adminToken string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy, h *hub.Hub) *Server {
+	rc := auth.NewReplayCache()
 	s := &Server{
-		cfg:      cfg,
-		health:   NewHealthHandler(),
-		mux:      http.NewServeMux(),
-		adminMux: http.NewServeMux(),
-		store:    st,
-		hub:      h,
+		cfg:         cfg,
+		health:      NewHealthHandler(),
+		mux:         http.NewServeMux(),
+		adminMux:    http.NewServeMux(),
+		store:       st,
+		hub:         h,
+		replayCache: rc,
 	}
 
 	rest := NewRestHandler(st, adminToken, signingSecret)
@@ -60,7 +64,7 @@ func New(cfg Config, st store.Store, adminToken string, reg registry.Registry, s
 	// Public listener: health, /v1/connect (WS), /v1/auth/sign, static client.
 	s.mux.Handle("/v1/health", s.health)
 	rest.RegisterPublic(s.mux)
-	s.mux.Handle("/v1/connect", NewUpgradeHandler(st, cfg.AllowedOrigins, reg, signingSecret, fan, rl, pol, h))
+	s.mux.Handle("/v1/connect", NewUpgradeHandler(st, cfg.AllowedOrigins, reg, signingSecret, rc, fan, rl, pol, h))
 	s.mux.Handle("/", http.FileServerFS(web.Files))
 
 	// Admin listener: metrics, pprof, key management. All gated by
@@ -81,6 +85,11 @@ func New(cfg Config, st store.Store, adminToken string, reg registry.Registry, s
 	return s
 }
 
+// ReplayCache exposes the per-Server token replay cache so the caller can
+// run a periodic Sweep goroutine. Public so cmd/wirefan/main.go can drive
+// the sweeper without exporting a separate accessor.
+func (s *Server) ReplayCache() *auth.ReplayCache { return s.replayCache }
+
 func (s *Server) Run(ctx context.Context) error {
 	errc := make(chan error, 2)
 	go func() {
@@ -97,6 +106,7 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}()
 	}
+	go s.sweepReplayCache(ctx)
 
 	select {
 	case err := <-errc:
@@ -112,4 +122,21 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = s.adminSrv.Shutdown(shutdownCtx)
 	}
 	return s.srv.Shutdown(shutdownCtx)
+}
+
+// sweepReplayCache evicts expired token jti entries every minute. Memory in
+// the cache is bounded by the issuance rate * token lifetime (5 minutes by
+// default), so a sweep cadence of one minute gives at most ~5 minutes of
+// expired entries before reclamation. Loops until ctx is canceled.
+func (s *Server) sweepReplayCache(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.replayCache.Sweep()
+		}
+	}
 }
