@@ -164,39 +164,32 @@
   </g>
 
   <!-- ============================================================ -->
-  <!-- ROW 1 ARROWS (orthogonal, terminate cleanly at box edges)    -->
-  <!-- y=253 = mid box (188 + 130/2)                                -->
-  <!-- For each arrow: line ends 8px before next box, marker tip    -->
-  <!-- lands at box edge.                                           -->
+  <!-- ROW 1 ARROWS                                                 -->
+  <!-- One forward arrow per pair, labels above arrow line in clear -->
+  <!-- gap space. All labels <= 8 chars to fit cleanly in 60px gaps -->
+  <!-- without spilling into adjacent boxes. Return-path acks are   -->
+  <!-- implicit (shown via the Fanout tree). Arrows at y=253 mid.   -->
   <!-- ============================================================ -->
 
-  <!-- Browser -> /v1/connect : x 250..302 -->
-  <line x1="250" y1="253" x2="302" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow dim" x="276" y="240" text-anchor="middle" fill="#7a7560">connect</text>
+  <!-- Browser -> /v1/connect -->
+  <line x1="250" y1="253" x2="304" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow dim" x="277" y="244" text-anchor="middle" fill="#7a7560">connect</text>
 
-  <!-- /v1/connect -> Conn : x 510..562 -->
-  <line x1="510" y1="253" x2="562" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow dim" x="536" y="240" text-anchor="middle" fill="#7a7560">upgrade</text>
+  <!-- /v1/connect -> Conn -->
+  <line x1="510" y1="253" x2="564" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow dim" x="537" y="244" text-anchor="middle" fill="#7a7560">upgrade</text>
 
-  <!-- Conn -> Hub : x 770..822  (subscribe / publish, accent) -->
-  <line x1="770" y1="248" x2="822" y2="248" class="stroke-accent" marker-end="url(#arr-accent)" />
-  <text class="mono label-arrow accent" x="796" y="240" text-anchor="middle" fill="#c25b1a">subscribe / publish</text>
+  <!-- Conn -> Hub  (handles subscribe / unsubscribe / publish; details in box content) -->
+  <line x1="770" y1="253" x2="824" y2="253" class="stroke-accent" marker-end="url(#arr-accent)" />
+  <text class="mono label-arrow accent" x="797" y="244" text-anchor="middle" fill="#c25b1a">writes</text>
 
-  <!-- Hub -> Conn (event back) : x 822..770 reversed at y=268 -->
-  <line x1="822" y1="268" x2="770" y2="268" class="stroke-ink-2" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow ink-2" x="796" y="284" text-anchor="middle" fill="#3a3f31">event &#8592;</text>
+  <!-- Hub -> Registry -->
+  <line x1="1030" y1="253" x2="1084" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow dim" x="1057" y="244" text-anchor="middle" fill="#7a7560">lookup</text>
 
-  <!-- Hub -> Registry : x 1030..1082 -->
-  <line x1="1030" y1="248" x2="1082" y2="248" class="stroke-ink" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow dim" x="1056" y="240" text-anchor="middle" fill="#7a7560">lookup</text>
-
-  <!-- Registry -> Hub : x 1082..1030 reversed at y=268 -->
-  <line x1="1082" y1="268" x2="1030" y2="268" class="stroke-dim" marker-end="url(#arr-dim)" />
-  <text class="mono label-arrow dim" x="1056" y="284" text-anchor="middle" fill="#7a7560">*Channel</text>
-
-  <!-- Registry -> Channel : x 1290..1342 -->
-  <line x1="1290" y1="253" x2="1342" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow dim" x="1316" y="240" text-anchor="middle" fill="#7a7560">resolve</text>
+  <!-- Registry -> Channel -->
+  <line x1="1290" y1="253" x2="1344" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow dim" x="1317" y="244" text-anchor="middle" fill="#7a7560">resolve</text>
 
   <!-- ============================================================ -->
   <!-- ANNOTATION ROW (slow consumer + leak test)                   -->
