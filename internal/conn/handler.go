@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +13,28 @@ import (
 	"github.com/EthanY33/wirefan/internal/metrics"
 	"github.com/oklog/ulid/v2"
 )
+
+// Cap on channel-name byte length. Combined with the per-conn maxChannels
+// cap, this bounds how much registry memory a single connection can pin.
+// Without it, an authenticated peer can spam subscribes with random
+// 1 MiB names; the registry never garbage-collects, so memory grows
+// monotonically with attacker effort.
+const maxChannelNameLen = 128
+
+func validateChannelName(name string) error {
+	if name == "" {
+		return errors.New("channel name is empty")
+	}
+	if len(name) > maxChannelNameLen {
+		return fmt.Errorf("channel name exceeds %d bytes", maxChannelNameLen)
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("channel name contains control character")
+		}
+	}
+	return nil
+}
 
 type incoming struct {
 	Type    string          `json:"type"`
@@ -25,6 +48,13 @@ func (c *Conn) handle(raw []byte) {
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		c.sendError("BAD_JSON", "malformed message")
 		return
+	}
+	switch msg.Type {
+	case "subscribe", "unsubscribe", "publish":
+		if err := validateChannelName(msg.Channel); err != nil {
+			c.sendError("BAD_CHANNEL", err.Error())
+			return
+		}
 	}
 	switch msg.Type {
 	case "subscribe":
