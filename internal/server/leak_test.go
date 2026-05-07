@@ -33,6 +33,7 @@ func TestNoGoroutineLeakAfterChurn(t *testing.T) {
 		[]string{"*"},
 		registry.NewSyncMap(),
 		"test-signing-secret",
+		nil,
 		fanout.NewPerConn(),
 		rl,
 		conn.PolicyDisconnect{},
