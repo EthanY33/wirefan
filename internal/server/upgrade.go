@@ -4,6 +4,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"os"
 	"strings"
 	"sync"
 
@@ -33,6 +35,7 @@ type UpgradeHandler struct {
 	rateLimit      *ratelimit.Limiter
 	policy         conn.Policy
 	hub            *hub.Hub
+	trustedProxies []netip.Prefix
 
 	ipMu    sync.Mutex
 	ipCount map[string]int
@@ -49,6 +52,7 @@ func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, 
 		rateLimit:      rl,
 		policy:         pol,
 		hub:            h,
+		trustedProxies: parseTrustedProxies(os.Getenv("WIREFAN_TRUSTED_PROXIES")),
 		ipCount:        map[string]int{},
 		ipCap:          defaultIPCap,
 	}
@@ -87,23 +91,107 @@ func sanitizeLogValue(s string) string {
 	return string(out)
 }
 
-// clientIP extracts a best-effort source IP. Behind a trusted proxy the caller
-// would want X-Forwarded-For, but for the direct-connect demo path RemoteAddr
-// is fine. Strips the port suffix; handles IPv6 (e.g. "[::1]:1234") by
-// preserving the bracketed host as the key.
-func clientIP(r *http.Request) string {
-	addr := r.RemoteAddr
-	// IPv6: "[::1]:1234"
-	if strings.HasPrefix(addr, "[") {
-		if end := strings.LastIndex(addr, "]"); end > 0 {
-			return addr[:end+1]
+// parseTrustedProxies turns a comma-separated CIDR / single-IP list into
+// netip.Prefix values. Bare IPs (e.g. "127.0.0.1") become /32 or /128.
+// Malformed entries are silently dropped — operators should verify with a
+// smoke test, and a hard failure here would block boot on a typo without
+// a config-validation tool to backstop it.
+func parseTrustedProxies(raw string) []netip.Prefix {
+	if raw == "" {
+		return nil
+	}
+	var prefixes []netip.Prefix
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
 		}
-		return addr
+		if p, err := netip.ParsePrefix(s); err == nil {
+			prefixes = append(prefixes, p)
+			continue
+		}
+		if a, err := netip.ParseAddr(s); err == nil {
+			bits := 32
+			if a.Is6() {
+				bits = 128
+			}
+			if p, err := a.Prefix(bits); err == nil {
+				prefixes = append(prefixes, p)
+			}
+		}
 	}
-	if i := strings.LastIndex(addr, ":"); i > 0 {
-		return addr[:i]
+	return prefixes
+}
+
+func addrInPrefixes(a netip.Addr, prefixes []netip.Prefix) bool {
+	if !a.IsValid() {
+		return false
 	}
-	return addr
+	for _, p := range prefixes {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripHostPort handles "1.2.3.4:5678", "[::1]:5678", "[::1]", and "::1".
+// Returns the address part as a netip.Addr, plus the original string form.
+func stripHostPort(s string) (netip.Addr, string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return netip.Addr{}, "", false
+	}
+	host := s
+	if strings.HasPrefix(s, "[") {
+		if end := strings.LastIndex(s, "]"); end > 0 {
+			host = s[1:end]
+		}
+	} else if i := strings.LastIndex(s, ":"); i > 0 && strings.Count(s, ":") == 1 {
+		// IPv4 with port. Bare IPv6 has multiple colons; leave it alone.
+		host = s[:i]
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, host, false
+	}
+	return a, host, true
+}
+
+// clientIP returns a best-effort source IP. When the request's RemoteAddr is
+// in trustedProxies, the X-Forwarded-For header is consulted using the
+// rightmost-untrusted-hop algorithm: walk the XFF list right to left and
+// return the first hop whose IP is not in trustedProxies. This is the
+// algorithm called for in CWE-348 mitigations (do NOT use the leftmost
+// entry — clients can pick that themselves).
+func clientIP(r *http.Request, trustedProxies []netip.Prefix) string {
+	raAddr, raStr, raOk := stripHostPort(r.RemoteAddr)
+	if !raOk {
+		return r.RemoteAddr
+	}
+	if len(trustedProxies) == 0 || !addrInPrefixes(raAddr, trustedProxies) {
+		return raStr
+	}
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return raStr
+	}
+	hops := strings.Split(xff, ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hopAddr, hopStr, ok := stripHostPort(hops[i])
+		if !ok {
+			continue
+		}
+		if !addrInPrefixes(hopAddr, trustedProxies) {
+			return hopStr
+		}
+	}
+	// Every XFF hop was trusted; treat the leftmost as the originator.
+	if leftAddr, leftStr, ok := stripHostPort(hops[0]); ok {
+		_ = leftAddr
+		return leftStr
+	}
+	return raStr
 }
 
 func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +212,7 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// model; we count ALL conns on the IP, not just phantom ones (a real
 	// browser will only ever have a couple of tabs open at once, so the
 	// distinction doesn't matter in practice).
-	ip := clientIP(r)
+	ip := clientIP(r, h.trustedProxies)
 	h.ipMu.Lock()
 	if h.ipCount[ip] >= h.ipCap {
 		h.ipMu.Unlock()
