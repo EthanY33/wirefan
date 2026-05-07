@@ -1,48 +1,47 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg"
-     viewBox="0 0 1200 720"
+     viewBox="0 0 1600 1080"
      preserveAspectRatio="xMidYMid meet"
      role="img"
      aria-labelledby="title desc">
   <title id="title">wirefan architecture</title>
-  <desc id="desc">Two swimlanes: data plane (WebSocket connect, subscribe, publish, fanout) and control plane (REST endpoints for keys, auth, metrics, pprof).</desc>
+  <desc id="desc">Two swimlanes: data plane (WebSocket connect, subscribe, publish, fanout) and control plane (REST endpoints for keys, auth, metrics, pprof). Orthogonal arrows only; generous padding to prevent overlaps.</desc>
 
   <defs>
     <style><![CDATA[
-      .paper   { fill: #f5f1ea; }
-      .ink     { fill: #2b2b2b; }
-      .ink-2   { fill: #3a3f31; }
-      .dim     { fill: #7a7560; }
-      .accent  { fill: #c25b1a; }
+      .paper       { fill: #f5f1ea; }
+      .ink         { fill: #2b2b2b; }
+      .ink-2       { fill: #3a3f31; }
+      .dim         { fill: #7a7560; }
+      .accent      { fill: #c25b1a; }
       .accent-soft { fill: #e9dfcb; }
 
-      .stroke-ink    { stroke: #2b2b2b; fill: none; stroke-width: 1.5; }
-      .stroke-ink-2  { stroke: #3a3f31; fill: none; stroke-width: 1.5; }
+      .stroke-ink    { stroke: #2b2b2b; fill: none; stroke-width: 1.6; }
+      .stroke-ink-2  { stroke: #3a3f31; fill: none; stroke-width: 1.6; }
       .stroke-rule   { stroke: #c9bfa7; fill: none; stroke-width: 1; }
-      .stroke-accent { stroke: #c25b1a; fill: none; stroke-width: 1.75; }
-      .stroke-dim    { stroke: #7a7560; fill: none; stroke-width: 1.25; }
-      .stroke-dashed { stroke: #c25b1a; fill: none; stroke-width: 1.25; stroke-dasharray: 4 3; }
+      .stroke-accent { stroke: #c25b1a; fill: none; stroke-width: 1.8; }
+      .stroke-dim    { stroke: #7a7560; fill: none; stroke-width: 1.3; }
+      .stroke-dashed { stroke: #c25b1a; fill: none; stroke-width: 1.4; stroke-dasharray: 5 4; }
 
       .box-fill   { fill: #f5f1ea; }
       .box-fill-2 { fill: #ebe5d8; }
 
-      .mono { font-family: "JetBrains Mono","IBM Plex Mono","Fira Code","SF Mono","Menlo","Consolas",monospace; }
+      .mono  { font-family: "JetBrains Mono","IBM Plex Mono","Fira Code","SF Mono","Menlo","Consolas",monospace; }
       .serif { font-family: "Iowan Old Style","Hoefler Text","Palatino Linotype","Palatino","Georgia",serif; }
 
-      .label-title { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; }
-      .label-sub   { font-size: 10.5px; letter-spacing: 0.04em; }
-      .label-tag   { font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; }
-      .label-arrow { font-size: 10.5px; letter-spacing: 0.04em; }
-      .label-note  { font-size: 10px; letter-spacing: 0.02em; font-style: italic; }
-      .label-lane  { font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; }
-      .label-meta  { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
-      .label-foot  { font-size: 10.5px; letter-spacing: 0.04em; }
+      .label-title  { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+      .label-sub    { font-size: 12px;  letter-spacing: 0.04em; }
+      .label-tag    { font-size: 11px;  letter-spacing: 0.14em; text-transform: uppercase; }
+      .label-arrow  { font-size: 12px;  letter-spacing: 0.04em; }
+      .label-note   { font-size: 11.5px; letter-spacing: 0.02em; font-style: italic; }
+      .label-lane   { font-size: 12.5px; letter-spacing: 0.20em; text-transform: uppercase; }
+      .label-meta   { font-size: 11px;  letter-spacing: 0.10em; text-transform: uppercase; }
+      .label-foot   { font-size: 12px;  letter-spacing: 0.04em; }
 
-      .h-name { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; }
-      .h-sub  { font-size: 14px; font-style: italic; }
+      .h-name { font-size: 36px; font-weight: 600; letter-spacing: -0.01em; }
+      .h-sub  { font-size: 16px; font-style: italic; }
     ]]></style>
 
-    <!-- Arrowheads -->
     <marker id="arr-ink" viewBox="0 0 10 10" refX="9" refY="5"
             markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#2b2b2b" />
@@ -58,316 +57,398 @@
   </defs>
 
   <!-- Paper background -->
-  <rect class="paper" x="0" y="0" width="1200" height="720" />
+  <rect class="paper" x="0" y="0" width="1600" height="1080" />
 
-  <!-- ======================================================== -->
-  <!-- TITLE BLOCK                                              -->
-  <!-- ======================================================== -->
-  <g transform="translate(40, 36)">
+  <!-- ============================================================ -->
+  <!-- TITLE BLOCK                                                  -->
+  <!-- ============================================================ -->
+  <g transform="translate(50, 50)">
     <text class="serif h-name ink" x="0" y="0">wirefan</text>
-    <text class="serif h-sub ink-2" x="0" y="22" fill="#3a3f31">single-binary Go WebSocket fanout server</text>
+    <text class="serif h-sub ink-2" x="0" y="28" fill="#3a3f31">single-binary Go WebSocket fanout server</text>
   </g>
 
-  <!-- top-right meta pills -->
-  <g transform="translate(900, 22)">
-    <rect class="box-fill-2 stroke-rule" x="0"   y="0" width="92"  height="22" />
-    <text class="mono label-meta dim" x="46"  y="15" text-anchor="middle" fill="#7a7560">v1 protocol</text>
+  <g transform="translate(1230, 38)">
+    <rect class="box-fill-2 stroke-rule" x="0"   y="0" width="100" height="26" />
+    <text class="mono label-meta dim" x="50"  y="18" text-anchor="middle" fill="#7a7560">v1 protocol</text>
 
-    <rect class="box-fill-2 stroke-rule" x="98"  y="0" width="62"  height="22" />
-    <text class="mono label-meta dim" x="129" y="15" text-anchor="middle" fill="#7a7560">go 1.25</text>
+    <rect class="box-fill-2 stroke-rule" x="108" y="0" width="68"  height="26" />
+    <text class="mono label-meta dim" x="142" y="18" text-anchor="middle" fill="#7a7560">go 1.25</text>
 
-    <rect class="box-fill-2 stroke-rule" x="166" y="0" width="94"  height="22" />
-    <text class="mono label-meta dim" x="213" y="15" text-anchor="middle" fill="#7a7560">coder/websocket</text>
+    <rect class="box-fill-2 stroke-rule" x="184" y="0" width="136" height="26" />
+    <text class="mono label-meta dim" x="252" y="18" text-anchor="middle" fill="#7a7560">coder/websocket</text>
   </g>
 
-  <!-- masthead rule -->
-  <line x1="40" y1="78" x2="1160" y2="78" class="stroke-ink" stroke-width="2" />
+  <line x1="50" y1="100" x2="1550" y2="100" class="stroke-ink" stroke-width="2" />
 
-  <!-- ======================================================== -->
-  <!-- DATA PLANE LANE                                          -->
-  <!-- ======================================================== -->
-  <g transform="translate(40, 96)">
-    <!-- lane label -->
-    <rect class="accent-soft" x="0" y="0" width="1120" height="22" />
-    <line x1="0" y1="22" x2="1120" y2="22" class="stroke-rule" />
-    <text class="mono label-lane accent" x="10" y="15" fill="#c25b1a">data plane &#183; ws /v1/connect</text>
-    <text class="mono label-tag dim" x="1110" y="15" text-anchor="end" fill="#7a7560">read pump &#183; write pump &#183; per-channel mutex</text>
+  <!-- ============================================================ -->
+  <!-- DATA PLANE LANE LABEL                                        -->
+  <!-- ============================================================ -->
+  <g transform="translate(50, 124)">
+    <rect class="accent-soft" x="0" y="0" width="1500" height="28" />
+    <line x1="0" y1="28" x2="1500" y2="28" class="stroke-rule" />
+    <text class="mono label-lane accent" x="14" y="19" fill="#c25b1a">data plane &#183; ws /v1/connect</text>
+    <text class="mono label-tag dim" x="1486" y="19" text-anchor="end" fill="#7a7560">read pump &#183; write pump &#183; per-channel mutex</text>
   </g>
 
-  <!-- ======================================================== -->
-  <!-- DATA PLANE BOXES                                         -->
-  <!-- All boxes are 130x60 unless noted. y baseline ~ 170     -->
-  <!-- ======================================================== -->
+  <!-- ============================================================ -->
+  <!-- DATA PLANE BOXES (row 1, 6 boxes evenly spaced)              -->
+  <!-- Each: 200 wide, 130 tall.  Gap between boxes: 60.            -->
+  <!-- x-positions: 50, 310, 570, 830, 1090, 1350                   -->
+  <!-- box ends:    250, 510, 770, 1030, 1290, 1550                 -->
+  <!-- y-band: 188 - 318                                            -->
+  <!-- ============================================================ -->
 
-  <!-- Browser / SDK -->
-  <g transform="translate(56, 200)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="138" height="64" />
-    <text class="mono label-title ink" x="69" y="24" text-anchor="middle">Browser / SDK</text>
-    <text class="mono label-sub dim"  x="69" y="42" text-anchor="middle" fill="#7a7560">JS &#183; Go &#183; curl</text>
-    <text class="mono label-tag accent" x="69" y="56" text-anchor="middle" fill="#c25b1a">client</text>
+  <!-- 1. Browser / SDK -->
+  <g transform="translate(50, 188)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="130" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Browser / SDK</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub dim"   x="100" y="68"  text-anchor="middle" fill="#7a7560">JS &#183; Go &#183; curl</text>
+    <text class="mono label-sub dim"   x="100" y="86"  text-anchor="middle" fill="#7a7560">demo at /</text>
+    <text class="mono label-tag accent" x="100" y="116" text-anchor="middle" fill="#c25b1a">client</text>
   </g>
 
-  <!-- /v1/connect upgrade -->
-  <g transform="translate(232, 200)">
-    <rect class="box-fill-2 stroke-ink" x="0" y="0" width="146" height="64" />
-    <text class="mono label-title ink" x="73" y="24" text-anchor="middle">/v1/connect</text>
-    <text class="mono label-sub dim"  x="73" y="42" text-anchor="middle" fill="#7a7560">ws upgrade + auth</text>
-    <text class="mono label-tag accent" x="73" y="56" text-anchor="middle" fill="#c25b1a">HTTP &#8594; WS</text>
+  <!-- 2. /v1/connect -->
+  <g transform="translate(310, 188)">
+    <rect class="box-fill-2 stroke-ink" x="0" y="0" width="200" height="130" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">/v1/connect</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="100" y="68"  text-anchor="middle" fill="#3a3f31">HTTP &#8594; WS upgrade</text>
+    <text class="mono label-sub ink-2" x="100" y="86"  text-anchor="middle" fill="#3a3f31">api-key auth</text>
+    <text class="mono label-sub ink-2" x="100" y="104" text-anchor="middle" fill="#3a3f31">origin allowlist</text>
+    <text class="mono label-tag accent" x="100" y="124" text-anchor="middle" fill="#c25b1a">handshake</text>
   </g>
 
-  <!-- Conn -->
-  <g transform="translate(416, 178)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="160" height="108" />
-    <text class="mono label-title ink" x="80" y="22" text-anchor="middle">Conn</text>
-    <line x1="14" y1="32" x2="146" y2="32" class="stroke-rule" />
-    <text class="mono label-sub ink-2" x="14" y="48" fill="#3a3f31">readPump  &#8594; in</text>
-    <text class="mono label-sub ink-2" x="14" y="64" fill="#3a3f31">writePump &#8592; out</text>
-    <text class="mono label-sub ink-2" x="14" y="80" fill="#3a3f31">Send(buf=N)</text>
-    <text class="mono label-tag accent" x="80" y="98" text-anchor="middle" fill="#c25b1a">per-connection</text>
+  <!-- 3. Conn -->
+  <g transform="translate(570, 188)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="130" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Conn</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="20" y="68"  fill="#3a3f31">readPump  &#8594; in</text>
+    <text class="mono label-sub ink-2" x="20" y="86"  fill="#3a3f31">writePump &#8592; out</text>
+    <text class="mono label-sub ink-2" x="20" y="104" fill="#3a3f31">Send(buf=64)</text>
+    <text class="mono label-tag accent" x="100" y="124" text-anchor="middle" fill="#c25b1a">per-connection</text>
   </g>
 
-  <!-- Hub -->
-  <g transform="translate(620, 178)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="160" height="108" />
-    <text class="mono label-title ink" x="80" y="22" text-anchor="middle">Hub</text>
-    <line x1="14" y1="32" x2="146" y2="32" class="stroke-rule" />
-    <text class="mono label-sub ink-2" x="14" y="48" fill="#3a3f31">ctx fan-out</text>
-    <text class="mono label-sub ink-2" x="14" y="64" fill="#3a3f31">drain coord.</text>
-    <text class="mono label-sub ink-2" x="14" y="80" fill="#3a3f31">graceful shutdown</text>
-    <text class="mono label-tag accent" x="80" y="98" text-anchor="middle" fill="#c25b1a">lifecycle</text>
+  <!-- 4. Hub -->
+  <g transform="translate(830, 188)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="130" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Hub</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="20" y="68"  fill="#3a3f31">tracks all conns</text>
+    <text class="mono label-sub ink-2" x="20" y="86"  fill="#3a3f31">drain coordinator</text>
+    <text class="mono label-sub ink-2" x="20" y="104" fill="#3a3f31">graceful shutdown</text>
+    <text class="mono label-tag accent" x="100" y="124" text-anchor="middle" fill="#c25b1a">lifecycle</text>
   </g>
 
-  <!-- Registry -->
-  <g transform="translate(820, 178)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="150" height="108" />
-    <text class="mono label-title ink" x="75" y="22" text-anchor="middle">Registry</text>
-    <line x1="14" y1="32" x2="136" y2="32" class="stroke-rule" />
-    <text class="mono label-sub ink-2" x="14" y="48" fill="#3a3f31">map[name]*Channel</text>
-    <text class="mono label-sub ink-2" x="14" y="64" fill="#3a3f31">sync.RWMutex</text>
-    <text class="mono label-sub ink-2" x="14" y="80" fill="#3a3f31">getOrCreate / GC</text>
-    <text class="mono label-tag accent" x="75" y="98" text-anchor="middle" fill="#c25b1a">channels</text>
+  <!-- 5. Registry -->
+  <g transform="translate(1090, 188)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="130" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Registry</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="20" y="68"  fill="#3a3f31">map[name] -&gt; *Channel</text>
+    <text class="mono label-sub ink-2" x="20" y="86"  fill="#3a3f31">sync.Map  OR  16 shards</text>
+    <text class="mono label-sub ink-2" x="20" y="104" fill="#3a3f31">GetOrCreate</text>
+    <text class="mono label-tag accent" x="100" y="124" text-anchor="middle" fill="#c25b1a">channels</text>
   </g>
 
-  <!-- Channel -->
-  <g transform="translate(1010, 178)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="134" height="108" />
-    <text class="mono label-title ink" x="67" y="22" text-anchor="middle">Channel</text>
-    <line x1="12" y1="32" x2="122" y2="32" class="stroke-rule" />
-    <text class="mono label-sub ink-2" x="12" y="48" fill="#3a3f31">subs map</text>
-    <text class="mono label-sub ink-2" x="12" y="64" fill="#3a3f31">BroadcastMu</text>
-    <text class="mono label-sub ink-2" x="12" y="80" fill="#3a3f31">FIFO order</text>
-    <text class="mono label-tag accent" x="67" y="98" text-anchor="middle" fill="#c25b1a">per-channel</text>
+  <!-- 6. Channel -->
+  <g transform="translate(1350, 188)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="130" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Channel</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="20" y="68"  fill="#3a3f31">subs map</text>
+    <text class="mono label-sub ink-2" x="20" y="86"  fill="#3a3f31">BroadcastMu (FIFO)</text>
+    <text class="mono label-sub ink-2" x="20" y="104" fill="#3a3f31">SubsMu (RWMutex)</text>
+    <text class="mono label-tag accent" x="100" y="124" text-anchor="middle" fill="#c25b1a">per-channel</text>
   </g>
 
-  <!-- ======================================================== -->
-  <!-- DATA PLANE ARROWS                                        -->
-  <!-- ======================================================== -->
+  <!-- ============================================================ -->
+  <!-- ROW 1 ARROWS (orthogonal, terminate cleanly at box edges)    -->
+  <!-- y=253 = mid box (188 + 130/2)                                -->
+  <!-- For each arrow: line ends 8px before next box, marker tip    -->
+  <!-- lands at box edge.                                           -->
+  <!-- ============================================================ -->
 
-  <!-- Browser -> /v1/connect -->
-  <line x1="194" y1="232" x2="228" y2="232"
-        class="stroke-ink" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow dim" x="211" y="224" text-anchor="middle" fill="#7a7560">connect</text>
+  <!-- Browser -> /v1/connect : x 250..302 -->
+  <line x1="250" y1="253" x2="302" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow dim" x="276" y="240" text-anchor="middle" fill="#7a7560">connect</text>
 
-  <!-- /v1/connect -> Conn -->
-  <line x1="378" y1="232" x2="412" y2="232"
-        class="stroke-ink" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow dim" x="395" y="224" text-anchor="middle" fill="#7a7560">upgrade</text>
+  <!-- /v1/connect -> Conn : x 510..562 -->
+  <line x1="510" y1="253" x2="562" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow dim" x="536" y="240" text-anchor="middle" fill="#7a7560">upgrade</text>
 
-  <!-- Conn -> Hub (subscribe) -->
-  <line x1="576" y1="220" x2="616" y2="220"
-        class="stroke-accent" marker-end="url(#arr-accent)" />
-  <text class="mono label-arrow accent" x="596" y="212" text-anchor="middle" fill="#c25b1a">subscribe</text>
+  <!-- Conn -> Hub : x 770..822  (subscribe / publish, accent) -->
+  <line x1="770" y1="248" x2="822" y2="248" class="stroke-accent" marker-end="url(#arr-accent)" />
+  <text class="mono label-arrow accent" x="796" y="240" text-anchor="middle" fill="#c25b1a">subscribe / publish</text>
 
-  <!-- Hub -> Conn (event back) -->
-  <line x1="616" y1="244" x2="576" y2="244"
-        class="stroke-ink-2" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow ink-2" x="596" y="260" text-anchor="middle" fill="#3a3f31">event</text>
+  <!-- Hub -> Conn (event back) : x 822..770 reversed at y=268 -->
+  <line x1="822" y1="268" x2="770" y2="268" class="stroke-ink-2" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow ink-2" x="796" y="284" text-anchor="middle" fill="#3a3f31">event &#8592;</text>
 
-  <!-- Hub -> Registry -->
-  <line x1="780" y1="220" x2="816" y2="220"
-        class="stroke-ink" marker-end="url(#arr-ink)" />
-  <text class="mono label-arrow dim" x="798" y="212" text-anchor="middle" fill="#7a7560">lookup</text>
+  <!-- Hub -> Registry : x 1030..1082 -->
+  <line x1="1030" y1="248" x2="1082" y2="248" class="stroke-ink" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow dim" x="1056" y="240" text-anchor="middle" fill="#7a7560">lookup</text>
 
-  <line x1="816" y1="244" x2="780" y2="244"
-        class="stroke-dim" marker-end="url(#arr-dim)" />
-  <text class="mono label-arrow dim" x="798" y="260" text-anchor="middle" fill="#7a7560">*Channel</text>
+  <!-- Registry -> Hub : x 1082..1030 reversed at y=268 -->
+  <line x1="1082" y1="268" x2="1030" y2="268" class="stroke-dim" marker-end="url(#arr-dim)" />
+  <text class="mono label-arrow dim" x="1056" y="284" text-anchor="middle" fill="#7a7560">*Channel</text>
 
-  <!-- Registry -> Channel -->
-  <line x1="970" y1="232" x2="1006" y2="232"
-        class="stroke-ink" marker-end="url(#arr-ink)" />
+  <!-- Registry -> Channel : x 1290..1342 -->
+  <line x1="1290" y1="253" x2="1342" y2="253" class="stroke-ink" marker-end="url(#arr-ink)" />
+  <text class="mono label-arrow dim" x="1316" y="240" text-anchor="middle" fill="#7a7560">resolve</text>
 
-  <!-- Conn -> Hub (publish) - upper bow -->
-  <path d="M 496,178 C 496,140 700,140 700,178"
-        class="stroke-accent" marker-end="url(#arr-accent)" />
-  <text class="mono label-arrow accent" x="598" y="142" text-anchor="middle" fill="#c25b1a">publish</text>
+  <!-- ============================================================ -->
+  <!-- ANNOTATION ROW (slow consumer + leak test)                   -->
+  <!-- y-band: 360 - 460  (under data plane row, generous padding)  -->
+  <!-- ============================================================ -->
 
-  <!-- ======================================================== -->
-  <!-- FANOUT + SUBSCRIBERS (right column)                      -->
-  <!-- ======================================================== -->
+  <!-- Slow consumer note (under Conn) -->
+  <g transform="translate(570, 360)">
+    <rect class="box-fill-2 stroke-dashed" x="0" y="0" width="260" height="100" />
+    <text class="mono label-tag accent" x="14" y="22"  fill="#c25b1a">slow consumer policy</text>
+    <line x1="14" y1="32" x2="246" y2="32" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="14" y="54" fill="#3a3f31">Send full &#8594; ErrSlowConsumer</text>
+    <text class="mono label-sub ink-2" x="14" y="72" fill="#3a3f31">closeReq signal &#8594; Run drains</text>
+    <text class="mono label-sub ink-2" x="14" y="90" fill="#3a3f31">close 1008 (PolicyViolation)</text>
+  </g>
+  <!-- dashed link from Conn bottom (mid x=670) to slow-consumer top (mid x=700) -->
+  <line x1="670" y1="318" x2="670" y2="360" class="stroke-dashed" marker-end="url(#arr-accent)" />
 
-  <!-- Fanout box (under Channel) -->
-  <g transform="translate(1010, 318)">
-    <rect class="box-fill-2 stroke-ink" x="0" y="0" width="134" height="44" />
-    <text class="mono label-title accent" x="67" y="20" text-anchor="middle" fill="#c25b1a">Fanout</text>
-    <text class="mono label-sub ink-2"   x="67" y="36" text-anchor="middle" fill="#3a3f31">sub.Send(env)</text>
+  <!-- Leak test note (under Hub) -->
+  <g transform="translate(870, 360)">
+    <rect class="box-fill-2 stroke-rule" x="0" y="0" width="280" height="100" />
+    <text class="mono label-tag accent" x="14" y="22"  fill="#c25b1a">leak invariant</text>
+    <line x1="14" y1="32" x2="266" y2="32" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="14" y="54" fill="#3a3f31">1k connection churn &#8594;</text>
+    <text class="mono label-sub ink-2" x="14" y="72" fill="#3a3f31">runtime.NumGoroutine returns</text>
+    <text class="mono label-sub ink-2" x="14" y="90" fill="#3a3f31">to baseline within 1s</text>
   </g>
 
-  <!-- Channel -> Fanout -->
-  <line x1="1077" y1="286" x2="1077" y2="316"
-        class="stroke-accent" marker-end="url(#arr-accent)" />
-
-  <!-- Subscribers row (3 boxes) -->
-  <g transform="translate(56, 400)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="160" height="56" />
-    <text class="mono label-title ink" x="80" y="22" text-anchor="middle">Subscriber A</text>
-    <text class="mono label-sub dim"  x="80" y="40" text-anchor="middle" fill="#7a7560">conn.out &#8594; ws</text>
-  </g>
-  <g transform="translate(248, 400)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="160" height="56" />
-    <text class="mono label-title ink" x="80" y="22" text-anchor="middle">Subscriber B</text>
-    <text class="mono label-sub dim"  x="80" y="40" text-anchor="middle" fill="#7a7560">conn.out &#8594; ws</text>
-  </g>
-  <g transform="translate(440, 400)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="160" height="56" />
-    <text class="mono label-title ink" x="80" y="22" text-anchor="middle">Subscriber C</text>
-    <text class="mono label-sub dim"  x="80" y="40" text-anchor="middle" fill="#7a7560">conn.out &#8594; ws</text>
-  </g>
-  <g transform="translate(632, 400)">
-    <rect class="box-fill-2 stroke-rule" x="0" y="0" width="98" height="56" />
-    <text class="mono label-title dim" x="49" y="34" text-anchor="middle" fill="#7a7560">. . . N</text>
+  <!-- Rate-limit + resource caps note (under Registry) -->
+  <g transform="translate(1190, 360)">
+    <rect class="box-fill-2 stroke-rule" x="0" y="0" width="200" height="100" />
+    <text class="mono label-tag accent" x="14" y="22"  fill="#c25b1a">limits</text>
+    <line x1="14" y1="32" x2="186" y2="32" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="14" y="54" fill="#3a3f31">100 msg/s/key (b=200)</text>
+    <text class="mono label-sub ink-2" x="14" y="72" fill="#3a3f31">64 channels / conn</text>
+    <text class="mono label-sub ink-2" x="14" y="90" fill="#3a3f31">10k subs / channel</text>
   </g>
 
-  <!-- Fanout -> subscribers (branching tree) -->
-  <!-- vertical drop from Fanout center -->
-  <line x1="1077" y1="362" x2="1077" y2="378" class="stroke-accent" />
-  <!-- horizontal trunk to leftmost -->
-  <line x1="136" y1="378" x2="1077" y2="378" class="stroke-accent" />
-  <!-- drops onto each subscriber -->
-  <line x1="136"  y1="378" x2="136"  y2="396" class="stroke-accent" marker-end="url(#arr-accent)" />
-  <line x1="328"  y1="378" x2="328"  y2="396" class="stroke-accent" marker-end="url(#arr-accent)" />
-  <line x1="520"  y1="378" x2="520"  y2="396" class="stroke-accent" marker-end="url(#arr-accent)" />
-  <line x1="681"  y1="378" x2="681"  y2="396" class="stroke-dashed" marker-end="url(#arr-accent)" />
+  <!-- ============================================================ -->
+  <!-- FANOUT BOX + TREE TO SUBSCRIBERS                             -->
+  <!-- Fanout sits below Channel, then a single elbow trunk drops   -->
+  <!-- to a horizontal trunk above subscribers, then 4 vertical     -->
+  <!-- drops into subscriber boxes.                                 -->
+  <!-- ============================================================ -->
 
-  <text class="mono label-arrow accent" x="900" y="372" fill="#c25b1a">event &#183; FIFO &#183; same goroutine</text>
-
-  <!-- ======================================================== -->
-  <!-- SLOW CONSUMER ANNOTATION (off the Conn box)             -->
-  <!-- ======================================================== -->
-  <g transform="translate(416, 304)">
-    <rect class="box-fill-2 stroke-dashed" x="0" y="0" width="184" height="48" />
-    <text class="mono label-tag accent" x="10" y="14" fill="#c25b1a">slow consumer</text>
-    <text class="mono label-sub ink-2" x="10" y="30" fill="#3a3f31">Send full &#8594; ErrSlowConsumer</text>
-    <text class="mono label-sub ink-2" x="10" y="44" fill="#3a3f31">&#8594; close 1008 (policy violation)</text>
-  </g>
-  <line x1="496" y1="286" x2="496" y2="304"
-        class="stroke-dashed" marker-end="url(#arr-accent)" />
-
-  <!-- 1k churn note near Hub -->
-  <g transform="translate(620, 304)">
-    <rect class="box-fill-2 stroke-rule" x="0" y="0" width="160" height="40" />
-    <text class="mono label-tag accent" x="10" y="14" fill="#c25b1a">leak test</text>
-    <text class="mono label-sub ink-2" x="10" y="30" fill="#3a3f31">1k churn &#8594; 0 leaked goroutines</text>
+  <!-- Channel mid-bottom point: x=1450, y=318 -->
+  <!-- Fanout box: x=1350-1550, y=360-440 -->
+  <g transform="translate(1410, 360)">
+    <rect class="box-fill-2 stroke-ink" x="0" y="0" width="140" height="100" />
+    <text class="mono label-title accent" x="70" y="30" text-anchor="middle" fill="#c25b1a">Fanout</text>
+    <line x1="14" y1="42" x2="126" y2="42" class="stroke-rule" />
+    <text class="mono label-sub ink-2" x="70" y="64"  text-anchor="middle" fill="#3a3f31">PerConn</text>
+    <text class="mono label-sub ink-2" x="70" y="82"  text-anchor="middle" fill="#3a3f31">| ShardedPool</text>
   </g>
 
-  <!-- ======================================================== -->
-  <!-- LANE DIVIDER                                             -->
-  <!-- ======================================================== -->
-  <line x1="40" y1="490" x2="1160" y2="490" class="stroke-ink" stroke-width="2" />
+  <!-- Channel -> Fanout vertical link (mid Channel = x=1450, mid Fanout top = x=1480) -->
+  <!-- Use an elbow: down from channel mid bottom to a junction, then short jog right to fanout top -->
+  <path d="M 1450,318 L 1450,340 L 1480,340 L 1480,358"
+        class="stroke-accent" fill="none" marker-end="url(#arr-accent)" />
+  <text class="mono label-arrow accent" x="1456" y="334" fill="#c25b1a">broadcast</text>
 
-  <!-- ======================================================== -->
-  <!-- CONTROL PLANE LANE                                       -->
-  <!-- ======================================================== -->
-  <g transform="translate(40, 502)">
-    <rect class="box-fill-2" x="0" y="0" width="1120" height="22" />
-    <line x1="0" y1="22" x2="1120" y2="22" class="stroke-rule" />
-    <text class="mono label-lane ink-2" x="10" y="15" fill="#3a3f31">control plane &#183; rest /v1/*  &#183;  metrics  &#183;  pprof</text>
-    <text class="mono label-tag dim" x="1110" y="15" text-anchor="end" fill="#7a7560">admin Bearer &#183; signing-secret-bound HMAC</text>
+  <!-- Fanout -> trunk : Fanout bottom-mid = x=1480, y=460 -->
+  <!-- Trunk: y=540, span x=140..1480 -->
+  <!-- Drop from fanout: x=1480, y=460..540 -->
+  <line x1="1480" y1="460" x2="1480" y2="540" class="stroke-accent" />
+
+  <!-- Horizontal trunk -->
+  <line x1="140" y1="540" x2="1480" y2="540" class="stroke-accent" />
+
+  <!-- Drops to subscribers (top of subscriber boxes at y=580) -->
+  <line x1="140"  y1="540" x2="140"  y2="572" class="stroke-accent" marker-end="url(#arr-accent)" />
+  <line x1="450"  y1="540" x2="450"  y2="572" class="stroke-accent" marker-end="url(#arr-accent)" />
+  <line x1="760"  y1="540" x2="760"  y2="572" class="stroke-accent" marker-end="url(#arr-accent)" />
+  <line x1="1070" y1="540" x2="1070" y2="572" class="stroke-accent" marker-end="url(#arr-accent)" />
+
+  <!-- Trunk label, placed above the trunk line in clear horizontal space -->
+  <text class="mono label-arrow accent" x="940" y="528" fill="#c25b1a">event &#183; FIFO &#183; iter under BroadcastMu</text>
+
+  <!-- ============================================================ -->
+  <!-- SUBSCRIBERS ROW (4 + ellipsis)                               -->
+  <!-- y-band: 580 - 680  (h=100, w=200)                            -->
+  <!-- centers must align with trunk drops: 140, 450, 760, 1070     -->
+  <!-- so x positions: 40, 350, 660, 970                            -->
+  <!-- ellipsis box at x=1290                                       -->
+  <!-- ============================================================ -->
+
+  <g transform="translate(40, 580)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="100" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Subscriber A</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub dim"   x="100" y="68" text-anchor="middle" fill="#7a7560">conn.send -&gt; ws</text>
+    <text class="mono label-tag dim"   x="100" y="88" text-anchor="middle" fill="#7a7560">remote browser</text>
   </g>
 
-  <!-- Operator -->
-  <g transform="translate(56, 552)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="160" height="120" />
-    <text class="mono label-title ink" x="80" y="22" text-anchor="middle">Operator /</text>
-    <text class="mono label-title ink" x="80" y="38" text-anchor="middle">App server</text>
-    <line x1="14" y1="48" x2="146" y2="48" class="stroke-rule" />
-    <text class="mono label-sub ink-2" x="14" y="66" fill="#3a3f31">curl, deploy script,</text>
-    <text class="mono label-sub ink-2" x="14" y="80" fill="#3a3f31">app backend</text>
-    <text class="mono label-tag accent" x="80" y="104" text-anchor="middle" fill="#c25b1a">admin / issuer</text>
+  <g transform="translate(350, 580)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="100" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Subscriber B</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub dim"   x="100" y="68" text-anchor="middle" fill="#7a7560">conn.send -&gt; ws</text>
+    <text class="mono label-tag dim"   x="100" y="88" text-anchor="middle" fill="#7a7560">app server</text>
   </g>
 
-  <!-- Endpoint stack -->
-  <g transform="translate(280, 552)">
-    <!-- POST /v1/keys -->
-    <rect class="box-fill stroke-ink" x="0" y="0" width="320" height="28" />
-    <text class="mono label-title ink" x="10" y="18">POST /v1/keys</text>
-    <text class="mono label-sub dim" x="310" y="18" text-anchor="end" fill="#7a7560">Bearer admin</text>
-
-    <!-- POST /v1/auth/sign -->
-    <rect class="box-fill stroke-ink" x="0" y="32" width="320" height="28" />
-    <text class="mono label-title ink" x="10" y="50">POST /v1/auth/sign</text>
-    <text class="mono label-sub dim" x="310" y="50" text-anchor="end" fill="#7a7560">key:secret</text>
-
-    <!-- GET /metrics -->
-    <rect class="box-fill stroke-ink" x="0" y="64" width="320" height="28" />
-    <text class="mono label-title ink" x="10" y="82">GET /metrics</text>
-    <text class="mono label-sub dim" x="310" y="82" text-anchor="end" fill="#7a7560">Prometheus</text>
-
-    <!-- GET /debug/pprof/* -->
-    <rect class="box-fill stroke-ink" x="0" y="96" width="320" height="28" />
-    <text class="mono label-title ink" x="10" y="114">GET /debug/pprof/*</text>
-    <text class="mono label-sub dim" x="310" y="114" text-anchor="end" fill="#7a7560">localhost only</text>
+  <g transform="translate(660, 580)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="100" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Subscriber C</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub dim"   x="100" y="68" text-anchor="middle" fill="#7a7560">conn.send -&gt; ws</text>
+    <text class="mono label-tag dim"   x="100" y="88" text-anchor="middle" fill="#7a7560">stats listener</text>
   </g>
 
-  <!-- Operator -> endpoints (4 arrows) -->
-  <line x1="216" y1="566" x2="276" y2="566" class="stroke-ink" marker-end="url(#arr-ink)" />
-  <line x1="216" y1="598" x2="276" y2="598" class="stroke-ink" marker-end="url(#arr-ink)" />
-  <line x1="216" y1="630" x2="276" y2="630" class="stroke-ink" marker-end="url(#arr-ink)" />
-  <line x1="216" y1="662" x2="276" y2="662" class="stroke-ink" marker-end="url(#arr-ink)" />
-
-  <!-- Outputs / sinks column -->
-  <!-- Store -->
-  <g transform="translate(700, 552)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="180" height="60" />
-    <text class="mono label-title ink" x="90" y="22" text-anchor="middle">Store</text>
-    <text class="mono label-sub ink-2" x="90" y="40" text-anchor="middle" fill="#3a3f31">sqlite | memory</text>
-    <text class="mono label-tag accent" x="90" y="54" text-anchor="middle" fill="#c25b1a">key records</text>
+  <g transform="translate(970, 580)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="200" height="100" />
+    <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Subscriber N</text>
+    <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
+    <text class="mono label-sub dim"   x="100" y="68" text-anchor="middle" fill="#7a7560">conn.send -&gt; ws</text>
+    <text class="mono label-tag dim"   x="100" y="88" text-anchor="middle" fill="#7a7560">up to 10k / channel</text>
   </g>
 
-  <!-- HMAC token -->
-  <g transform="translate(700, 622)">
-    <rect class="box-fill stroke-ink" x="0" y="0" width="180" height="50" />
-    <text class="mono label-title ink" x="90" y="20" text-anchor="middle">HMAC token</text>
-    <text class="mono label-sub ink-2" x="90" y="38" text-anchor="middle" fill="#3a3f31">signing-secret-bound</text>
+  <!-- ============================================================ -->
+  <!-- LANE DIVIDER                                                 -->
+  <!-- ============================================================ -->
+  <line x1="50" y1="730" x2="1550" y2="730" class="stroke-ink" stroke-width="2" />
+
+  <!-- ============================================================ -->
+  <!-- CONTROL PLANE LANE LABEL                                     -->
+  <!-- ============================================================ -->
+  <g transform="translate(50, 754)">
+    <rect class="box-fill-2" x="0" y="0" width="1500" height="28" />
+    <line x1="0" y1="28" x2="1500" y2="28" class="stroke-rule" />
+    <text class="mono label-lane ink-2" x="14" y="19" fill="#3a3f31">control plane &#183; rest /v1/* &#183; metrics &#183; pprof</text>
+    <text class="mono label-tag dim" x="1486" y="19" text-anchor="end" fill="#7a7560">admin Bearer &#183; signing-secret-bound HMAC</text>
   </g>
 
-  <!-- Prom scraper -->
-  <g transform="translate(900, 552)">
-    <rect class="box-fill-2 stroke-ink" x="0" y="0" width="160" height="44" />
-    <text class="mono label-title ink" x="80" y="20" text-anchor="middle">Prom scraper</text>
-    <text class="mono label-sub dim"  x="80" y="36" text-anchor="middle" fill="#7a7560">15s interval</text>
+  <!-- ============================================================ -->
+  <!-- CONTROL PLANE COLUMNS                                        -->
+  <!--                                                              -->
+  <!-- Column A (Operator): x=50..280   (w=230)                     -->
+  <!-- Column B (Endpoints stack): x=380..820  (w=440, 4 rows)      -->
+  <!-- Column C (Sinks): x=920..1290    (w=370, 4 rows)             -->
+  <!--                                                              -->
+  <!-- All horizontal arrows. No diagonals. No crossings.           -->
+  <!--                                                              -->
+  <!-- Endpoint stack rows (each 60 tall): y=820..1060              -->
+  <!--   Row 1: 820-880  (mid 850)                                  -->
+  <!--   Row 2: 880-940  (mid 910)                                  -->
+  <!--   Row 3: 940-1000 (mid 970)                                  -->
+  <!--   Row 4: 1000-1060 (mid 1030)                                -->
+  <!-- ============================================================ -->
+
+  <!-- Column A: Operator / App server -->
+  <g transform="translate(50, 820)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="230" height="240" />
+    <text class="mono label-title ink"  x="115" y="32"  text-anchor="middle">Operator /</text>
+    <text class="mono label-title ink"  x="115" y="52"  text-anchor="middle">App server</text>
+    <line x1="20" y1="64" x2="210" y2="64" class="stroke-rule" />
+    <text class="mono label-sub ink-2"  x="20" y="92"  fill="#3a3f31">curl, deploy script,</text>
+    <text class="mono label-sub ink-2"  x="20" y="112" fill="#3a3f31">application backend,</text>
+    <text class="mono label-sub ink-2"  x="20" y="132" fill="#3a3f31">prom scraper, etc.</text>
+    <text class="mono label-sub dim"    x="20" y="160" fill="#7a7560">holds: admin Bearer</text>
+    <text class="mono label-sub dim"    x="20" y="178" fill="#7a7560">         api key + secret</text>
+    <text class="mono label-tag accent" x="115" y="220" text-anchor="middle" fill="#c25b1a">admin / issuer</text>
   </g>
 
-  <!-- pprof CLI -->
-  <g transform="translate(900, 612)">
-    <rect class="box-fill-2 stroke-ink" x="0" y="0" width="160" height="44" />
-    <text class="mono label-title ink" x="80" y="20" text-anchor="middle">go tool pprof</text>
-    <text class="mono label-sub dim"  x="80" y="36" text-anchor="middle" fill="#7a7560">heap / cpu / goroutine</text>
+  <!-- Column B: Endpoint stack (4 rows) -->
+  <!-- Row 1: POST /v1/keys -->
+  <g transform="translate(380, 820)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="440" height="60" />
+    <text class="mono label-title ink" x="20"  y="36">POST /v1/keys</text>
+    <text class="mono label-sub dim"   x="430" y="36" text-anchor="end" fill="#7a7560">Bearer admin</text>
+  </g>
+  <!-- Row 2: POST /v1/auth/sign -->
+  <g transform="translate(380, 880)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="440" height="60" />
+    <text class="mono label-title ink" x="20"  y="36">POST /v1/auth/sign</text>
+    <text class="mono label-sub dim"   x="430" y="36" text-anchor="end" fill="#7a7560">key_id : secret</text>
+  </g>
+  <!-- Row 3: GET /metrics -->
+  <g transform="translate(380, 940)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="440" height="60" />
+    <text class="mono label-title ink" x="20"  y="36">GET /metrics</text>
+    <text class="mono label-sub dim"   x="430" y="36" text-anchor="end" fill="#7a7560">Prometheus</text>
+  </g>
+  <!-- Row 4: GET /debug/pprof/* -->
+  <g transform="translate(380, 1000)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="440" height="60" />
+    <text class="mono label-title ink" x="20"  y="36">GET /debug/pprof/*</text>
+    <text class="mono label-sub dim"   x="430" y="36" text-anchor="end" fill="#7a7560">localhost only</text>
   </g>
 
-  <!-- endpoints -> sinks -->
-  <line x1="600" y1="566" x2="696" y2="572" class="stroke-ink"    marker-end="url(#arr-ink)" />
-  <line x1="600" y1="598" x2="696" y2="640" class="stroke-accent" marker-end="url(#arr-accent)" />
-  <line x1="600" y1="630" x2="896" y2="572" class="stroke-ink"    marker-end="url(#arr-ink)" />
-  <line x1="600" y1="662" x2="896" y2="632" class="stroke-ink"    marker-end="url(#arr-ink)" />
+  <!-- Column C: Sinks (aligned to endpoint rows) -->
+  <!-- Row 1 sink: Store -->
+  <g transform="translate(920, 820)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="370" height="60" />
+    <text class="mono label-title ink" x="20" y="34">Store</text>
+    <text class="mono label-sub dim"   x="360" y="34" text-anchor="end" fill="#7a7560">sqlite | memory</text>
+    <text class="mono label-sub ink-2" x="20" y="50" fill="#3a3f31">key records (id, hash, revoked_at)</text>
+  </g>
+  <!-- Row 2 sink: HMAC token -->
+  <g transform="translate(920, 880)">
+    <rect class="box-fill stroke-ink" x="0" y="0" width="370" height="60" />
+    <text class="mono label-title accent" x="20"  y="34" fill="#c25b1a">HMAC token</text>
+    <text class="mono label-sub dim"      x="360" y="34" text-anchor="end" fill="#7a7560">5 min expiry</text>
+    <text class="mono label-sub ink-2"    x="20" y="50" fill="#3a3f31">expMs : base64url(HMAC over exp|sid|chan)</text>
+  </g>
+  <!-- Row 3 sink: Prom scraper -->
+  <g transform="translate(920, 940)">
+    <rect class="box-fill-2 stroke-ink" x="0" y="0" width="370" height="60" />
+    <text class="mono label-title ink" x="20"  y="34">Prom scraper</text>
+    <text class="mono label-sub dim"   x="360" y="34" text-anchor="end" fill="#7a7560">15s interval</text>
+    <text class="mono label-sub ink-2" x="20" y="50" fill="#3a3f31">connections, msgs, drops, latency</text>
+  </g>
+  <!-- Row 4 sink: pprof CLI -->
+  <g transform="translate(920, 1000)">
+    <rect class="box-fill-2 stroke-ink" x="0" y="0" width="370" height="60" />
+    <text class="mono label-title ink" x="20"  y="34">go tool pprof</text>
+    <text class="mono label-sub dim"   x="360" y="34" text-anchor="end" fill="#7a7560">heap / cpu / goroutine</text>
+    <text class="mono label-sub ink-2" x="20" y="50" fill="#3a3f31">over SSH tunnel; not public</text>
+  </g>
 
-  <!-- arrow labels -->
-  <text class="mono label-arrow dim" x="640" y="560" fill="#7a7560">persist</text>
-  <text class="mono label-arrow accent" x="640" y="618" fill="#c25b1a">sign</text>
+  <!-- ============================================================ -->
+  <!-- CONTROL PLANE ARROWS                                         -->
+  <!-- A->B: 4 horizontals at row mids                              -->
+  <!-- B->C: 4 horizontals at row mids                              -->
+  <!-- All same y-coordinates, never cross.                         -->
+  <!-- ============================================================ -->
 
-  <!-- ======================================================== -->
-  <!-- FOOTER                                                   -->
-  <!-- ======================================================== -->
-  <line x1="40" y1="690" x2="1160" y2="690" class="stroke-rule" />
-  <text class="mono label-foot dim" x="40"   y="708" fill="#7a7560">data plane: hot path &#8226; lock-free per conn &#8226; mutex per channel</text>
-  <text class="mono label-foot accent" x="1160" y="708" text-anchor="end" fill="#c25b1a">github.com/EthanY33/wirefan</text>
+  <!-- Operator -> endpoints (4 horizontal) : x 280..372 -->
+  <line x1="280" y1="850"  x2="372" y2="850"  class="stroke-ink" marker-end="url(#arr-ink)" />
+  <line x1="280" y1="910"  x2="372" y2="910"  class="stroke-ink" marker-end="url(#arr-ink)" />
+  <line x1="280" y1="970"  x2="372" y2="970"  class="stroke-ink" marker-end="url(#arr-ink)" />
+  <line x1="280" y1="1030" x2="372" y2="1030" class="stroke-ink" marker-end="url(#arr-ink)" />
+
+  <!-- Endpoints -> sinks (4 horizontal) : x 820..912 -->
+  <line x1="820" y1="850"  x2="912" y2="850"  class="stroke-ink"    marker-end="url(#arr-ink)" />
+  <line x1="820" y1="910"  x2="912" y2="910"  class="stroke-accent" marker-end="url(#arr-accent)" />
+  <line x1="820" y1="970"  x2="912" y2="970"  class="stroke-ink"    marker-end="url(#arr-ink)" />
+  <line x1="820" y1="1030" x2="912" y2="1030" class="stroke-ink"    marker-end="url(#arr-ink)" />
+
+  <!-- Arrow labels (above each B->C arrow, in the gap) -->
+  <text class="mono label-arrow dim"    x="866" y="842"  text-anchor="middle" fill="#7a7560">persist</text>
+  <text class="mono label-arrow accent" x="866" y="902"  text-anchor="middle" fill="#c25b1a">sign</text>
+  <text class="mono label-arrow dim"    x="866" y="962"  text-anchor="middle" fill="#7a7560">scrape</text>
+  <text class="mono label-arrow dim"    x="866" y="1022" text-anchor="middle" fill="#7a7560">profile</text>
+
+  <!-- Operator -> endpoint labels (above each A->B arrow) -->
+  <text class="mono label-arrow dim" x="326" y="842"  text-anchor="middle" fill="#7a7560">create</text>
+  <text class="mono label-arrow dim" x="326" y="902"  text-anchor="middle" fill="#7a7560">issue</text>
+  <text class="mono label-arrow dim" x="326" y="962"  text-anchor="middle" fill="#7a7560">scrape</text>
+  <text class="mono label-arrow dim" x="326" y="1022" text-anchor="middle" fill="#7a7560">profile</text>
+
+  <!-- ============================================================ -->
+  <!-- FOOTER                                                       -->
+  <!-- ============================================================ -->
+  <line x1="50" y1="1078" x2="1550" y2="1078" class="stroke-rule" />
 </svg>
