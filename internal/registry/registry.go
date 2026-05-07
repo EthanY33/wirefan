@@ -7,7 +7,6 @@ import (
 
 type Channel struct {
 	Name        string
-	BroadcastMu sync.Mutex // serialize broadcasts (FIFO)
 	SubsMu      sync.RWMutex
 	Subscribers map[Subscriber]struct{}
 
