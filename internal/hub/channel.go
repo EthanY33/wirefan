@@ -39,10 +39,16 @@ func Unsubscribe(c *registry.Channel, s registry.Subscriber) {
 	c.SubsMu.Unlock()
 }
 
-// Broadcast iterates subscribers under per-channel mutex (FIFO ordering).
+// Broadcast snapshots subscribers under SubsMu.RLock then sends to each.
+//
+// We intentionally do NOT serialize concurrent Broadcasts with a per-channel
+// lock. Per-subscriber FIFO ordering is preserved by the buffered send chan
+// inside each Conn (Go guarantees chan-send order = chan-receive order). The
+// stronger "every subscriber sees publish A before publish B" guarantee is
+// not part of the protocol contract — and serializing here turned a single
+// slow consumer into a head-of-line block for the entire channel under
+// PolicyDisconnect's writeDeadline.
 func Broadcast(c *registry.Channel, msg []byte) {
-	c.BroadcastMu.Lock()
-	defer c.BroadcastMu.Unlock()
 	c.SubsMu.RLock()
 	subs := make([]registry.Subscriber, 0, len(c.Subscribers))
 	for s := range c.Subscribers {
