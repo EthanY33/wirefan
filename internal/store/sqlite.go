@@ -28,7 +28,7 @@ func NewSQLite(path string) (Store, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(sqliteSchema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return &sqliteStore{db: db}, nil
@@ -66,7 +66,7 @@ func (s *sqliteStore) ListKeys(ctx context.Context) ([]Key, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Key
 	for rows.Next() {
 		var k Key

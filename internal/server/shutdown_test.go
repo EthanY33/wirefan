@@ -90,6 +90,6 @@ func TestDrainClosesAllConnections(t *testing.T) {
 	}
 
 	for _, c := range conns {
-		c.Close(websocket.StatusNormalClosure, "")
+		_ = c.Close(websocket.StatusNormalClosure, "")
 	}
 }

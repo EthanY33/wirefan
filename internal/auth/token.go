@@ -43,7 +43,7 @@ func VerifyToken(secret, socketID, channel, tok string) error {
 		return ErrTokenMalformed
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(fmt.Sprintf("%d|%s|%s", expMs, socketID, channel)))
+	_, _ = fmt.Fprintf(mac, "%d|%s|%s", expMs, socketID, channel)
 	if !hmac.Equal(sig, mac.Sum(nil)) {
 		return ErrTokenInvalid
 	}

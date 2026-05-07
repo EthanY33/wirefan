@@ -40,7 +40,7 @@ func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close(websocket.StatusNormalClosure, "") })
+	t.Cleanup(func() { _ = c.Close(websocket.StatusNormalClosure, "") })
 	// Drain the connected hello frame.
 	if _, _, err := c.Read(context.Background()); err != nil {
 		t.Fatalf("reading hello: %v", err)

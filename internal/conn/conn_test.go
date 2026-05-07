@@ -38,14 +38,14 @@ func TestConnectedMessageSent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
 
 	_, data, err := c.Read(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	gotMu.Lock()
-	json.Unmarshal(data, &got)
+	_ = json.Unmarshal(data, &got)
 	gotMu.Unlock()
 
 	if got["type"] != "connected" || got["socket_id"] != "01HTEST" {

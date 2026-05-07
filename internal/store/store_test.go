@@ -9,7 +9,7 @@ import (
 func runStoreTests(t *testing.T, factory func(t *testing.T) Store) {
 	t.Run("CreateAndLookup", func(t *testing.T) {
 		s := factory(t)
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		ctx := context.Background()
 		k, err := s.CreateKey(ctx, "test", "hash1")
 		if err != nil {
@@ -25,7 +25,7 @@ func runStoreTests(t *testing.T, factory func(t *testing.T) Store) {
 	})
 	t.Run("LookupMissing", func(t *testing.T) {
 		s := factory(t)
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		_, err := s.LookupKey(context.Background(), "nope")
 		if !errors.Is(err, ErrKeyNotFound) {
 			t.Fatalf("want ErrKeyNotFound, got %v", err)
@@ -33,7 +33,7 @@ func runStoreTests(t *testing.T, factory func(t *testing.T) Store) {
 	})
 	t.Run("Revoke", func(t *testing.T) {
 		s := factory(t)
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		ctx := context.Background()
 		k, _ := s.CreateKey(ctx, "x", "h")
 		if err := s.RevokeKey(ctx, k.ID); err != nil {
@@ -49,10 +49,10 @@ func runStoreTests(t *testing.T, factory func(t *testing.T) Store) {
 	})
 	t.Run("List", func(t *testing.T) {
 		s := factory(t)
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		ctx := context.Background()
-		s.CreateKey(ctx, "a", "h1")
-		s.CreateKey(ctx, "b", "h2")
+		_, _ = s.CreateKey(ctx, "a", "h1")
+		_, _ = s.CreateKey(ctx, "b", "h2")
 		got, err := s.ListKeys(ctx)
 		if err != nil {
 			t.Fatal(err)

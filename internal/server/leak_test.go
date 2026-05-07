@@ -50,7 +50,7 @@ func TestNoGoroutineLeakAfterChurn(t *testing.T) {
 		c, _, err := websocket.Dial(ctx, wsURL, nil)
 		cancel()
 		if err == nil {
-			c.Close(websocket.StatusNormalClosure, "")
+			_ = c.Close(websocket.StatusNormalClosure, "")
 		}
 	}
 	// Let the warm-up conn fully unwind before sampling baseline
@@ -69,7 +69,7 @@ func TestNoGoroutineLeakAfterChurn(t *testing.T) {
 			if err != nil {
 				return
 			}
-			c.Close(websocket.StatusNormalClosure, "")
+			_ = c.Close(websocket.StatusNormalClosure, "")
 		}()
 	}
 	wg.Wait()

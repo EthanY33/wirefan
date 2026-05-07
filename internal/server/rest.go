@@ -56,7 +56,7 @@ func (h *RestHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"id": k.ID, "name": k.Name, "secret": secret})
+	_ = json.NewEncoder(w).Encode(map[string]string{"id": k.ID, "name": k.Name, "secret": secret})
 }
 
 func (h *RestHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +65,7 @@ func (h *RestHandler) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(keys)
+	_ = json.NewEncoder(w).Encode(keys)
 }
 
 func (h *RestHandler) revoke(w http.ResponseWriter, r *http.Request) {
@@ -103,5 +103,5 @@ func (h *RestHandler) sign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign failed", http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"token": tok})
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": tok})
 }

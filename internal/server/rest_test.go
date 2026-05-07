@@ -34,7 +34,7 @@ func TestCreateAndListKeys(t *testing.T) {
 		t.Fatalf("want 201, got %d", res.StatusCode)
 	}
 	var created struct{ ID, Secret string }
-	json.NewDecoder(res.Body).Decode(&created)
+	_ = json.NewDecoder(res.Body).Decode(&created)
 	if created.ID == "" || created.Secret == "" {
 		t.Fatal("expected id and secret")
 	}
@@ -85,7 +85,7 @@ func TestAuthSign(t *testing.T) {
 		t.Fatalf("want 200, got %d", res.StatusCode)
 	}
 	var got struct{ Token string }
-	json.NewDecoder(res.Body).Decode(&got)
+	_ = json.NewDecoder(res.Body).Decode(&got)
 	if err := auth.VerifyToken("server-signing-secret", "01HX", "private-room", got.Token); err != nil {
 		t.Fatal(err)
 	}

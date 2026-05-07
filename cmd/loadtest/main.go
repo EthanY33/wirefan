@@ -120,7 +120,7 @@ func runConn(ctx context.Context, wg *sync.WaitGroup, url, channel string, isPub
 	if err != nil {
 		return
 	}
-	defer c.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
 
 	// Drop the `connected` hello
 	{
@@ -207,6 +207,6 @@ func runConn(ctx context.Context, wg *sync.WaitGroup, url, channel string, isPub
 		}
 	}
 done:
-	c.Close(websocket.StatusNormalClosure, "")
+	_ = c.Close(websocket.StatusNormalClosure, "")
 	<-readDone
 }

@@ -10,4 +10,8 @@ jobs:
           go-version: '1.25'
       - run: go build ./...
       - run: go test -race ./...
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          # v1.x of golangci-lint is built with Go 1.24 and refuses modules
+          # targeting go 1.25+. Pin a v2.x release that's built with Go 1.25+.
+          version: v2.11.4

@@ -45,7 +45,7 @@ func TestUpgradeSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	c.Close(websocket.StatusNormalClosure, "")
+	_ = c.Close(websocket.StatusNormalClosure, "")
 }
 
 func newTestUpgrader(t *testing.T) http.Handler {
