@@ -156,6 +156,45 @@ func TestLimitChannelsPerConn(t *testing.T) {
 	}
 }
 
+func TestSubscribePresenceRequiresAuth(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+	sendJSON(t, c, map[string]any{
+		"type":    "subscribe",
+		"channel": "presence-room",
+	})
+	got := readJSON(t, c)
+	if got["type"] != "error" || got["code"] != "AUTH_FAILED" {
+		t.Fatalf("expected AUTH_FAILED for unauthed presence-room, got %+v", got)
+	}
+}
+
+func TestSubscribePresenceValidHMAC(t *testing.T) {
+	const secret = "test-signing-secret"
+	c, socketID := newTestConn(t, secret)
+	tok, err := auth.SignToken(secret, socketID, "presence-room", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendJSON(t, c, map[string]any{
+		"type":    "subscribe",
+		"channel": "presence-room",
+		"token":   tok,
+	})
+	got := readJSON(t, c)
+	if got["type"] != "subscribed" || got["channel"] != "presence-room" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestSubscribeReservedRejected(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "_internal"})
+	got := readJSON(t, c)
+	if got["type"] != "error" || got["code"] != "RESERVED_CHANNEL" {
+		t.Fatalf("expected RESERVED_CHANNEL, got %+v", got)
+	}
+}
+
 func TestUnsubscribeRoundTrip(t *testing.T) {
 	ws, _ := newTestConn(t, "test-secret")
 	sendJSON(t, ws, map[string]any{"type": "subscribe", "channel": "public-x"})
