@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -22,7 +25,28 @@ CREATE TABLE IF NOT EXISTS keys (
 
 type sqliteStore struct{ db *sql.DB }
 
+// validateDBPath rejects values that would let a misconfigured operator
+// smuggle additional DSN parameters or pick a different DB. The current
+// callers only pass values from Go code, but a future --db-path flag will
+// flow operator config straight into here; the guard catches operator
+// mistakes before they become attack surface.
+func validateDBPath(path string) error {
+	if path == "" {
+		return errors.New("db path is empty")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("db path must be absolute (got %q)", path)
+	}
+	if strings.ContainsAny(path, "?#\x00\n\r") {
+		return fmt.Errorf("db path contains forbidden character (got %q)", path)
+	}
+	return nil
+}
+
 func NewSQLite(path string) (Store, error) {
+	if err := validateDBPath(path); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, err

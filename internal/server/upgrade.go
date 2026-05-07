@@ -54,6 +54,39 @@ func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, 
 	}
 }
 
+// sanitizeLogValue strips characters that could let an attacker inject a fake
+// log line via reflected headers (CR, LF, NUL, vertical-tab, escape, DEL).
+// Returns the value unchanged when no such characters appear, which is the
+// hot path for clean errors. Limited to 1 KiB so a giant request header
+// can't blow up the log volume on a sustained 4xx loop.
+func sanitizeLogValue(s string) string {
+	const max = 1024
+	if len(s) > max {
+		s = s[:max]
+	}
+	clean := true
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r == 0 || r == 0x1b || r == 0x7f || r < 0x20 {
+			if r != '\t' {
+				clean = false
+				break
+			}
+		}
+	}
+	if clean {
+		return s
+	}
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r == 0 || r == 0x1b || r == 0x7f || (r < 0x20 && r != '\t') {
+			out = append(out, '?')
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
+}
+
 // clientIP extracts a best-effort source IP. Behind a trusted proxy the caller
 // would want X-Forwarded-For, but for the direct-connect demo path RemoteAddr
 // is fine. Strips the port suffix; handles IPv6 (e.g. "[::1]:1234") by
@@ -114,7 +147,7 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, opts)
 	if err != nil {
 		if !errors.Is(err, http.ErrAbortHandler) {
-			slog.Warn("ws upgrade failed", "err", err)
+			slog.Warn("ws upgrade failed", "err", sanitizeLogValue(err.Error()))
 		}
 		return
 	}
