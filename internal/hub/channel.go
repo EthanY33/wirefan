@@ -10,12 +10,22 @@ import (
 // maximum number of subscribers.
 var ErrTooManySubs = errors.New("too many subscribers")
 
+// ErrChannelDeleted is returned by Subscribe when the registry has marked
+// the channel for GC between the caller's GetOrCreate and Subscribe. The
+// caller should retry: a fresh GetOrCreate will return a new (non-deleted)
+// channel for the same name. See registry.Sweep.
+var ErrChannelDeleted = errors.New("channel deleted")
+
 // Subscribe adds s to c. Returns ErrTooManySubs if the channel already has max
-// subscribers. The caller-supplied max enforces the per-channel cap (spec:
+// subscribers, or ErrChannelDeleted if the channel was swept between lookup
+// and this call. The caller-supplied max enforces the per-channel cap (spec:
 // 10000 — hardcoded at call sites until flag wiring lands).
 func Subscribe(c *registry.Channel, s registry.Subscriber, max int) error {
 	c.SubsMu.Lock()
 	defer c.SubsMu.Unlock()
+	if c.Deleted.Load() {
+		return ErrChannelDeleted
+	}
 	if len(c.Subscribers) >= max {
 		return ErrTooManySubs
 	}

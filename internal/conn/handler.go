@@ -11,6 +11,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/hub"
 	"github.com/EthanY33/wirefan/internal/metrics"
+	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -68,7 +69,17 @@ func (c *Conn) handle(raw []byte) {
 	}
 }
 
+// maxSubscribeRetries bounds how many times handleSubscribe re-attempts
+// GetOrCreate when the registry GC races with the subscribe. Three is more
+// than enough — Sweep runs at the minute scale, the retry window is the
+// time between two registry calls, so >1 retry would be a hot bug.
+const maxSubscribeRetries = 3
+
 func (c *Conn) handleSubscribe(msg incoming) {
+	if !c.rateLimit.Allow(c.apiKeyID) {
+		c.sendError("RATE_LIMITED", "too many control ops")
+		return
+	}
 	if strings.HasPrefix(msg.Channel, "private-") {
 		if err := auth.VerifyToken(c.signingSecret, c.socketID, msg.Channel, msg.Token); err != nil {
 			metrics.AuthFails.Inc()
@@ -87,10 +98,26 @@ func (c *Conn) handleSubscribe(msg incoming) {
 		c.sendError("LIMIT_CHANNELS", "max channels per conn")
 		return
 	}
-	ch := c.registry.GetOrCreate(msg.Channel)
-	if err := hub.Subscribe(ch, c, defaultMaxSubsPerChannel); err != nil {
+	var ch *registry.Channel
+	var subErr error
+	for i := 0; i < maxSubscribeRetries; i++ {
+		ch = c.registry.GetOrCreate(msg.Channel)
+		subErr = hub.Subscribe(ch, c, defaultMaxSubsPerChannel)
+		if subErr == nil {
+			break
+		}
+		if errors.Is(subErr, hub.ErrChannelDeleted) {
+			continue
+		}
+		break
+	}
+	if subErr != nil {
 		c.subsMu.Unlock()
-		c.sendError("LIMIT_SUBSCRIBERS", "max subscribers per channel")
+		if errors.Is(subErr, hub.ErrTooManySubs) {
+			c.sendError("LIMIT_SUBSCRIBERS", "max subscribers per channel")
+			return
+		}
+		c.sendError("SUBSCRIBE_FAILED", subErr.Error())
 		return
 	}
 	c.subs[msg.Channel] = ch
@@ -128,6 +155,10 @@ func (c *Conn) handlePublish(msg incoming) {
 }
 
 func (c *Conn) handleUnsubscribe(msg incoming) {
+	if !c.rateLimit.Allow(c.apiKeyID) {
+		c.sendError("RATE_LIMITED", "too many control ops")
+		return
+	}
 	c.subsMu.Lock()
 	ch, ok := c.subs[msg.Channel]
 	if !ok {
@@ -138,10 +169,9 @@ func (c *Conn) handleUnsubscribe(msg incoming) {
 	delete(c.subs, msg.Channel)
 	c.subsMu.Unlock()
 	hub.Unsubscribe(ch, c)
-	// NOTE: empty channels are intentionally NOT deleted from the registry here.
-	// A cross-conn TOCTOU race with concurrent GetOrCreate could orphan a Channel
-	// reference. Empty channels are kept and reused; a GC pass for genuinely
-	// abandoned channels can land in a later task.
+	// Empty channels are GC'd asynchronously by registry.SweepLoop. Subscribers
+	// arriving after Sweep marks a channel Deleted retry GetOrCreate, which
+	// returns a fresh non-deleted channel.
 	c.sendAck("unsubscribed", msg.Channel)
 }
 
