@@ -21,11 +21,27 @@ func NewRestHandler(s store.Store, adminToken, signingSecret string) *RestHandle
 	return &RestHandler{store: s, adminToken: adminToken, signingSecret: signingSecret}
 }
 
+// Register mounts both public and admin endpoints on a single mux. Kept
+// for callers that don't separate the two listeners.
 func (h *RestHandler) Register(mux *http.ServeMux) {
+	h.RegisterPublic(mux)
+	h.RegisterAdmin(mux)
+}
+
+// RegisterPublic mounts endpoints reachable on the public listener. Today
+// only /v1/auth/sign — it does its own credential check internally.
+func (h *RestHandler) RegisterPublic(mux *http.ServeMux) {
+	mux.HandleFunc("POST /v1/auth/sign", h.sign)
+}
+
+// RegisterAdmin mounts admin-only endpoints. The handlers gate themselves
+// with requireAdmin, but operators should additionally bind these on a
+// separate non-public listener (--admin-addr) so a misconfigured ingress
+// can't expose them by accident.
+func (h *RestHandler) RegisterAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/keys", h.requireAdmin(h.create))
 	mux.HandleFunc("GET /v1/keys", h.requireAdmin(h.list))
 	mux.HandleFunc("DELETE /v1/keys/{id}", h.requireAdmin(h.revoke))
-	mux.HandleFunc("POST /v1/auth/sign", h.sign)
 }
 
 func (h *RestHandler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
