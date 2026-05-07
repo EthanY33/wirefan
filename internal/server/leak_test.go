@@ -74,13 +74,22 @@ func TestNoGoroutineLeakAfterChurn(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Allow ws server-side goroutines to drain
-	deadline := time.Now().Add(5 * time.Second)
+	// Allow ws server-side goroutines to drain.
+	//
+	// Tolerance note: per-conn goroutines (read/write pumps) would produce
+	// thousands of extra entries if leaking — 2 goroutines × 1000 conns.
+	// The threshold below catches real leaks while tolerating httptest /
+	// coder-websocket / net.http background bookkeeping that varies by
+	// platform (Windows vs Linux, race vs no-race, Go version). Linux CI
+	// commonly retains ~6 extra after churn; Windows local typically <=2.
+	const tolerance = 30
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if runtime.NumGoroutine() <= base+5 {
+		if runtime.NumGoroutine() <= base+tolerance {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("goroutine leak: base=%d after=%d", base, runtime.NumGoroutine())
+	t.Fatalf("goroutine leak suspected: base=%d after=%d (tolerance %d; real per-conn leak would be ~2000)",
+		base, runtime.NumGoroutine(), tolerance)
 }
