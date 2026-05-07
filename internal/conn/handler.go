@@ -44,6 +44,43 @@ type incoming struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+// Channel-name ACLs.
+//
+// The original handler treated anything not starting with `private-` as
+// public, no auth required, and rejected `_`-prefixed names only on publish.
+// That's two gaps:
+//
+//  1. `presence-` is a Pusher-protocol convention for authenticated
+//     channels with member metadata; without explicit handling, an attacker
+//     could subscribe to `presence-room-1` unauthenticated and read every
+//     publish to it.
+//
+//  2. Subscribe ignored `_`-prefixed names, so an attacker could grab a
+//     reserved channel before the server ever uses it. Reject on both
+//     subscribe and publish.
+//
+// The split is data-driven so future prefixes are a one-liner.
+
+const reservedChannelPrefix = "_"
+
+// authRequiredPrefixes are channel name prefixes that require a signed token
+// on subscribe. The token is verified against the channel name (and socket
+// id), so a token for `private-alpha` cannot subscribe `private-bravo`.
+var authRequiredPrefixes = []string{"private-", "presence-"}
+
+func channelReserved(name string) bool {
+	return strings.HasPrefix(name, reservedChannelPrefix)
+}
+
+func channelRequiresAuth(name string) bool {
+	for _, p := range authRequiredPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Conn) handle(raw []byte) {
 	var msg incoming
 	if err := json.Unmarshal(raw, &msg); err != nil {
@@ -76,11 +113,15 @@ func (c *Conn) handle(raw []byte) {
 const maxSubscribeRetries = 3
 
 func (c *Conn) handleSubscribe(msg incoming) {
+	if channelReserved(msg.Channel) {
+		c.sendError("RESERVED_CHANNEL", "channel name reserved for server use")
+		return
+	}
 	if !c.rateLimit.Allow(c.apiKeyID) {
 		c.sendError("RATE_LIMITED", "too many control ops")
 		return
 	}
-	if strings.HasPrefix(msg.Channel, "private-") {
+	if channelRequiresAuth(msg.Channel) {
 		if err := auth.VerifyTokenAgainst(c.signingSecret, c.socketID, msg.Channel, msg.Token, c.replayCache); err != nil {
 			metrics.AuthFails.Inc()
 			if errors.Is(err, auth.ErrTokenReplayed) {
@@ -130,7 +171,7 @@ func (c *Conn) handleSubscribe(msg incoming) {
 }
 
 func (c *Conn) handlePublish(msg incoming) {
-	if strings.HasPrefix(msg.Channel, "_") {
+	if channelReserved(msg.Channel) {
 		c.sendError("RESERVED_CHANNEL", "channel name reserved for server use")
 		return
 	}
