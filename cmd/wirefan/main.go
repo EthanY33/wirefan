@@ -59,11 +59,15 @@ func run(ctx context.Context, cfg server.Config) error {
 	defer rl.Close()
 	h := hub.New()
 	s := server.New(cfg, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{}, h)
-	// Start stats publisher in background; goroutine exits when ctx is canceled.
+	// Stats publisher: emits per-channel subscriber counts.
 	go hub.PublishStatsLoop(ctx, reg, 5*time.Second, func() map[string]int64 {
 		// TODO: wire to actual prometheus collector values via testutil
 		return map[string]int64{}
 	})
+	// Channel GC: removes channels that have lost all their subscribers.
+	// Sub.Subscribe verifies Deleted under SubsMu, so the GC and a racing
+	// subscribe synchronise correctly without needing a registry-wide lock.
+	go registry.SweepLoop(ctx, reg, registry.DefaultSweepInterval)
 	return s.Run(ctx)
 }
 
