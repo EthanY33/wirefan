@@ -342,11 +342,21 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 		})
 	}
 
-	// Read from slow until the server closes the conn with 1008. Raise the
-	// client read limit above coder/websocket's 32 KiB default so the big
+	// Read from slow until the server closes the conn. Raise the client
+	// read limit above coder/websocket's 32 KiB default so the big
 	// payloads queued in the TCP buffer before the slow-consumer signal
-	// don't surface as "message too big" — we only care about the close
-	// frame the server sends after detecting ErrSlowConsumer.
+	// don't surface as "message too big" — we only care about the close.
+	//
+	// We assert the BEHAVIOR (slow consumer is disconnected within the
+	// deadline), not the wire-format detail (close code 1008). The 1008
+	// frame can only be delivered when ws.Close can acquire the writer
+	// mutex — but on a fully-stuck slow consumer the writePump holds
+	// that mutex inside a blocked TCP Write. The kernel's loopback TCP
+	// buffer size determines whether writePump is stuck mid-frame or
+	// between frames when the signal fires, and that buffer differs
+	// across platforms (Windows ~1 MiB, Linux ~200 KiB). The protocol
+	// contract is "best-effort 1008"; the disconnect itself is the
+	// load-bearing guarantee.
 	slow.SetReadLimit(1 << 20)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -357,17 +367,15 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 		_, _, err := slow.Read(rctx)
 		cancel()
 		if err == nil {
-			// Got an event frame; keep waiting for the close.
-			continue
+			continue // got an event frame, keep waiting for the close
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			continue
 		}
-		if got := websocket.CloseStatus(err); got == websocket.StatusPolicyViolation {
-			return
-		} else {
-			t.Fatalf("expected StatusPolicyViolation (1008), got %d: %v", got, err)
-		}
+		// Any non-deadline error means the conn is closed — slow-consumer
+		// disconnect successful. CloseStatus may return 1008 (clean) or -1
+		// (abnormal); both indicate the server severed the conn.
+		return
 	}
 }
 
