@@ -33,7 +33,7 @@ make bench                      # benchmark suite (see docs/BENCHMARKS.md)
 
 See `ARCHITECTURE.md` for the full tour. Quick pointers:
 
-- `cmd/wirefan/` — server entry; flag wiring **deferred** (see below)
+- `cmd/wirefan/` — server entry; `parseFlags` binds `--listen`, `--admin-addr`, `--allowed-origins`, `--dev`
 - `cmd/loadtest/` — load generator
 - `internal/conn/` — per-connection state; tunable constants live here
 - `internal/hub/` — channel registry + broadcast
@@ -48,7 +48,7 @@ See `ARCHITECTURE.md` for the full tour. Quick pointers:
 - **Plan-faithful by default** — divergence from `docs/superpowers/plans/2026-05-04-wirefan-implementation.md` requires justification noted at the diff site.
 - **Server-side signing secret architecture (option b)** — single server-held HMAC secret; **NOT** per-key signing (option a was explicitly rejected).
 - Conn-level constants (`sendChanSize`, ping/read deadlines, max channels) live in `internal/conn/conn.go`. Change them there, not at call sites.
-- **Per-channel FIFO** is enforced via `Channel.BroadcastMu` in `hub.Broadcast`. Don't bypass.
+- **Per-subscriber FIFO only** — `hub.Broadcast` snapshots subscribers under `RLock` then sends concurrently; ordering is preserved per-conn by the buffered send chan. Per-channel total ordering is **not** a protocol guarantee (`BroadcastMu` was removed in 22fd26d to kill head-of-line blocking on slow subscribers — see `internal/hub/channel.go:42-50`).
 - **Goroutine-leak invariant** is proven by `internal/server/leak_test.go`. Do not regress; if a new feature spawns goroutines, add to that test.
 
 ## Active hardening backlog
@@ -63,10 +63,9 @@ Examples currently on it: `SecretHash` exposure in `GET /v1/keys`, `X-Forwarded-
 
 ## Deferred (do not implement without reopening design)
 
-- Flag wiring in `main.go` — config currently env-only; CLI flags pending
 - Per-key signing (option a) — rejected; do not revive without spec change
 - Redis multi-server fanout
-- Presence / membership APIs
+- Presence / membership APIs (channel-name ACL exists for `presence-` prefix, but member-list/join-leave events are not implemented)
 
 ## Windows-dev-environment gotchas
 
