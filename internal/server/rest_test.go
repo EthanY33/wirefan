@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/EthanY33/wirefan/internal/auth"
@@ -46,6 +47,62 @@ func TestCreateAndListKeys(t *testing.T) {
 	body2, _ := io.ReadAll(res2.Body)
 	if !bytes.Contains(body2, []byte(created.ID)) {
 		t.Fatalf("list missing id: %s", body2)
+	}
+}
+
+func TestRevokeKey(t *testing.T) {
+	s := store.NewMemory()
+	secret, _ := auth.GenerateSecret()
+	k, _ := s.CreateKey(context.Background(), "app", auth.HashSecret(secret))
+	rest := NewRestHandler(s, "admin-tok", "test-signing-secret")
+	mux := http.NewServeMux()
+	rest.Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("DELETE", srv.URL+"/v1/keys/"+k.ID, nil)
+	req.Header.Set("Authorization", "Bearer admin-tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: want 204, got %d", res.StatusCode)
+	}
+
+	req2, _ := http.NewRequest("DELETE", srv.URL+"/v1/keys/01HX-does-not-exist", nil)
+	req2.Header.Set("Authorization", "Bearer admin-tok")
+	res2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.StatusCode != http.StatusNotFound {
+		t.Fatalf("revoke missing: want 404, got %d", res2.StatusCode)
+	}
+}
+
+func TestListKeysOmitsSecretHash(t *testing.T) {
+	s := store.NewMemory()
+	secret, _ := auth.GenerateSecret()
+	_, _ = s.CreateKey(context.Background(), "app", auth.HashSecret(secret))
+	rest := NewRestHandler(s, "admin-tok", "test-signing-secret")
+	mux := http.NewServeMux()
+	rest.Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/keys", nil)
+	req.Header.Set("Authorization", "Bearer admin-tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("want application/json, got %q", got)
+	}
+	body, _ := io.ReadAll(res.Body)
+	if bytes.Contains(bytes.ToLower(body), []byte("secret")) {
+		t.Fatalf("list response leaked secret field: %s", body)
 	}
 }
 

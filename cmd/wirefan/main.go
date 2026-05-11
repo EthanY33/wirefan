@@ -58,7 +58,16 @@ func run(ctx context.Context, cfg server.Config) error {
 	rl := ratelimit.New(100, 200, time.Hour)
 	defer rl.Close()
 	h := hub.New()
-	s := server.New(cfg, st, adminToken, reg, signingSecret, fan, rl, conn.PolicyDisconnect{}, h)
+	s := server.New(cfg, server.Deps{
+		Store:         st,
+		AdminToken:    adminToken,
+		Registry:      reg,
+		SigningSecret: signingSecret,
+		Fanout:        fan,
+		RateLimit:     rl,
+		Policy:        conn.PolicyDisconnect{},
+		Hub:           h,
+	})
 	// Stats publisher: emits per-channel subscriber counts.
 	go hub.PublishStatsLoop(ctx, reg, 5*time.Second, func() map[string]int64 {
 		// TODO: wire to actual prometheus collector values via testutil

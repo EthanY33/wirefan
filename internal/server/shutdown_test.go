@@ -26,10 +26,16 @@ func TestDrainClosesAllConnections(t *testing.T) {
 	t.Cleanup(rl.Close)
 	h := hub.New()
 
-	upgrader := NewUpgradeHandler(
-		s, []string{"*"}, registry.NewSyncMap(), "test-secret",
-		nil, fanout.NewPerConn(), rl, conn.PolicyDisconnect{}, h,
-	)
+	upgrader := NewUpgradeHandler(UpgradeDeps{
+		Store:          s,
+		AllowedOrigins: []string{"*"},
+		Registry:       registry.NewSyncMap(),
+		SigningSecret:  "test-secret",
+		Fanout:         fanout.NewPerConn(),
+		RateLimit:      rl,
+		Policy:         conn.PolicyDisconnect{},
+		Hub:            h,
+	})
 	srv := httptest.NewServer(upgrader)
 	defer srv.Close()
 	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key=" + k.ID

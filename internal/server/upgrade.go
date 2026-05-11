@@ -27,16 +27,23 @@ import (
 // well below the kind of fan-out a single phantom-conn loop can issue.
 const defaultIPCap = 200
 
+// UpgradeDeps bundles dependencies for /v1/connect. AllowedOrigins and
+// ReplayCache are upgrade-specific (origin allowlist and the server-wide
+// jti cache) — the remaining fields mirror server.Deps.
+type UpgradeDeps struct {
+	Store          store.Store
+	AllowedOrigins []string
+	Registry       registry.Registry
+	SigningSecret  string
+	ReplayCache    *auth.ReplayCache
+	Fanout         fanout.Fanout
+	RateLimit      *ratelimit.Limiter
+	Policy         conn.Policy
+	Hub            *hub.Hub
+}
+
 type UpgradeHandler struct {
-	store          store.Store
-	allowedOrigins []string
-	registry       registry.Registry
-	signingSecret  string
-	replayCache    *auth.ReplayCache
-	fanout         fanout.Fanout
-	rateLimit      *ratelimit.Limiter
-	policy         conn.Policy
-	hub            *hub.Hub
+	deps           UpgradeDeps
 	trustedProxies []netip.Prefix
 
 	ipMu    sync.Mutex
@@ -44,17 +51,9 @@ type UpgradeHandler struct {
 	ipCap   int
 }
 
-func NewUpgradeHandler(st store.Store, origins []string, reg registry.Registry, signingSecret string, replayCache *auth.ReplayCache, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy, h *hub.Hub) *UpgradeHandler {
+func NewUpgradeHandler(deps UpgradeDeps) *UpgradeHandler {
 	return &UpgradeHandler{
-		store:          st,
-		allowedOrigins: origins,
-		registry:       reg,
-		signingSecret:  signingSecret,
-		replayCache:    replayCache,
-		fanout:         fan,
-		rateLimit:      rl,
-		policy:         pol,
-		hub:            h,
+		deps:           deps,
 		trustedProxies: parseTrustedProxies(os.Getenv("WIREFAN_TRUSTED_PROXIES")),
 		ipCount:        map[string]int{},
 		ipCap:          defaultIPCap,
@@ -204,7 +203,7 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing key", http.StatusUnauthorized)
 		return
 	}
-	k, err := h.store.LookupKey(r.Context(), keyID)
+	k, err := h.deps.Store.LookupKey(r.Context(), keyID)
 	if err != nil || k.RevokedAt != nil {
 		metrics.UpgradeRej.WithLabelValues("bad_key").Inc()
 		http.Error(w, "invalid key", http.StatusUnauthorized)
@@ -234,7 +233,7 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.ipMu.Unlock()
 	}()
 
-	opts := &websocket.AcceptOptions{OriginPatterns: h.allowedOrigins}
+	opts := &websocket.AcceptOptions{OriginPatterns: h.deps.AllowedOrigins}
 	c, err := websocket.Accept(w, r, opts)
 	if err != nil {
 		if !errors.Is(err, http.ErrAbortHandler) {
@@ -243,5 +242,13 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := ulid.Make().String()
-	_ = conn.Run(r.Context(), c, sid, k.ID, h.registry, h.signingSecret, h.replayCache, h.fanout, h.rateLimit, h.policy, h.hub)
+	_ = conn.Run(r.Context(), c, sid, k.ID, conn.Deps{
+		Registry:      h.deps.Registry,
+		SigningSecret: h.deps.SigningSecret,
+		ReplayCache:   h.deps.ReplayCache,
+		Fanout:        h.deps.Fanout,
+		RateLimit:     h.deps.RateLimit,
+		Policy:        h.deps.Policy,
+		Hub:           h.deps.Hub,
+	})
 }

@@ -3,6 +3,8 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +12,12 @@ import (
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/store"
 )
+
+// maxAdminBodyBytes caps inbound JSON for admin POST handlers. The admin
+// surface only takes `{"name": "..."}`-shaped payloads, so 64 KiB is two
+// orders of magnitude above legitimate use and well below the heap pressure
+// an attacker could induce by spamming /v1/keys with multi-MB bodies.
+const maxAdminBodyBytes = 1 << 16
 
 type RestHandler struct {
 	store         store.Store
@@ -19,6 +27,21 @@ type RestHandler struct {
 
 func NewRestHandler(s store.Store, adminToken, signingSecret string) *RestHandler {
 	return &RestHandler{store: s, adminToken: adminToken, signingSecret: signingSecret}
+}
+
+// keyView is the public projection of store.Key returned by GET /v1/keys.
+// Crucially it omits SecretHash — the bcrypt hash is server-internal, and
+// even though it's not the cleartext secret, exposing it lets an attacker
+// run offline bcrypt cracking against any leaked admin list response.
+type keyView struct {
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	CreatedAt time.Time  `json:"created_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+}
+
+func toKeyView(k store.Key) keyView {
+	return keyView{ID: k.ID, Name: k.Name, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt}
 }
 
 // Register mounts both public and admin endpoints on a single mux. Kept
@@ -62,45 +85,74 @@ func (h *RestHandler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// writeJSON serializes v as JSON with the correct content-type. Errors during
+// encoding are logged but cannot be reported to the client — the status code
+// has already been committed.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("rest: encode response", "err", err)
+	}
+}
+
 func (h *RestHandler) create(w http.ResponseWriter, r *http.Request) {
-	var body struct{ Name string }
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	var body struct {
+		Name string `json:"name"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil || body.Name == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	secret, err := auth.GenerateSecret()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("rest: generate secret", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	k, err := h.store.CreateKey(r.Context(), body.Name, auth.HashSecret(secret))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("rest: create key", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]string{"id": k.ID, "name": k.Name, "secret": secret})
+	writeJSON(w, http.StatusCreated, map[string]string{"id": k.ID, "name": k.Name, "secret": secret})
 }
 
 func (h *RestHandler) list(w http.ResponseWriter, r *http.Request) {
 	keys, err := h.store.ListKeys(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("rest: list keys", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(keys)
+	views := make([]keyView, len(keys))
+	for i, k := range keys {
+		views[i] = toKeyView(k)
+	}
+	writeJSON(w, http.StatusOK, views)
 }
 
 func (h *RestHandler) revoke(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := h.store.RevokeKey(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+	err := h.store.RevokeKey(r.Context(), id)
+	if errors.Is(err, store.ErrKeyNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("rest: revoke key", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *RestHandler) sign(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
 	ah := r.Header.Get("Authorization")
 	creds := strings.TrimPrefix(ah, "Bearer ")
 	parts := strings.SplitN(creds, ":", 2)
@@ -123,8 +175,9 @@ func (h *RestHandler) sign(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, err := auth.SignToken(h.signingSecret, body.SocketID, body.Channel, time.Now().Add(5*time.Minute))
 	if err != nil {
-		http.Error(w, "sign failed", http.StatusInternalServerError)
+		slog.Error("rest: sign token", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]string{"token": tok})
+	writeJSON(w, http.StatusOK, map[string]string{"token": tok})
 }

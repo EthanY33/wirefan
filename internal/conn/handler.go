@@ -81,7 +81,7 @@ func channelRequiresAuth(name string) bool {
 	return false
 }
 
-func (c *Conn) handle(raw []byte) {
+func (c *Conn) handle(ctx context.Context, raw []byte) {
 	var msg incoming
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		c.sendError("BAD_JSON", "malformed message")
@@ -100,7 +100,7 @@ func (c *Conn) handle(raw []byte) {
 	case "unsubscribe":
 		c.handleUnsubscribe(msg)
 	case "publish":
-		c.handlePublish(msg)
+		c.handlePublish(ctx, msg)
 	default:
 		c.sendError("BAD_TYPE", "unknown message type")
 	}
@@ -170,7 +170,7 @@ func (c *Conn) handleSubscribe(msg incoming) {
 	c.sendAck("subscribed", msg.Channel)
 }
 
-func (c *Conn) handlePublish(msg incoming) {
+func (c *Conn) handlePublish(ctx context.Context, msg incoming) {
 	if channelReserved(msg.Channel) {
 		c.sendError("RESERVED_CHANNEL", "channel name reserved for server use")
 		return
@@ -199,7 +199,7 @@ func (c *Conn) handlePublish(msg incoming) {
 	})
 	start := time.Now()
 	metrics.Published.Inc()
-	c.fanout.Broadcast(context.Background(), ch, out)
+	c.fanout.Broadcast(ctx, ch, out)
 	metrics.Latency.Observe(time.Since(start).Seconds())
 }
 
@@ -243,10 +243,20 @@ func (c *Conn) sendError(code, message string) {
 // Send satisfies the registry.Subscriber interface. Delegates to the configured
 // backpressure Policy. On ErrSlowConsumer, signals Run to close the conn with
 // 1008 (PolicyViolation).
+//
+// sendMu is required: PolicyDropOldest performs a non-atomic (default-send /
+// drain / send) sequence on c.send. Two concurrent Send calls without this
+// lock can both hit the drain branch, drain one message each, then both block
+// on the unbuffered second send — head-of-line stalls under multi-channel
+// fanout. PolicyDisconnect tolerates concurrency on its own (the send /
+// default pair is atomic per goroutine), but the lock also costs nothing
+// in the common path so we hold it unconditionally.
 func (c *Conn) Send(b []byte) error {
 	if c.closed.Load() {
 		return ErrSlowConsumer
 	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	err := c.policy.Apply(c.send, b, nil)
 	if errors.Is(err, ErrSlowConsumer) {
 		metrics.Dropped.WithLabelValues("slow_consumer").Inc()
