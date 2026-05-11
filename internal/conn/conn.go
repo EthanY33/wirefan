@@ -36,6 +36,7 @@ type Conn struct {
 	socketID      string
 	apiKeyID      string
 	send          chan []byte
+	sendMu        sync.Mutex // serializes Send calls; required for PolicyDropOldest correctness (see Send)
 	registry      registry.Registry
 	signingSecret string
 	replayCache   *auth.ReplayCache
@@ -71,24 +72,35 @@ func (c *Conn) CloseFrame(code websocket.StatusCode, reason string) {
 	_ = c.ws.Close(code, reason)
 }
 
+// Deps bundles the long-lived dependencies a Conn needs. All fields except
+// ReplayCache are required; ReplayCache may be nil to disable subscribe-token
+// replay protection (used by tests — production callers pass a process-wide
+// cache so a leaked subscribe token cannot be reused within its 5-minute
+// window).
+type Deps struct {
+	Registry      registry.Registry
+	SigningSecret string
+	ReplayCache   *auth.ReplayCache
+	Fanout        fanout.Fanout
+	RateLimit     *ratelimit.Limiter
+	Policy        Policy
+	Hub           *hub.Hub
+}
+
 // Run owns the conn for its lifetime. Returns when ctx is canceled or peer disconnects.
-//
-// replayCache may be nil; when nil, subscribe-token replay protection is
-// disabled (used by tests). Production callers pass a process-wide cache so
-// a leaked subscribe token cannot be reused within its 5-minute window.
-func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg registry.Registry, signingSecret string, replayCache *auth.ReplayCache, fan fanout.Fanout, rl *ratelimit.Limiter, pol Policy, h *hub.Hub) error {
+func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d Deps) error {
 	c := &Conn{
 		ws:            ws,
 		socketID:      socketID,
 		apiKeyID:      apiKeyID,
 		send:          make(chan []byte, sendChanSize),
-		registry:      reg,
-		signingSecret: signingSecret,
-		replayCache:   replayCache,
-		fanout:        fan,
-		rateLimit:     rl,
+		registry:      d.Registry,
+		signingSecret: d.SigningSecret,
+		replayCache:   d.ReplayCache,
+		fanout:        d.Fanout,
+		rateLimit:     d.RateLimit,
 		connRate:      rate.NewLimiter(rate.Limit(defaultConnPublishRate), defaultConnPublishBurst),
-		policy:        pol,
+		policy:        d.Policy,
 		closeReq:      make(chan struct{}, 1),
 		subs:          map[string]*registry.Channel{},
 		maxChannels:   defaultMaxChannelsPerConn,
@@ -97,8 +109,8 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 	metrics.Connections.Inc()
 	defer metrics.Connections.Dec()
 
-	h.Add(c)
-	defer h.Remove(c)
+	d.Hub.Add(c)
+	defer d.Hub.Remove(c)
 
 	hello, _ := json.Marshal(map[string]string{
 		"type":      "connected",
@@ -125,17 +137,17 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, reg
 		<-errc // drain the other pump
 	case <-c.closeReq:
 		err = ErrSlowConsumer
-		cancel()
-		// Neither pump has reported yet; drain both.
-		<-errc
-		<-errc
-	}
-
-	// On a slow-consumer disconnect, close the underlying ws with a
-	// PolicyViolation code so the peer sees 1008. Pump-driven exits already
-	// closed the ws (NormalClosure / GoingAway) inside their own returns.
-	if errors.Is(err, ErrSlowConsumer) {
+		// Close the ws with 1008 BEFORE cancelling runCtx. If we cancel
+		// first, writePump's in-flight c.ws.Write fails mid-frame and
+		// coder/websocket tears down the conn with an abnormal-closure
+		// code, never delivering the explicit PolicyViolation. Closing
+		// first lets the close handshake serialize cleanly with the
+		// pumps, and the subsequent cancel just unblocks them so they
+		// return their (now-stale) errors.
 		_ = ws.Close(websocket.StatusPolicyViolation, "slow consumer")
+		cancel()
+		<-errc
+		<-errc
 	}
 
 	if err != nil {

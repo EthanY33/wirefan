@@ -28,17 +28,16 @@ func TestNoGoroutineLeakAfterChurn(t *testing.T) {
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
 
-	h := NewUpgradeHandler(
-		s,
-		[]string{"*"},
-		registry.NewSyncMap(),
-		"test-signing-secret",
-		nil,
-		fanout.NewPerConn(),
-		rl,
-		conn.PolicyDisconnect{},
-		hub.New(),
-	)
+	h := NewUpgradeHandler(UpgradeDeps{
+		Store:          s,
+		AllowedOrigins: []string{"*"},
+		Registry:       registry.NewSyncMap(),
+		SigningSecret:  "test-signing-secret",
+		Fanout:         fanout.NewPerConn(),
+		RateLimit:      rl,
+		Policy:         conn.PolicyDisconnect{},
+		Hub:            hub.New(),
+	})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key=" + k.ID

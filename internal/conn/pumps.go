@@ -48,6 +48,6 @@ func (c *Conn) readPump(ctx context.Context) error {
 			}
 			return err
 		}
-		c.handle(raw)
+		c.handle(ctx, raw)
 	}
 }

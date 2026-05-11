@@ -38,7 +38,16 @@ func TestUpgradeSucceeds(t *testing.T) {
 	k, _ := s.CreateKey(context.Background(), "t", auth.HashSecret(secret))
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
-	h := NewUpgradeHandler(s, []string{"*"}, registry.NewSyncMap(), "test-signing-secret", nil, fanout.NewPerConn(), rl, conn.PolicyDisconnect{}, hub.New())
+	h := NewUpgradeHandler(UpgradeDeps{
+		Store:          s,
+		AllowedOrigins: []string{"*"},
+		Registry:       registry.NewSyncMap(),
+		SigningSecret:  "test-signing-secret",
+		Fanout:         fanout.NewPerConn(),
+		RateLimit:      rl,
+		Policy:         conn.PolicyDisconnect{},
+		Hub:            hub.New(),
+	})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key=" + k.ID
@@ -52,7 +61,16 @@ func TestUpgradeSucceeds(t *testing.T) {
 func newTestUpgrader(t *testing.T) http.Handler {
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
-	return NewUpgradeHandler(store.NewMemory(), []string{"*"}, registry.NewSyncMap(), "test-signing-secret", nil, fanout.NewPerConn(), rl, conn.PolicyDisconnect{}, hub.New())
+	return NewUpgradeHandler(UpgradeDeps{
+		Store:          store.NewMemory(),
+		AllowedOrigins: []string{"*"},
+		Registry:       registry.NewSyncMap(),
+		SigningSecret:  "test-signing-secret",
+		Fanout:         fanout.NewPerConn(),
+		RateLimit:      rl,
+		Policy:         conn.PolicyDisconnect{},
+		Hub:            hub.New(),
+	})
 }
 
 func TestParseTrustedProxies(t *testing.T) {

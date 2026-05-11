@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +32,14 @@ func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = Run(ctx, c, socketID, "test-key", registry.NewSyncMap(), signingSecret, nil, fanout.NewPerConn(), rl, PolicyDisconnect{}, hub.New())
+		_ = Run(ctx, c, socketID, "test-key", Deps{
+			Registry:      registry.NewSyncMap(),
+			SigningSecret: signingSecret,
+			Fanout:        fanout.NewPerConn(),
+			RateLimit:     rl,
+			Policy:        PolicyDisconnect{},
+			Hub:           hub.New(),
+		})
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -192,6 +200,174 @@ func TestSubscribeReservedRejected(t *testing.T) {
 	got := readJSON(t, c)
 	if got["type"] != "error" || got["code"] != "RESERVED_CHANNEL" {
 		t.Fatalf("expected RESERVED_CHANNEL, got %+v", got)
+	}
+}
+
+// newSharedEnvConns spins up an httptest WS server backed by ONE registry
+// + hub + rate limiter so that publishes on one conn fan out to subscribers
+// on the other. Each dialed conn gets a unique socket-id ("conn-0", "conn-1",
+// ...) and the hello frame is drained before returning.
+func newSharedEnvConns(t *testing.T, pol Policy, n int) []*websocket.Conn {
+	t.Helper()
+	reg := registry.NewSyncMap()
+	h := hub.New()
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	fan := fanout.NewPerConn()
+
+	var idCounter int
+	var idMu sync.Mutex
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+		if err != nil {
+			return
+		}
+		idMu.Lock()
+		sid := fmt.Sprintf("conn-%d", idCounter)
+		idCounter++
+		idMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = Run(ctx, c, sid, "test-key", Deps{
+			Registry:      reg,
+			SigningSecret: "test-signing-secret",
+			Fanout:        fan,
+			RateLimit:     rl,
+			Policy:        pol,
+			Hub:           h,
+		})
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	wsURL := strings.Replace(srv.URL, "http", "ws", 1)
+	conns := make([]*websocket.Conn, n)
+	for i := 0; i < n; i++ {
+		c, _, err := websocket.Dial(context.Background(), wsURL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Drain hello.
+		if _, _, err := c.Read(context.Background()); err != nil {
+			t.Fatalf("conn %d hello: %v", i, err)
+		}
+		conns[i] = c
+	}
+	t.Cleanup(func() {
+		for _, c := range conns {
+			_ = c.Close(websocket.StatusNormalClosure, "")
+		}
+	})
+	return conns
+}
+
+func TestPublishRoundTrip(t *testing.T) {
+	conns := newSharedEnvConns(t, PolicyDisconnect{}, 2)
+	pub, sub := conns[0], conns[1]
+
+	// Both conns subscribe to a public channel. Order matters: sub must
+	// be subscribed before pub publishes, otherwise the fanout has no
+	// subscriber on the other side.
+	sendJSON(t, sub, map[string]any{"type": "subscribe", "channel": "public-rt"})
+	if got := readJSON(t, sub); got["type"] != "subscribed" {
+		t.Fatalf("sub ack: %+v", got)
+	}
+	sendJSON(t, pub, map[string]any{"type": "subscribe", "channel": "public-rt"})
+	if got := readJSON(t, pub); got["type"] != "subscribed" {
+		t.Fatalf("pub ack: %+v", got)
+	}
+
+	sendJSON(t, pub, map[string]any{
+		"type":    "publish",
+		"channel": "public-rt",
+		"data":    map[string]any{"hello": "world"},
+	})
+
+	// Sub should see the event envelope. Pub may also see it (it's
+	// subscribed too), but we only assert on sub.
+	rctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, raw, err := sub.Read(rctx)
+	if err != nil {
+		t.Fatalf("sub read: %v", err)
+	}
+	var ev map[string]any
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("sub unmarshal %q: %v", raw, err)
+	}
+	if ev["type"] != "event" {
+		t.Fatalf("type: want event, got %v", ev["type"])
+	}
+	if ev["channel"] != "public-rt" {
+		t.Fatalf("channel: want public-rt, got %v", ev["channel"])
+	}
+	if _, ok := ev["id"].(string); !ok {
+		t.Fatalf("id: want string, got %T %v", ev["id"], ev["id"])
+	}
+	data, ok := ev["data"].(map[string]any)
+	if !ok || data["hello"] != "world" {
+		t.Fatalf("data: want {hello:world}, got %v", ev["data"])
+	}
+}
+
+func TestSlowConsumerDisconnects(t *testing.T) {
+	conns := newSharedEnvConns(t, PolicyDisconnect{}, 2)
+	pub, slow := conns[0], conns[1]
+
+	sendJSON(t, slow, map[string]any{"type": "subscribe", "channel": "public-slow"})
+	if got := readJSON(t, slow); got["type"] != "subscribed" {
+		t.Fatalf("slow ack: %+v", got)
+	}
+	sendJSON(t, pub, map[string]any{"type": "subscribe", "channel": "public-slow"})
+	if got := readJSON(t, pub); got["type"] != "subscribed" {
+		t.Fatalf("pub ack: %+v", got)
+	}
+
+	// Slow conn now stops reading. To deterministically trigger
+	// ErrSlowConsumer on loopback we need to backpressure TCP, not just
+	// fill sendChanSize — loopback's TCP buffer is large enough that
+	// small JSON envelopes drain through writePump as fast as Broadcast
+	// can enqueue them, leaving c.send momentarily empty between Sends.
+	// Use a payload close to the 64 KiB ReadLimit so a handful of frames
+	// saturate the kernel's TCP send buffer (~200 KiB on Linux, similar
+	// order of magnitude on Windows). With writePump blocked on Write,
+	// c.send fills to sendChanSize and the next Send returns
+	// ErrSlowConsumer.
+	bigPayload := strings.Repeat("x", 50_000)
+	for i := 0; i < 90; i++ {
+		sendJSON(t, pub, map[string]any{
+			"type":    "publish",
+			"channel": "public-slow",
+			"data":    map[string]any{"i": i, "blob": bigPayload},
+		})
+	}
+
+	// Read from slow until the server closes the conn with 1008. Raise the
+	// client read limit above coder/websocket's 32 KiB default so the big
+	// payloads queued in the TCP buffer before the slow-consumer signal
+	// don't surface as "message too big" — we only care about the close
+	// frame the server sends after detecting ErrSlowConsumer.
+	slow.SetReadLimit(1 << 20)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for slow-consumer close")
+		}
+		rctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		_, _, err := slow.Read(rctx)
+		cancel()
+		if err == nil {
+			// Got an event frame; keep waiting for the close.
+			continue
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			continue
+		}
+		if got := websocket.CloseStatus(err); got == websocket.StatusPolicyViolation {
+			return
+		} else {
+			t.Fatalf("expected StatusPolicyViolation (1008), got %d: %v", got, err)
+		}
 	}
 }
 

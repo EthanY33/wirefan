@@ -33,6 +33,19 @@ type Config struct {
 	AllowedOrigins []string
 }
 
+// Deps bundles the long-lived dependencies a Server stitches together. All
+// fields are required.
+type Deps struct {
+	Store         store.Store
+	AdminToken    string
+	Registry      registry.Registry
+	SigningSecret string
+	Fanout        fanout.Fanout
+	RateLimit     *ratelimit.Limiter
+	Policy        conn.Policy
+	Hub           *hub.Hub
+}
+
 type Server struct {
 	cfg         Config
 	health      *HealthHandler
@@ -47,24 +60,34 @@ type Server struct {
 
 // New builds the public and admin muxes. The admin listener is created
 // only when cfg.AdminAddr is non-empty.
-func New(cfg Config, st store.Store, adminToken string, reg registry.Registry, signingSecret string, fan fanout.Fanout, rl *ratelimit.Limiter, pol conn.Policy, h *hub.Hub) *Server {
+func New(cfg Config, deps Deps) *Server {
 	rc := auth.NewReplayCache()
 	s := &Server{
 		cfg:         cfg,
 		health:      NewHealthHandler(),
 		mux:         http.NewServeMux(),
 		adminMux:    http.NewServeMux(),
-		store:       st,
-		hub:         h,
+		store:       deps.Store,
+		hub:         deps.Hub,
 		replayCache: rc,
 	}
 
-	rest := NewRestHandler(st, adminToken, signingSecret)
+	rest := NewRestHandler(deps.Store, deps.AdminToken, deps.SigningSecret)
 
 	// Public listener: health, /v1/connect (WS), /v1/auth/sign, static client.
 	s.mux.Handle("/v1/health", s.health)
 	rest.RegisterPublic(s.mux)
-	s.mux.Handle("/v1/connect", NewUpgradeHandler(st, cfg.AllowedOrigins, reg, signingSecret, rc, fan, rl, pol, h))
+	s.mux.Handle("/v1/connect", NewUpgradeHandler(UpgradeDeps{
+		Store:          deps.Store,
+		AllowedOrigins: cfg.AllowedOrigins,
+		Registry:       deps.Registry,
+		SigningSecret:  deps.SigningSecret,
+		ReplayCache:    rc,
+		Fanout:         deps.Fanout,
+		RateLimit:      deps.RateLimit,
+		Policy:         deps.Policy,
+		Hub:            deps.Hub,
+	}))
 	s.mux.Handle("/", http.FileServerFS(web.Files))
 
 	// Admin listener: metrics, pprof, key management. All gated by
@@ -78,9 +101,25 @@ func New(cfg Config, st store.Store, adminToken string, reg registry.Registry, s
 	s.adminMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	rest.RegisterAdmin(s.adminMux)
 
-	s.srv = &http.Server{Addr: cfg.Addr, Handler: s.mux}
+	// ReadHeaderTimeout caps how long a peer can dribble in request headers
+	// (slowloris). IdleTimeout reaps keep-alive connections that never send
+	// another request. ReadTimeout / WriteTimeout are intentionally unset:
+	// /v1/connect is a long-lived WS upgrade — a body-read deadline here
+	// would force a reconnect every N seconds, and writes are paced by
+	// websocket.Conn's own per-message deadlines (see internal/conn/conn.go).
+	s.srv = &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	if cfg.AdminAddr != "" {
-		s.adminSrv = &http.Server{Addr: cfg.AdminAddr, Handler: s.adminMux}
+		s.adminSrv = &http.Server{
+			Addr:              cfg.AdminAddr,
+			Handler:           s.adminMux,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
 	}
 	return s
 }
