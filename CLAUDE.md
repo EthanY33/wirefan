@@ -53,11 +53,13 @@ See `ARCHITECTURE.md` for the full tour. Quick pointers:
 
 ## Active hardening backlog
 
-Deferred follow-ups from per-task code reviews are tracked in memory at:
+Deferred follow-ups from per-task code reviews are tracked in the ethan-memory Obsidian vault at:
 
 ```
-~/.claude/projects/.../memory/project_hardening_backlog.md
+<vault>/projects/wirefan/project_hardening_backlog.md
 ```
+
+Junctioned from `~/.claude/projects/C--Users-ethan-Desktop-Projects-wirefan/memory/` so it auto-loads when a session starts in this repo.
 
 Examples currently on it: `SecretHash` exposure in `GET /v1/keys`, `X-Forwarded-For` honoring for per-IP cap, etc. Consult before starting new work to avoid duplicating fixes.
 
