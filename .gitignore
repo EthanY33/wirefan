@@ -41,3 +41,8 @@ docs/profiles/*.png
 
 # Benchmark outputs
 /results/
+
+# thryv-onboard skill scratch (recon notes, draft CLAUDE.md)
+.thryv-onboard/
+# Serena MCP per-project metadata
+.serena/
