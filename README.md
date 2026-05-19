@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/mark.svg" alt="wirefan" width="96">
+</p>
+
 # wirefan
 
 > Single-binary Go WebSocket fanout server. Channel-based pub/sub,
