@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/mark.svg" alt="wirefan" width="96">
+  <img src="docs/social.png" alt="wirefan" width="100%">
 </p>
 
 # wirefan
@@ -35,12 +35,12 @@ Full walk-through in [`ARCHITECTURE.md`](ARCHITECTURE.md#quickstart-for-contribu
 
 Two planes share one process:
 
-- **Data plane** — `/v1/connect` upgrades to WebSocket; clients `subscribe` /
-  `publish` JSON frames; the `Fanout` strategy pushes payloads to every
+- **Data plane:** `/v1/connect` upgrades to WebSocket; clients `subscribe` and
+  `publish` JSON frames; `hub.Broadcast` pushes each payload to every
   subscriber on the channel.
-- **Control plane** — `/v1/keys` (admin Bearer) mints API keys; `/v1/auth/sign`
-  issues HMAC tokens for `private-*` channels; `/metrics` exposes Prometheus
-  collectors; `/debug/pprof/*` is wired for production debugging.
+- **Control plane:** `/v1/keys` (admin Bearer) mints API keys; `/v1/auth/sign`
+  issues HMAC tokens for `private-*` channels; a separate admin listener serves
+  `/metrics` (Prometheus) and `/debug/pprof/*` for production debugging.
 
 Swappable interfaces (`Fanout`, `Registry`, `Store`, backpressure `Policy`)
 mean the same wire path benchmarks two strategies. See
@@ -53,16 +53,19 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the rationale behind each choice.
 
 Methodology, the `Fanout × Registry` matrix runner (`scripts/bench.sh`), and
 the `cmd/loadtest` driver are in place. Reproducible numbers from a 1-vCPU
-ARM reference box are pending — the project is currently undeployed. See
+ARM reference box are pending, since the project is currently undeployed. See
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the methodology and target
-matrix; numbers will be filled in after the first hosted deploy.
+matrix; numbers get filled in after the first hosted deploy.
 
 What's verified today:
 
 - Goroutine-leak invariant: 1000-connection churn under `-race` returns to
   baseline within tolerance (`internal/server/leak_test.go`).
-- Per-channel FIFO ordering: enforced via per-channel broadcast mutex,
-  serialized iteration, and a publisher-monotonic test.
+- Per-subscriber FIFO ordering: each connection's buffered send channel
+  preserves order (Go guarantees send order equals receive order). `Broadcast`
+  snapshots subscribers under `RLock` then sends concurrently, so per-channel
+  total ordering is intentionally not a protocol guarantee (see the rationale
+  below).
 - Graceful shutdown: 30 s drain, `WaitGroup`-tracked goroutines, no leaks
   (covered by `internal/server/shutdown_test.go`).
 
@@ -88,31 +91,34 @@ Full message catalog, error codes, close codes, and the HMAC flow for
 
 ## Why these choices
 
-- **`coder/websocket` over `gorilla/websocket`** — actively maintained
-  successor with a smaller, context-aware API; gorilla is in archive mode.
-- **SQLite over Postgres** — single-file durability, zero ops; Postgres is
+- **`coder/websocket`, not `gorilla/websocket`.** The actively maintained
+  successor, with a smaller, context-aware API. gorilla is in archive mode.
+- **SQLite, not Postgres.** Single-file durability, zero ops. Postgres is
   out of scope for V1 (single-server deployment).
-- **Per-channel mutex over lock-free** — FIFO ordering is trivial to reason
-  about and prove; the contention boundary is one channel, not one server.
-- **HMAC channel tokens, server-only signing secret** — no per-key crypto
-  material on disk; tokens are bound to `socket_id` so leaks can't be
+- **Concurrent broadcast, not a per-channel lock.** `Broadcast` snapshots
+  subscribers under `RLock` then sends concurrently. Each connection's buffered
+  channel keeps its own order, so per-subscriber FIFO holds. A per-channel
+  broadcast mutex was removed because one slow consumer head-of-line-blocked the
+  whole channel under the disconnect policy's write deadline.
+- **HMAC channel tokens with a server-only signing secret.** No per-key crypto
+  material on disk, and tokens are bound to `socket_id` so a leak can't be
   replayed on a different connection.
-- **Pluggable `Fanout` and `Registry`** — same code path benchmarks two
+- **Pluggable `Fanout` and `Registry`.** The same code path benchmarks two
   strategies (per-conn goroutine vs sharded worker pool; `sync.Map` vs
-  sharded RWMutex). Default ships per-conn fanout + sync-map registry.
+  sharded RWMutex). The default ships per-conn fanout with a sync-map registry.
 
 ---
 
 ## Deferred (next steps)
 
 - Multi-server scaling via Redis pub-sub (single-server is V1 scope)
-- Message history / replay (`Last-Event-ID` style)
+- Message history and replay (`Last-Event-ID` style)
 - Presence with join/leave diffs
 - Polished client SDK (raw WebSocket only for now)
 
 ---
 
-## Build & test
+## Build and test
 
 ```bash
 make build      # -> bin/wirefan
@@ -130,10 +136,10 @@ underlying binaries build and run on every Go target.
 
 ## Docs
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — repo map, request lifecycle, where to look when
-- [`docs/DESIGN.md`](docs/DESIGN.md) — architectural decisions, alternatives, scaling roadmap
-- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — wire format spec, frame schemas, error codes
-- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — methodology + results
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): repo map, request lifecycle, where to look when
+- [`docs/DESIGN.md`](docs/DESIGN.md): architectural decisions, alternatives, scaling roadmap
+- [`docs/PROTOCOL.md`](docs/PROTOCOL.md): wire format spec, frame schemas, error codes
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md): methodology and results
 
 ---
 
