@@ -8,7 +8,7 @@ Single-binary Go WebSocket fanout server (`wirefan`). Channel-based pub/sub with
 
 ## Build / test commands
 
-PATH must include Go and mingw gcc (CGO required for `-race`). See **Windows gotchas** below.
+PATH must include Go and mingw gcc. CGO is required for **all** builds/tests, not just `-race` — `internal/store/sqlite.go` uses `mattn/go-sqlite3`. See **Windows gotchas** below.
 
 ```
 # Bash (Git Bash / WSL-style)
@@ -36,7 +36,11 @@ See `ARCHITECTURE.md` for the full tour. Quick pointers:
 - `cmd/wirefan/` — server entry; `parseFlags` binds `--listen`, `--admin-addr`, `--allowed-origins`, `--dev`
 - `cmd/loadtest/` — load generator
 - `internal/conn/` — per-connection state; tunable constants live here
-- `internal/hub/` — channel registry + broadcast
+- `internal/registry/` — channel registry (sharded + syncmap variants, idle sweep)
+- `internal/hub/` — broadcast over registry channels (per-subscriber FIFO, see conventions)
+- `internal/fanout/` — fanout strategies (per-conn, sharded)
+- `internal/ratelimit/` — token-bucket rate limiter
+- `internal/store/` — key/token store; memory + SQLite (`mattn/go-sqlite3`, needs CGO)
 - `internal/auth/` — HMAC token verify
 - `internal/server/` — HTTP/WS handlers, leak test
 - `internal/metrics/` — Prometheus
@@ -79,7 +83,7 @@ Examples currently on it: `SecretHash` exposure in `GET /v1/keys`, `X-Forwarded-
 ## Live links
 
 - Demo: _TBD post-deploy_
-- Repo: _TBD post-publish_
+- Repo: https://github.com/EthanY33/wirefan
 
 ## Commit conventions
 
