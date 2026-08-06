@@ -8,6 +8,26 @@
   const STRESS_CONNS = 50;
   const STRESS_HOLD_MS = 10_000;
 
+  // Peer identity is DECORATIVE ONLY. It derives a short label and a color
+  // from the real server-issued socket_id so that two browser windows in the
+  // same screenshot are visually distinguishable. It adds no server semantics
+  // and is not a presence or membership feature (see CLAUDE.md, "Deferred").
+  // The label is the last 4 chars of the socket_id the server already sent;
+  // the color is a local hash of it. Nothing here is invented data.
+  const PEER_COLORS = [
+    '#9e470f', '#12615f', '#33357f', '#6e2050',
+    '#27526e', '#6f520e', '#276030', '#9b2033',
+  ];
+  function deriveIdentity(sid) {
+    if (!sid) return { short: '', color: 'var(--accent)' };
+    let h = 2166136261;
+    for (let i = 0; i < sid.length; i++) {
+      h ^= sid.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return { short: sid.slice(-4), color: PEER_COLORS[(h >>> 0) % PEER_COLORS.length] };
+  }
+
   // ---------------- DOM ----------------
   const $ = (id) => document.getElementById(id);
   const els = {
@@ -30,6 +50,8 @@
     statsCaption: $('statsCaption'),
     statsRaw: $('statsRaw'),
     statsAge: $('statsAge'),
+    peerBadge: $('peerBadge'),
+    peerBadgeId: $('peerBadgeId'),
   };
 
   // ---------------- state ----------------
@@ -41,6 +63,7 @@
   let lastStatsAt = 0;
   let logCleared = false;
   let statsSubPending = false;
+  const BASE_TITLE = document.title;
 
   // ---------------- helpers ----------------
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -70,11 +93,15 @@
       els.wsEndpoint.textContent = '—';
       subscribed.clear();
       refreshSubList();
+      document.body.classList.remove('is-connected');
+      document.documentElement.style.removeProperty('--peer-color');
+      els.peerBadgeId.textContent = '';
+      document.title = BASE_TITLE;
     }
   }
 
   // Build a log row using DOM APIs (no innerHTML &mdash; avoids XSS via frame data).
-  function logFrame(kind, channel, body) {
+  function logFrame(kind, channel, body, fromSid) {
     if (!logCleared) {
       els.log.replaceChildren();
       logCleared = true;
@@ -104,6 +131,16 @@
       bodyEl.appendChild(chEl);
     }
 
+    if (fromSid) {
+      const from = deriveIdentity(fromSid);
+      const chip = document.createElement('span');
+      chip.className = 'peer-chip';
+      chip.style.background = from.color;
+      chip.textContent = `from ·${from.short}`;
+      chip.title = `socket_id ${fromSid}`;
+      bodyEl.appendChild(chip);
+    }
+
     bodyEl.appendChild(document.createTextNode(body));
 
     row.appendChild(tsEl);
@@ -111,6 +148,10 @@
 
     // Newest at top.
     els.log.prepend(row);
+    if (kind === 'event') {
+      row.classList.add('log-row--new');
+      row.addEventListener('animationend', () => row.classList.remove('log-row--new'), { once: true });
+    }
     while (els.log.children.length > 200) {
       els.log.removeChild(els.log.lastChild);
     }
@@ -194,6 +235,11 @@
     if (t === 'connected') {
       socketId = frame.socket_id || null;
       els.socketId.textContent = socketId || '—';
+      const me = deriveIdentity(socketId);
+      document.documentElement.style.setProperty('--peer-color', me.color);
+      els.peerBadgeId.textContent = `·${me.short}`;
+      document.body.classList.add('is-connected');
+      document.title = `wirefan · ${me.short}`;
       logFrame('system', '', `connected sid=${socketId || '?'}`);
       return;
     }
@@ -232,11 +278,17 @@
         renderStats(frame.data);
         return;
       }
-      const data = typeof frame.data === 'string'
-        ? frame.data
-        : JSON.stringify(frame.data);
+      let payload = frame.data;
+      let fromSid = null;
+      if (payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+          && typeof payload._from === 'string') {
+        fromSid = payload._from;
+        payload = { ...payload };
+        delete payload._from;
+      }
+      const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
       const id = frame.id ? ` id=${frame.id}` : '';
-      logFrame('event', ch, `${data}${id}`);
+      logFrame('event', ch, `${data}${id}`, fromSid);
       return;
     }
     // Unknown frame &mdash; surface for debugging.
@@ -292,6 +344,14 @@
     const raw = els.msgBody.value.trim();
     try { data = JSON.parse(raw); }
     catch (_) { data = raw; }
+    // The protocol's event frame carries no publisher identity
+    // (docs/PROTOCOL.md), so provenance has to ride in the client-authored
+    // payload. Objects only: never silently promote a user's string or
+    // number payload into an object. Any client can put any value here,
+    // so the receiving chip is a display convenience, not an identity claim.
+    if (socketId && data !== null && typeof data === 'object' && !Array.isArray(data)) {
+      data = { ...data, _from: socketId };
+    }
     send({ type: 'publish', channel: ch, data });
   }
 

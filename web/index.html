@@ -15,6 +15,9 @@
         <span class="brand-name">wirefan</span>
         <span class="brand-sub">/ a small WebSocket fanout server</span>
       </div>
+      <span class="peer-badge" id="peerBadge">
+        this tab <span id="peerBadgeId"></span>
+      </span>
       <div class="masthead-meta">
         <span class="meta-pill" id="meta-build">build &mdash;</span>
         <span class="meta-pill"><a href="https://github.com/EthanY33/wirefan">source &rarr;</a></span>
@@ -73,7 +76,7 @@
           <button id="btnSubscribe" class="btn btn-ghost" type="button" disabled>subscribe</button>
         </div>
         <label class="field">
-          <span class="field-label">payload</span>
+          <span class="field-label">payload <span class="dim">(_from added automatically)</span></span>
           <textarea id="msgBody" rows="3" spellcheck="false">{"hello":"world"}</textarea>
         </label>
         <div class="row">
