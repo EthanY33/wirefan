@@ -74,14 +74,14 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the rationale behind each choice.
 
 ## Performance
 
-Numbers below are measured, not projected: each row traces to a raw output
-file committed under `results/`, produced by `scripts/bench.sh` driving
-`cmd/loadtest` against the server in a CPU-constrained Docker container
-(`--cpus=1 --memory=6g`, amd64, Windows/WSL2 host, loadtest on the host over
-loopback). The load generator spreads publishers across a pool of API keys
-so the per-key rate limiter is never the thing being measured. Full
-methodology and the exact reproduction commands are in
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+No number appears in this section unless it was measured: every published
+row must trace to a raw output file committed under `results/`, produced by
+`scripts/bench.sh` driving `cmd/loadtest` against the server in a
+CPU-constrained Docker container (`--cpus=1 --memory=6g`, amd64,
+Windows/WSL2 host, loadtest on the host over loopback). The benchmark
+protocol spreads publishers across a pool of API keys so the per-key rate
+limiter is never the thing being measured. Full methodology and the exact
+reproduction commands are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 <!-- BENCH-RESULTS -->
 
