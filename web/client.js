@@ -27,6 +27,7 @@
     msgCount: $('msgCount'),
     stressStatus: $('stressStatus'),
     statsGrid: $('statsGrid'),
+    statsCaption: $('statsCaption'),
     statsRaw: $('statsRaw'),
     statsAge: $('statsAge'),
   };
@@ -212,12 +213,13 @@
     if (t === 'error') {
       // Error frames carry code+message but no channel. If the only
       // subscribe in flight is the automatic stats-channel one and the
-      // server rejects it as reserved, note it quietly instead of
-      // alarming the demo log.
+      // server rejects it as reserved, degrade the stats panel honestly
+      // and keep the demo log free of an expected, self-inflicted error.
       if (frame.code === 'RESERVED_CHANNEL' && statsSubPending) {
         statsSubPending = false;
+        els.statsCaption.textContent = 'client subscription to the _wirefan-stats reserved channel is not enabled on this server build.';
+        els.statsGrid.style.display = 'none';
         els.statsRaw.textContent = 'stats channel not open to clients on this server build';
-        logFrame('system', STATS_CHANNEL, 'stats subscribe rejected (reserved channel)');
         return;
       }
       const msg = frame.code ? `${frame.code}: ${frame.message || ''}` : (frame.message || JSON.stringify(frame));
@@ -249,6 +251,7 @@
       try { snap = JSON.parse(snap); } catch (_) { /* leave as string */ }
     }
     if (typeof snap === 'object' && snap !== null) {
+      els.statsGrid.style.display = '';
       els.statsGrid.querySelectorAll('[data-stat]').forEach((node) => {
         const key = node.dataset.stat;
         if (key in snap) node.textContent = formatStat(snap[key]);
