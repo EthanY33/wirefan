@@ -19,7 +19,7 @@ not clustering, an admin UI, or multi-transport.
 
 ---
 
-<!-- DEMO-GIF -->
+![Two browser tabs exchanging messages through wirefan, with live server stats](docs/demo.gif)
 
 ## Quickstart
 
