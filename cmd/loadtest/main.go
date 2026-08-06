@@ -13,8 +13,10 @@
 //     bucketed by code (RATE_LIMITED, RATE_LIMITED_CONN, ...). A run where
 //     half the connections silently died is distinguishable from a clean one.
 //   - EXIT CODE. Exits nonzero when nothing connected, when any dials failed,
-//     when the run produced zero throughput, or when the server rejected
-//     messages. Harness scripts treat nonzero as "do not publish".
+//     when any established connection (publisher or subscriber) died before
+//     the duration elapsed, when the run produced zero throughput, or when
+//     the server rejected messages. Harness scripts treat nonzero as "do not
+//     publish".
 //
 // Publisher selection is deterministic (Bresenham over the within-key index)
 // so every key group carries the same publisher fraction; random selection
@@ -414,9 +416,18 @@ func runConn(ctx context.Context, wg *sync.WaitGroup, url, channel string, isPub
 			}
 		}
 	} else {
-		// Subscriber-only, wait out the duration
+		// Subscriber-only, wait out the duration. The reader goroutine
+		// closes readDone when c.Read fails; before the duration elapses
+		// that means the socket died mid-run (server crash, container
+		// teardown, network reset). Subscribers produce the entire recv
+		// count, so a silent early death here would deflate delivered
+		// throughput invisibly, exactly like a publisher write error.
 		select {
 		case <-ctx.Done():
+		case <-readDone:
+			if ctx.Err() == nil {
+				ctrs.diedEarly.Add(1)
+			}
 		case <-time.After(duration):
 		}
 	}
