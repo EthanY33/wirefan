@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 var (
@@ -29,6 +30,34 @@ var (
 	UpgradeRej = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "wirefan_upgrade_rejected_total"}, []string{"reason"})
 	AuthFails  = prometheus.NewCounter(prometheus.CounterOpts{Name: "wirefan_auth_failures_total"})
 )
+
+// readValue extracts the current value from a gauge or counter collector by
+// serializing it into the wire DTO. This is the same data /metrics exposes,
+// read in-process, so _wirefan-stats snapshots always agree with Prometheus.
+func readValue(m prometheus.Metric) float64 {
+	var d dto.Metric
+	if err := m.Write(&d); err != nil {
+		return 0
+	}
+	if d.Gauge != nil {
+		return d.Gauge.GetValue()
+	}
+	if d.Counter != nil {
+		return d.Counter.GetValue()
+	}
+	return 0
+}
+
+// SnapshotBasic returns the counters the _wirefan-stats system channel
+// publishes: active connections and total messages published. Channel count
+// comes from the registry (see cmd/wirefan) because the Channels gauge is
+// not wired to registry create/delete events.
+func SnapshotBasic() map[string]int64 {
+	return map[string]int64{
+		"connections":              int64(readValue(Connections)),
+		"messages_published_total": int64(readValue(Published)),
+	}
+}
 
 var registerOnce sync.Once
 
