@@ -37,7 +37,9 @@ RATE="${RATE:-10}"
 REPS="${REPS:-3}"
 KEYS_PER_CONNS="${KEYS_PER_CONNS:-10}"
 IMAGE="${IMAGE:-wirefan:bench}"
-LOADTEST="${LOADTEST:-./bin/loadtest.exe}"
+if [ -z "${LOADTEST:-}" ]; then
+  if [ -x ./bin/loadtest.exe ]; then LOADTEST=./bin/loadtest.exe; else LOADTEST=./bin/loadtest; fi
+fi
 CPUS="${CPUS:-1}"
 MEMORY="${MEMORY:-6g}"
 IP_CAP="${IP_CAP:-20000}"

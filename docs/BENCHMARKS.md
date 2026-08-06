@@ -1,120 +1,176 @@
 # wirefan benchmarks
 
-> **Status:** methodology + tooling complete. Real numbers are captured on the
-> Oracle Cloud Always Free ARM target (Task 32). This document is updated
-> in-place once those runs land.
+Every number in this document comes from a committed raw file under
+[`results/`](../results/). Each results row links the exact file it was read
+from. Nothing here is estimated, extrapolated, or rounded up. If a
+configuration is not in the tables, it did not produce a clean run and was
+not published.
 
-## Hardware target
+## Environment
 
-Production reference run is performed on:
+| Component | Value |
+|---|---|
+| Server container | `docker run --cpus=1 --memory=6g` (Docker 29.6.1, Docker Desktop / WSL2) |
+| Server binary | linux/amd64, Go 1.26.5, built via `deploy/Dockerfile` (`golang:1.26-bookworm` builder, distroless runtime) |
+| Host CPU | Intel Core i5-11600KF (6C/12T, 3.9 GHz base), 16 GB RAM, Windows 11 |
+| Load generator | `cmd/loadtest`, Go 1.26.5 windows/amd64, running on the host against the container's published ports |
+| Store | `--store=memory` (hermetic; fresh state per cell) |
+| Per-IP cap | `WIREFAN_IP_CAP=20000` (all load-generator conns share one source IP) |
 
-- **Oracle Cloud Always Free**, Ampere A1 (ARM64), 1 OCPU / 6 GB RAM
-- Ubuntu 22.04 LTS, Linux 6.x kernel
-- Single instance, Caddy reverse proxy on `:443` → wirefan on `:8080`
-- No load shedding, no rate limit lifted from defaults (100 msg/s, burst 200)
-
-Local-development numbers (Windows / Mac / Docker desktop) are recorded in
-`results/local-*.txt` for reference but should NOT be cited as portfolio
-numbers; the ARM single-vCPU target is the contract.
+The server is pinned to 1 CPU to model the smallest practical deployment
+target. The load generator runs on the same machine, so traffic crosses
+loopback plus the Docker Desktop port proxy. There is no real network RTT
+in any latency figure below; treat latencies as server-processing plus
+local-stack time, not as end-to-end WAN numbers.
 
 ## Methodology
 
-The matrix exercises the two pluggable axes the spec calls out:
+The matrix exercises the two flag-selectable axes:
 
 | Axis | Variants |
 |---|---|
-| `Fanout` | `per-conn` (default), `sharded` (NumCPU×2 worker pool) |
-| `Registry` | `sync-map` (default), `sharded` (16 shards, RWMutex+map) |
+| `--fanout` | `per-conn` (default), `sharded` (worker pool sized to GOMAXPROCS) |
+| `--registry` | `sync-map` (default), `sharded` (16 shards, RWMutex+map) |
 
 Each cell:
 
-1. Boots wirefan with the chosen flags
-2. `./bin/loadtest` opens **N=1000** WebSocket clients over a 5-second ramp-up
-3. Clients are distributed across **K=100** distinct channels
-4. **50%** of clients publish at **R=10 msg/s** (subscribers receive)
-5. Run holds for **D=30s**
-6. Captured: sent / received / drop ratio, latency p50 / p99 / p999
+1. Boots a fresh container with the cell's `--fanout`/`--registry` flags.
+2. Mints a pool of API keys against that cell's own admin endpoint. The
+   server rate-limits publishes at 100 msg/s (burst 200) per API key, so the
+   pool is sized to keep every key far below that: 1 key per 10 connections
+   at 100 to 1,000 conns (10, 50, 100 keys), 1 key per 20 connections at
+   5,000 conns (250 keys). Connections round-robin across the pool.
+3. Opens N WebSocket clients over a ramp-up, distributed across K channels
+   (10 subscribers per channel at every scale). Half of the connections
+   publish at a fixed per-connection rate for 30 seconds.
+4. Repeats 3 times. The published row is the median-throughput repetition
+   and every figure in the row comes from that single repetition's raw file.
 
-Latency is measured publisher-write → first-subscriber-receive on the same
-host (kernel-level loopback). Real-world WAN latencies will be higher; the
-benchmark numbers describe server-side processing latency only.
+A run only counts as clean if every connection dialed, subscribed, and
+survived the full duration, and the server sent zero error frames
+(`cmd/loadtest` exits nonzero otherwise, which aborts the whole matrix).
+Cells that aborted on a transient dial or subscribe failure were rerun in
+full; only fully clean 3-repetition cells appear here. Per-connection
+publish rates were chosen per scale so the aggregate offered load stays
+within what the 1-vCPU container sustains cleanly; probe runs above these
+rates failed that bar and are not published.
 
-`make bench` reproduces the run end-to-end. `WIREFAN_KEY` env must be set to a
-valid API key id (mint via `POST /v1/keys`).
+Two independent honesty checks are recorded in every raw file:
 
-## Stretch matrix (run when scaling test is needed)
+- **Cross-check**: the client-side sent count is compared against the
+  server's own `wirefan_messages_published_total` counter delta. All 39
+  published repetitions match exactly.
+- **Server-side latency**: the `wirefan_broadcast_latency_seconds`
+  histogram is scraped after each run. The container's Linux clock resolves
+  nanoseconds; the Windows host wall clock quantizes client-observed
+  latency at roughly 0.5 ms (the measured tick is printed in each raw file
+  as `host clock res`), so client percentiles are floor-limited at that
+  granularity.
 
-| Conns | Channels | Rate | Notes |
-|---|---|---|---|
-| 1k | 100 | 10/s | Default; smoke shape |
-| 10k | 100 | 10/s | Connection density |
-| 25k | 1000 | 10/s | Channel-table contention |
-| 50k | 1000 | 100/s | Headline number |
+"Delivered msg/s" is messages received by subscribers per second
+(fan-out output, not publish input). "Broadcast mean" is the mean time a
+publish spends in the server's broadcast call: for `per-conn` fanout that
+covers enqueueing to every subscriber's send buffer; for `sharded` fanout
+it covers handoff to the worker pool, which is why it reads lower.
 
-50k × 1000 × 100/s yields a sustained 5M msg/s through the broadcast path.
+## Results
 
-## Results — primary matrix (1k × 100 × 10/s × 30s)
+Scales were stepped 100 to 1,000 to 5,000 connections; all three completed
+cleanly (5,000 was the largest scale attempted). 50% of connections
+publish. Median repetition of 3; each row links its raw file, which
+includes the exact docker invocation.
 
-> Numbers TBD — captured post-deploy on Oracle ARM. This table will be
-> overwritten in-place with the real run output.
+### 100 connections, 10 channels, 10 msg/s per publisher
 
-| Fanout | Registry | Sent | Recv | Recv/Sent | p50 | p99 | p999 | Max |
+| Fanout | Registry | Sent | Delivered | Delivered msg/s | Client p50 | Client p99 | Broadcast mean | Raw |
 |---|---|---|---|---|---|---|---|---|
-| per-conn | sync-map | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| per-conn | sharded | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| sharded | sync-map | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| sharded | sharded | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| per-conn | sync-map | 14,983 | 141,797 | 4,727 | 1.09 ms | 3.20 ms | 16.9 us | [raw](../results/per-conn-sync-map-c100-rep3.txt) |
+| per-conn | sharded | 14,989 | 141,815 | 4,727 | 1.10 ms | 3.52 ms | 17.4 us | [raw](../results/per-conn-sharded-c100-rep3.txt) |
+| sharded | sync-map | 14,979 | 141,764 | 4,725 | 1.15 ms | 3.83 ms | 7.0 us | [raw](../results/sharded-sync-map-c100-rep2.txt) |
+| sharded | sharded | 14,990 | 141,844 | 4,728 | 1.08 ms | 2.71 ms | 10.8 us | [raw](../results/sharded-sharded-c100-rep3.txt) |
 
-Raw outputs land in `results/<fanout>-<registry>.txt`.
+### 1,000 connections, 100 channels, 3 msg/s per publisher
 
-## Profiles
+| Fanout | Registry | Sent | Delivered | Delivered msg/s | Client p50 | Client p99 | Broadcast mean | Raw |
+|---|---|---|---|---|---|---|---|---|
+| per-conn | sync-map | 44,990 | 422,570 | 14,086 | 1.06 ms | 2.57 ms | 23.1 us | [raw](../results/per-conn-sync-map-c1000-rep3.txt) |
+| per-conn | sharded | 44,991 | 422,582 | 14,086 | 1.05 ms | 2.82 ms | 24.5 us | [raw](../results/per-conn-sharded-c1000-rep2.txt) |
+| sharded | sync-map | 44,989 | 422,568 | 14,086 | 1.06 ms | 2.75 ms | 12.5 us | [raw](../results/sharded-sync-map-c1000-rep2.txt) |
+| sharded | sharded | 44,997 | 422,588 | 14,086 | 1.06 ms | 3.25 ms | 11.6 us | [raw](../results/sharded-sharded-c1000-rep3.txt) |
 
-CPU and heap flamegraphs are captured under load via `/debug/pprof/profile`
-and `/debug/pprof/heap`, rendered to PNG with `go tool pprof`.
+### 5,000 connections, 500 channels, 0.5 msg/s per publisher
 
-- `docs/profiles/per-conn-sync-map-cpu.png` — TBD
-- `docs/profiles/per-conn-sync-map-heap.png` — TBD
-- (one pair per matrix cell)
+| Fanout | Registry | Sent | Delivered | Delivered msg/s | Client p50 | Client p99 | Broadcast mean | Raw |
+|---|---|---|---|---|---|---|---|---|
+| per-conn | sync-map | 37,480 | 278,671 | 9,289 | 0.56 ms | 23.4 ms | 25.4 us | [raw](../results/per-conn-sync-map-c5000-rep2.txt) |
+| per-conn | sharded | 37,484 | 278,691 | 9,290 | 0.56 ms | 15.9 ms | 24.8 us | [raw](../results/per-conn-sharded-c5000-rep3.txt) |
+| sharded | sync-map | 37,481 | 278,678 | 9,289 | 0.59 ms | 25.8 ms | 14.1 us | [raw](../results/sharded-sync-map-c5000-rep3.txt) |
+| sharded | sharded | 37,485 | 278,685 | 9,290 | 0.57 ms | 8.0 ms | 13.8 us | [raw](../results/sharded-sharded-c5000-rep2.txt) |
 
-## Winner & hot-path explanation
+### Peak sustained delivery (500 connections, 50 channels, 10 msg/s per publisher, defaults: per-conn/sync-map)
 
-> TBD post-run. Expected qualitative reasoning, to be confirmed:
->
-> - **per-conn fanout** wins on small subscriber sets (≤ 100 per channel) — it
->   skips queue overhead and writes directly to per-conn buffered chans.
-> - **sharded fanout** wins as channel cardinality and per-channel subscriber
->   counts grow — the worker pool keeps a single hot publisher from monopolizing
->   the GMP `M`s assigned to that publisher's goroutine.
-> - **sync-map registry** wins on read-heavy mostly-stable channel sets — its
->   internal append-only `read` map is lock-free.
-> - **sharded registry** wins on write-heavy churn (constant subscribe/unsub
->   patterns across many channels) — RWMutex on a small shard outperforms the
->   sync.Map's load-and-promote dance.
+| Sent | Delivered | Delivered msg/s | Client p50 | Client p99 | Broadcast mean | Raw |
+|---|---|---|---|---|---|---|
+| 74,982 | 707,039 | 23,568 | 1.06 ms | 6.68 ms | 20.5 us | [raw](../results/per-conn-sync-map-c500-rep3.txt) |
 
-## Stretch: Centrifugo head-to-head
+23,568 delivered msg/s is the highest clean sustained rate measured on 1
+vCPU with this harness. It is load-bound at 10 subscribers per channel;
+different channel shapes will produce different ceilings.
 
-If wirefan ships ahead of schedule, run the same matrix against Centrifugo
-(default config) and tabulate side-by-side. Marked stretch in the
-implementation plan; not blocking.
+## Reading the matrix
 
-## Reproducing locally
+- At these offered loads every cell delivers the full load (delivered
+  throughput is identical across cells at each scale), so the axes do not
+  differentiate on throughput here. They differentiate on where time is
+  spent.
+- `sharded` fanout roughly halves the time the publisher spends in the
+  broadcast call (7 to 14 us vs 15 to 25 us) because it hands the write
+  work to a worker pool instead of enqueueing every subscriber inline. On
+  a 1-CPU container that does not translate into more delivered
+  throughput; the same core still does the socket writes.
+- The registry axis is not visible at this channel-churn rate: channels are
+  created once and then only read. A subscribe/unsubscribe-heavy workload
+  would be needed to separate `sync-map` from `sharded`.
 
-1. `go install` toolchain ≥ 1.25
-2. `make build && make loadtest`
-3. `./bin/wirefan &` — note the admin Bearer printed at startup
-4. `curl -X POST -H "Authorization: Bearer <admin>" http://localhost:8080/v1/keys -d '{"name":"bench"}'` → save the returned `id`
-5. `WIREFAN_KEY=<id> make bench`
+## CPU and heap profile (headline cell)
 
-The full matrix takes ~8 minutes locally (4 cells × 30s + dial overhead).
+Captured with `PROFILE_CELL=per-conn-sync-map` during a separate,
+non-published run of the peak cell (profiling adds overhead, so the
+profiled repetition's numbers are not in the tables). Rendered with
+`go tool pprof -top`; text output committed:
 
-## Reproduction file inventory
+- [`docs/profiles/per-conn-sync-map-c500-cpu-top.txt`](profiles/per-conn-sync-map-c500-cpu-top.txt):
+  45.9% of samples are in `Syscall6` under `websocket.(*Conn).writeFrame`
+  (53.5% cumulative). The hot path is socket writes, not wirefan
+  bookkeeping; the registry and hub do not appear in the top nodes.
+- [`docs/profiles/per-conn-sync-map-c500-heap-top.txt`](profiles/per-conn-sync-map-c500-heap-top.txt):
+  about 10 MB in use under load; the top consumers are the per-connection
+  bufio read/write buffers (about 40% combined).
+
+Raw protobuf profiles: [`results/per-conn-sync-map-c500-cpu.pb.gz`](../results/per-conn-sync-map-c500-cpu.pb.gz),
+[`results/per-conn-sync-map-c500-heap.pb.gz`](../results/per-conn-sync-map-c500-heap.pb.gz).
+
+## Reproducing
 
 ```
-scripts/bench.sh           # the runner this doc points at
-cmd/loadtest/main.go       # the load generator
-docs/BENCHMARKS.md         # this file
-docs/profiles/             # PNGs land here
-results/                   # raw .txt per cell (gitignored)
+go build -o bin/loadtest ./cmd/loadtest        # bin/loadtest.exe on Windows
+docker build -f deploy/Dockerfile -t wirefan:bench .
+bash scripts/bench.sh                          # full matrix at CONNS=1000
 ```
 
-`results/` is gitignored — rerun bench to repopulate.
+Per-scale invocations used for the tables above:
+
+```
+CONNS=100  CHANNELS=10  RATE=10  REPS=3 DURATION=30s bash scripts/bench.sh
+CONNS=1000 CHANNELS=100 RATE=3   REPS=3 DURATION=30s bash scripts/bench.sh
+CONNS=5000 CHANNELS=500 RATE=0.5 RAMPUP=20s KEYS_PER_CONNS=20 REPS=3 DURATION=30s bash scripts/bench.sh
+CONNS=500  CHANNELS=50  RATE=10  REPS=3 DURATION=30s CELLS="per-conn/sync-map" bash scripts/bench.sh
+```
+
+`scripts/bench.sh` fails hard on any server death, mint failure, dial or
+subscribe failure, mid-run disconnect, server error frame, or
+zero-throughput cell. The exact docker invocation, key-pool size, and both
+honesty checks are recorded in every `results/*.txt` file.
+
+An ARM row (Ampere A1, the intended production target) may be added later;
+no ARM numbers exist yet.
