@@ -30,9 +30,11 @@ func NewRestHandler(s store.Store, adminToken, signingSecret string) *RestHandle
 }
 
 // keyView is the public projection of store.Key returned by GET /v1/keys.
-// Crucially it omits SecretHash — the bcrypt hash is server-internal, and
-// even though it's not the cleartext secret, exposing it lets an attacker
-// run offline bcrypt cracking against any leaked admin list response.
+// Crucially it omits SecretHash. The hash is unsalted SHA-256 over a
+// 256-bit random secret, which is the right construction here: the input
+// is full-entropy random rather than a human password, so there is nothing
+// for a dictionary attack to exploit. The hash is still server-internal
+// and has no business appearing in an admin list response.
 type keyView struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
