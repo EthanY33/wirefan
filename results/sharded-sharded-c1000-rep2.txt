@@ -1,0 +1,50 @@
+# wirefan bench raw output
+# date: 2026-08-06T04:19:59Z
+# cell: fanout=sharded registry=sharded rep=2
+# image: wirefan:bench
+# docker invocation: docker run -d --name wirefan-bench --cpus=1 --memory=6g -e WIREFAN_ADMIN_TOKEN=c9af38c44d5cde78db1ce4f2c243f46e -e WIREFAN_IP_CAP=20000 -p 8080:8080 -p 127.0.0.1:6060:6060 wirefan:bench --listen=:8080 --admin-addr=0.0.0.0:6060 --dev --allowed-origins=* --store=memory --registry=sharded --fanout=sharded
+# loadtest: ./bin/loadtest.exe --addr=ws://127.0.0.1:8080 --conns=1000 --channels=100 --rate=3 --dur=30s --rampup=5s --keys=<pool of 100 ids>
+# key pool: 100 keys (1 per 10 conns); WIREFAN_IP_CAP=20000
+dialing 1000 conns over 5s rampup, 100 channels, 3.0 msg/s/conn (50% publishers), 100-key pool, duration 30s
+
+=== loadtest results ===
+conns attempted:  1000
+conns connected:  1000
+conns dial-fail:  0
+conns sub-fail:   0
+conns died early: 0
+channels:         100
+rate:             3.0 msg/s/conn (publishers: 50%)
+duration:         30s
+sent:             44993
+recv:             422592
+recv/sent:        9.39
+delivered msg/s:  14086
+host clock res:   503.0us (client latencies at/below this are floor-limited)
+samples:          422592
+latency p50:      1058.7us
+latency p99:      2697.5us
+latency p999:     8020.3us
+latency max:      33627.1us
+SUMMARY attempted=1000 connected=1000 dial_failed=0 sub_failed=0 died_early=0 sent=44993 recv=422592 server_errors=0 delivered_per_s=14086 p50_us=1058.7 p99_us=2697.5 p999_us=8020.3 max_us=33627.1
+wirefan_broadcast_latency_seconds_bucket{le="0.0001"} 44975
+wirefan_broadcast_latency_seconds_bucket{le="0.0002"} 44986
+wirefan_broadcast_latency_seconds_bucket{le="0.0004"} 44991
+wirefan_broadcast_latency_seconds_bucket{le="0.0008"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.0016"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.0032"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.0064"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.0128"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.0256"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.0512"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.1024"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.2048"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.4096"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="0.8192"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="1.6384"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="3.2768"} 44993
+wirefan_broadcast_latency_seconds_bucket{le="+Inf"} 44993
+wirefan_broadcast_latency_seconds_sum 0.5260219690000023
+wirefan_broadcast_latency_seconds_count 44993
+SERVER_LATENCY mean_us=11.69 count=44993
+CROSSCHECK wirefan_messages_published_total_delta=44993 client_sent=44993
