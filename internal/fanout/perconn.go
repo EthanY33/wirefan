@@ -14,3 +14,6 @@ func NewPerConn() Fanout { return &PerConn{} }
 func (PerConn) Broadcast(_ context.Context, c *registry.Channel, msg []byte) {
 	hub.Broadcast(c, msg)
 }
+
+// Close is a no-op: PerConn broadcasts synchronously and owns no goroutines.
+func (PerConn) Close() error { return nil }

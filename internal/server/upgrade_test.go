@@ -153,6 +153,33 @@ func TestClientIPTrustedProxyPicksRightmostUntrusted(t *testing.T) {
 	}
 }
 
+func TestParseIPCap(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want int
+	}{
+		{"", defaultIPCap},
+		{"500", 500},
+		{" 1000 ", 1000},
+		{"0", defaultIPCap},
+		{"-5", defaultIPCap},
+		{"lots", defaultIPCap},
+	}
+	for _, c := range cases {
+		if got := parseIPCap(c.raw); got != c.want {
+			t.Errorf("parseIPCap(%q) = %d, want %d", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestNewUpgradeHandlerHonorsIPCapEnv(t *testing.T) {
+	t.Setenv("WIREFAN_IP_CAP", "12345")
+	h := NewUpgradeHandler(UpgradeDeps{})
+	if h.ipCap != 12345 {
+		t.Fatalf("ipCap = %d, want 12345", h.ipCap)
+	}
+}
+
 func mustPrefix(t *testing.T, s string) netip.Prefix {
 	t.Helper()
 	p, err := netip.ParsePrefix(s)

@@ -6,10 +6,7 @@ import (
 	"time"
 )
 
-var (
-	ErrKeyNotFound = errors.New("key not found")
-	ErrKeyRevoked  = errors.New("key revoked")
-)
+var ErrKeyNotFound = errors.New("key not found")
 
 type Key struct {
 	ID         string
