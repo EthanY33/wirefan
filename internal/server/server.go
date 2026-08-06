@@ -159,16 +159,21 @@ func (s *Server) Run(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	s.hub.Drain(shutdownCtx, 30*time.Second)
-	// Stop fanout workers after Drain: no new broadcasts arrive once conns
-	// are drained, and Close waits for queued ones so the goroutine-leak
-	// invariant holds for worker-pool fanouts too.
-	if s.fan != nil {
-		_ = s.fan.Close()
-	}
 	if s.adminSrv != nil {
 		_ = s.adminSrv.Shutdown(shutdownCtx)
 	}
-	return s.srv.Shutdown(shutdownCtx)
+	err := s.srv.Shutdown(shutdownCtx)
+	// Stop fanout workers last. Draining conns is not enough on its own: the
+	// public listener still accepts /v1/connect upgrades until Shutdown
+	// returns, so closing earlier leaves a window where a fresh conn can
+	// publish into a closed ShardedPool, whose Broadcast is a silent no-op
+	// after Close while metrics still count the publish as delivered. Once
+	// the listener is down no new broadcast can arrive, and Close waits for
+	// queued ones so the goroutine-leak invariant still holds.
+	if s.fan != nil {
+		_ = s.fan.Close()
+	}
+	return err
 }
 
 // sweepReplayCache evicts expired token jti entries every minute. Memory in

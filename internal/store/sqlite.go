@@ -26,10 +26,9 @@ CREATE TABLE IF NOT EXISTS keys (
 type sqliteStore struct{ db *sql.DB }
 
 // validateDBPath rejects values that would let a misconfigured operator
-// smuggle additional DSN parameters or pick a different DB. The current
-// callers only pass values from Go code, but a future --db-path flag will
-// flow operator config straight into here; the guard catches operator
-// mistakes before they become attack surface.
+// smuggle additional DSN parameters or pick a different DB. The --db-path
+// flag flows operator config straight into here, so the guard catches
+// operator mistakes before they become attack surface.
 func validateDBPath(path string) error {
 	if path == "" {
 		return errors.New("db path is empty")

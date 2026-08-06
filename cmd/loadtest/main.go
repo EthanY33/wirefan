@@ -132,8 +132,15 @@ func main() {
 		// within-key index advances Bresenham-style so every key carries the
 		// same publisher fraction (random selection could overload one key's
 		// token bucket by chance).
-		within := i / len(pool)
-		isPublisher := int(float64(within+1)**publishers) > int(float64(within)**publishers)
+		// When the pool is large enough that a key group holds fewer than two
+		// conns, the within-key index is always 0 and this would select zero
+		// publishers. Stratify across the global index instead; a group that
+		// small cannot overload its own token bucket anyway.
+		seq := i / len(pool)
+		if *conns/len(pool) < 2 {
+			seq = i
+		}
+		isPublisher := int(float64(seq+1)**publishers) > int(float64(seq)**publishers)
 		chName := fmt.Sprintf("loadtest-%d", i%*channels)
 		connURL := fmt.Sprintf("%s/v1/connect?key=%s", *addr, key)
 		go runConn(runCtx, &wg, connURL, chName, isPublisher, *rate, *duration, ctrs, samples)
@@ -323,24 +330,41 @@ func runConn(ctx context.Context, wg *sync.WaitGroup, url, channel string, isPub
 		return
 	}
 	{
+		// The ack is not guaranteed to be the first frame back. hub.Subscribe
+		// registers this conn before the ack is enqueued, and only
+		// per-subscriber FIFO is promised, so a concurrent publisher's event
+		// frame on an already-busy channel can legitimately land first. Read
+		// until the ack or an error frame rather than judging one frame.
 		readCtx, readCancel := context.WithTimeout(ctx, 10*time.Second)
-		_, raw, err := c.Read(readCtx)
-		readCancel()
-		if err != nil {
-			ctrs.subFailed.Add(1)
-			return
-		}
 		var ack struct {
 			Type string `json:"type"`
 			Code string `json:"code"`
 		}
-		if json.Unmarshal(raw, &ack) != nil || ack.Type != "subscribed" {
-			ctrs.subFailed.Add(1)
-			if ack.Code != "" {
-				ctrs.countErr(ack.Code)
+		for {
+			_, raw, err := c.Read(readCtx)
+			if err != nil {
+				readCancel()
+				ctrs.subFailed.Add(1)
+				return
 			}
-			return
+			ack.Type, ack.Code = "", ""
+			if json.Unmarshal(raw, &ack) != nil {
+				continue
+			}
+			if ack.Type == "subscribed" {
+				break
+			}
+			if ack.Type == "error" {
+				readCancel()
+				ctrs.subFailed.Add(1)
+				if ack.Code != "" {
+					ctrs.countErr(ack.Code)
+				}
+				return
+			}
+			// Anything else is in-band data that beat the ack; keep reading.
 		}
+		readCancel()
 	}
 	ctrs.connected.Add(1)
 
