@@ -63,6 +63,22 @@ type incoming struct {
 
 const reservedChannelPrefix = "_"
 
+// statsChannel is the one reserved channel clients may subscribe to,
+// read-only. The server's hub.PublishStatsLoop broadcasts metric snapshots
+// on it and the bundled demo page renders them as live stat tiles. Client
+// publish to it is still rejected (handlePublish checks channelReserved
+// before anything else), and every other "_"-prefixed name stays fully
+// reserved on both subscribe and publish. The snapshot payload contains
+// only aggregate counters (connections, channels, published, dropped), so
+// exposing it read-only leaks no per-tenant or per-channel data.
+const statsChannel = "_wirefan-stats"
+
+// reservedSubscribeAllowed reports whether a client may subscribe to a reserved
+// channel name. Only the stats channel is exempt from the reservation.
+func reservedSubscribeAllowed(name string) bool {
+	return name == statsChannel
+}
+
 // authRequiredPrefixes are channel name prefixes that require a signed token
 // on subscribe. The token is verified against the channel name (and socket
 // id), so a token for `private-alpha` cannot subscribe `private-bravo`.
@@ -113,7 +129,7 @@ func (c *Conn) handle(ctx context.Context, raw []byte) {
 const maxSubscribeRetries = 3
 
 func (c *Conn) handleSubscribe(msg incoming) {
-	if channelReserved(msg.Channel) {
+	if channelReserved(msg.Channel) && !reservedSubscribeAllowed(msg.Channel) {
 		c.sendError("RESERVED_CHANNEL", "channel name reserved for server use")
 		return
 	}
