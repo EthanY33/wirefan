@@ -481,11 +481,12 @@ BENCHMARKS.md. §12 sketches what multi-host would look like.
 
 ### 8.3 Custom epoll loop (`gnet`, `nbio`)
 
-**Rejected.** Modern Go scheduler + `coder/websocket` handle
-50k goroutines per vCPU comfortably; the runtime cost per goroutine
-is not the bottleneck at our target scale. `gnet`/`nbio` give you
-back ~2 KB per conn and slightly tighter tail latency at the cost of
-giving up the *entire* idiomatic Go I/O stack. Premature.
+**Rejected.** The modern Go scheduler handles goroutine counts far
+beyond wirefan's single-host scope; per-goroutine runtime cost is not
+the bottleneck at our target scale (measured numbers in
+BENCHMARKS.md). `gnet`/`nbio` trade away the *entire* idiomatic Go
+I/O stack for a smaller per-conn footprint and tighter tail latency
+wirefan does not yet need. Premature.
 
 ### 8.4 WebTransport / HTTP/3
 
