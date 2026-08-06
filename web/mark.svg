@@ -2,7 +2,7 @@
   <!-- Square brand mark for wirefan. Matches the og-card.svg palette
        (paper #f5f1ea, ink #2b2b2b, rust accent #c25b1a) and visual
        grammar (publisher hub + ring → 4 subscriber leaves). Sized
-       80×80 — pairs cleanly as a 96px README header logo. -->
+       80×80; pairs cleanly as a 96px README header logo. -->
   <rect width="80" height="80" rx="14" fill="#f5f1ea"/>
   <!-- 4 spokes, distinct angles, no overlap -->
   <line x1="24" y1="40" x2="60" y2="14" stroke="#c25b1a" stroke-width="2.4" stroke-linecap="round"/>
