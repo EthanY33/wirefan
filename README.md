@@ -83,7 +83,20 @@ protocol spreads publishers across a pool of API keys so the per-key rate
 limiter is never the thing being measured. Full methodology and the exact
 reproduction commands are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-<!-- BENCH-RESULTS -->
+Default configuration (`--fanout=per-conn --registry=sync-map`), 50 channels,
+half the connections publishing at 10 msg/s, 30 s hold:
+
+| Conns | Delivered msg/s | Client p50 | Client p99 | Broadcast mean | Raw |
+|---|---|---|---|---|---|
+| 500 (peak sustained) | 23,568 | 1.06 ms | 6.68 ms | 20.5 us | [raw](results/per-conn-sync-map-c500-rep3.txt) |
+| 1,000 | 14,086 | 1.06 ms | 2.57 ms | 23.1 us | [raw](results/per-conn-sync-map-c1000-rep3.txt) |
+| 5,000 | 9,289 | 0.56 ms | 23.4 ms | 25.4 us | [raw](results/per-conn-sync-map-c5000-rep2.txt) |
+
+Each row is the median-throughput run of three repetitions, and every
+repetition reconciles the client's sent count against the server's own
+`wirefan_messages_published_total` counter. The full `Fanout x Registry`
+matrix at all three scales, plus CPU and heap profiles, is in
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 Reproduce with:
 

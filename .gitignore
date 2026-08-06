@@ -46,3 +46,6 @@ docs/profiles/*.png
 .thryv-onboard/
 # Serena MCP per-project metadata
 .serena/
+
+# Agent worktrees and session scratch
+.claude/
