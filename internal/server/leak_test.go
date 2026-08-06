@@ -21,8 +21,10 @@ import (
 
 // TestNoGoroutineLeakAfterChurn proves the leak invariant for every fanout
 // the --fanout flag can select. The sharded pool's workers spin up before
-// the baseline sample and are torn down via Close in cleanup, so a stuck
-// worker or an unclosed pool shows up as a leak.
+// the baseline sample, so this test proves connection churn leaks nothing
+// on top of them; it cannot observe pool teardown (Close runs in cleanup,
+// after the assertion). Worker exit after Close is proven separately by
+// TestShardedPoolWorkersExitOnClose in internal/fanout.
 func TestNoGoroutineLeakAfterChurn(t *testing.T) {
 	t.Run("fanout=per-conn", func(t *testing.T) {
 		testNoGoroutineLeakAfterChurn(t, fanout.NewPerConn())
