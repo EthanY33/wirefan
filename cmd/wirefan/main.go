@@ -81,10 +81,11 @@ func openStore(cfg appConfig) (store.Store, error) {
 }
 
 // newRegistry and newFanout select the channel-registry and fanout
-// implementations per --registry/--fanout. Both pairs implement the same
-// interfaces and pass the same test suites; the flags exist so the
-// benchmark matrix (docs/BENCHMARKS.md) exercises real binaries, not
-// hand-edited builds.
+// implementations per --registry/--fanout. Each pair implements the same
+// interface and is independently tested (the registries share one test
+// suite; each fanout has its own tests). The flags exist so the benchmark
+// matrix (docs/BENCHMARKS.md) exercises real binaries, not hand-edited
+// builds.
 func newRegistry(kind string) (registry.Registry, error) {
 	switch kind {
 	case "sync-map":
