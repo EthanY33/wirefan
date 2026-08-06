@@ -39,6 +39,7 @@
   let stressActive = false;
   let lastStatsAt = 0;
   let logCleared = false;
+  let statsSubPending = false;
 
   // ---------------- helpers ----------------
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -155,7 +156,8 @@
       setStatus('connected', 'connected');
       setUiConnected(true);
       // Auto-subscribe to the stats system channel.
-      send({ event: 'subscribe', channel: STATS_CHANNEL });
+      statsSubPending = true;
+      send({ type: 'subscribe', channel: STATS_CHANNEL });
     };
     ws.onmessage = (e) => {
       let frame;
@@ -174,6 +176,7 @@
       }
       ws = null;
       socketId = null;
+      statsSubPending = false;
     };
   }
 
@@ -181,31 +184,45 @@
     if (ws) ws.close(1000, 'user-disconnect');
   }
 
+  // Frames use "type" as the discriminator, matching the server
+  // (internal/conn/handler.go) and docs/PROTOCOL.md.
   function handleFrame(frame) {
-    const ev = frame.event;
-    if (ev === 'connected') {
-      socketId = frame.socket_id || (frame.data && frame.data.socket_id) || null;
+    const t = frame.type;
+    if (t === 'connected') {
+      socketId = frame.socket_id || null;
       els.socketId.textContent = socketId || '—';
       logFrame('system', '', `connected sid=${socketId || '?'}`);
       return;
     }
-    if (ev === 'subscribed') {
+    if (t === 'subscribed') {
+      if (frame.channel === STATS_CHANNEL) statsSubPending = false;
       subscribed.add(frame.channel);
       refreshSubList();
       logFrame('system', frame.channel, 'subscribed');
       return;
     }
-    if (ev === 'unsubscribed') {
+    if (t === 'unsubscribed') {
       subscribed.delete(frame.channel);
       refreshSubList();
       logFrame('system', frame.channel, 'unsubscribed');
       return;
     }
-    if (ev === 'error') {
-      logFrame('error', frame.channel || '', frame.message || JSON.stringify(frame));
+    if (t === 'error') {
+      // Error frames carry code+message but no channel. If the only
+      // subscribe in flight is the automatic stats-channel one and the
+      // server rejects it as reserved, note it quietly instead of
+      // alarming the demo log.
+      if (frame.code === 'RESERVED_CHANNEL' && statsSubPending) {
+        statsSubPending = false;
+        els.statsRaw.textContent = 'stats channel not open to clients on this server build';
+        logFrame('system', STATS_CHANNEL, 'stats subscribe rejected (reserved channel)');
+        return;
+      }
+      const msg = frame.code ? `${frame.code}: ${frame.message || ''}` : (frame.message || JSON.stringify(frame));
+      logFrame('error', '', msg);
       return;
     }
-    if (ev === 'event' || ev === 'message') {
+    if (t === 'event') {
       const ch = frame.channel || '';
       if (ch === STATS_CHANNEL) {
         renderStats(frame.data);
@@ -261,7 +278,7 @@
   function subscribe() {
     const ch = els.channelName.value.trim();
     if (!ch) return;
-    send({ event: 'subscribe', channel: ch });
+    send({ type: 'subscribe', channel: ch });
   }
   function publish() {
     const ch = els.channelName.value.trim();
@@ -270,7 +287,7 @@
     const raw = els.msgBody.value.trim();
     try { data = JSON.parse(raw); }
     catch (_) { data = raw; }
-    send({ event: 'publish', channel: ch, data });
+    send({ type: 'publish', channel: ch, data });
   }
 
   // ---------------- stress test ----------------
