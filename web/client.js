@@ -113,8 +113,10 @@
     while (els.log.children.length > 200) {
       els.log.removeChild(els.log.lastChild);
     }
-    messageCount++;
-    els.msgCount.textContent = `${messageCount} received`;
+    if (kind === 'event') {
+      messageCount++;
+      els.msgCount.textContent = `${messageCount} received`;
+    }
   }
 
   function send(obj) {
