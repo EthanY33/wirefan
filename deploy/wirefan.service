@@ -5,7 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/wirefan
+# --allowed-origins is required and refuses '*' outside --dev: replace the
+# placeholder with the origin(s) your browser clients load from. The admin
+# listener stays on loopback so /v1/keys, /metrics, and /debug/pprof are
+# never internet-reachable; mint keys from the host itself.
+ExecStart=/usr/local/bin/wirefan \
+    --listen=:8080 \
+    --admin-addr=127.0.0.1:6060 \
+    --allowed-origins=https://wirefan.example.com \
+    --db-path=/var/lib/wirefan/wirefan.db
+# State dir holds admin.token (and the SQLite db unless --db-path moves it).
+Environment=WIREFAN_STATE_DIR=/var/lib/wirefan
+# Optional overrides (WIREFAN_TRUSTED_PROXIES etc.); see deploy/.env.example.
 EnvironmentFile=-/etc/wirefan/env
 Restart=on-failure
 RestartSec=5
