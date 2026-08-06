@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg"
-     viewBox="0 0 1200 630"
+     viewBox="0 0 1280 640"
      preserveAspectRatio="xMidYMid meet"
      role="img"
      aria-labelledby="og-title og-desc">
   <title id="og-title">wirefan — single-binary Go WebSocket fanout server</title>
-  <desc id="og-desc">Social preview card. Headline "wirefan", tagline "single-binary Go WebSocket fanout server", target stat "50k conns · p99 4ms · 1 vCPU".</desc>
+  <desc id="og-desc">Social preview card. Headline "wirefan", tagline "single-binary Go WebSocket fanout server", fanout graph motif.</desc>
 
   <defs>
     <style><![CDATA[
@@ -44,19 +44,19 @@
   </defs>
 
   <!-- background paper + subtle grid -->
-  <rect class="paper" width="1200" height="630"/>
-  <rect width="1200" height="630" fill="url(#dots)"/>
+  <rect class="paper" width="1280" height="640"/>
+  <rect width="1280" height="640" fill="url(#dots)"/>
 
   <!-- left rust bar -->
-  <rect class="accent" x="0" y="0" width="14" height="630"/>
+  <rect class="accent" x="0" y="0" width="14" height="640"/>
 
   <!-- corner edge labels -->
-  <text class="ink t-edge" x="48" y="62">v1 · MIT · Go 1.23</text>
-  <text class="dim t-edge" x="1152" y="62" text-anchor="end">single binary</text>
+  <text class="ink t-edge" x="48" y="62">MIT · Go 1.25</text>
+  <text class="dim t-edge" x="1232" y="62" text-anchor="end">single binary</text>
 
   <!-- decorative fanout graph: one publisher hub on the left, fanned out to
        eight subscribers on the right. This is the literal protocol shape. -->
-  <g transform="translate(820, 360)">
+  <g transform="translate(890, 366)">
     <!-- subscriber nodes (x=160), spaced vertically -->
     <line class="stroke-accent" x1="0" y1="0" x2="160" y2="-160"/>
     <line class="stroke-accent" x1="0" y1="0" x2="160" y2="-114"/>
@@ -82,22 +82,18 @@
     <circle class="stroke-accent" cx="0" cy="0" r="26"/>
   </g>
 
-  <!-- wordmark + tagline + stat block -->
+  <!-- wordmark + tagline -->
   <g transform="translate(70, 0)">
     <!-- wordmark with rust underline accent -->
-    <text class="ink t-wordmark" x="0" y="280">wirefan</text>
-    <rect class="accent" x="4" y="298" width="120" height="6"/>
+    <text class="ink t-wordmark" x="0" y="300">wirefan</text>
+    <rect class="accent" x="4" y="318" width="120" height="6"/>
 
     <!-- tagline -->
-    <text class="ink-soft t-tag" x="0" y="358">single-binary Go WebSocket fanout server</text>
-
-    <!-- target-stat strip on accent-soft background -->
-    <rect class="accent-soft" x="0" y="408" width="660" height="62" rx="2"/>
-    <text class="ink t-stat" x="20" y="450">50k conns · p99 4 ms · 1 vCPU</text>
+    <text class="ink-soft t-tag" x="0" y="378">single-binary Go WebSocket fanout server</text>
   </g>
 
   <!-- bottom rule + URL -->
-  <line class="stroke-dim" x1="70" y1="556" x2="1130" y2="556"/>
-  <text class="dim t-url" x="70" y="592">github.com/EthanY33/wirefan</text>
-  <text class="dim t-url" x="1130" y="592" text-anchor="end">zero runtime deps</text>
+  <line class="stroke-dim" x1="70" y1="566" x2="1210" y2="566"/>
+  <text class="dim t-url" x="70" y="602">github.com/EthanY33/wirefan</text>
+  <text class="dim t-url" x="1210" y="602" text-anchor="end">zero runtime deps</text>
 </svg>

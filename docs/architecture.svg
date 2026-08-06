@@ -87,7 +87,7 @@
     <rect class="accent-soft" x="0" y="0" width="1500" height="28" />
     <line x1="0" y1="28" x2="1500" y2="28" class="stroke-rule" />
     <text class="mono label-lane accent" x="14" y="19" fill="#c25b1a">data plane &#183; ws /v1/connect</text>
-    <text class="mono label-tag dim" x="1486" y="19" text-anchor="end" fill="#7a7560">read pump &#183; write pump &#183; per-channel mutex</text>
+    <text class="mono label-tag dim" x="1486" y="19" text-anchor="end" fill="#7a7560">read pump &#183; write pump &#183; per-subscriber FIFO</text>
   </g>
 
   <!-- ============================================================ -->
@@ -158,7 +158,7 @@
     <text class="mono label-title ink" x="100" y="32" text-anchor="middle">Channel</text>
     <line x1="20" y1="44" x2="180" y2="44" class="stroke-rule" />
     <text class="mono label-sub ink-2" x="20" y="68"  fill="#3a3f31">subs map</text>
-    <text class="mono label-sub ink-2" x="20" y="86"  fill="#3a3f31">BroadcastMu (FIFO)</text>
+    <text class="mono label-sub ink-2" x="20" y="86"  fill="#3a3f31">per-subscriber FIFO</text>
     <text class="mono label-sub ink-2" x="20" y="104" fill="#3a3f31">SubsMu (RWMutex)</text>
     <text class="mono label-tag accent" x="100" y="124" text-anchor="middle" fill="#c25b1a">per-channel</text>
   </g>
@@ -215,7 +215,7 @@
     <line x1="14" y1="32" x2="266" y2="32" class="stroke-rule" />
     <text class="mono label-sub ink-2" x="14" y="54" fill="#3a3f31">1k connection churn &#8594;</text>
     <text class="mono label-sub ink-2" x="14" y="72" fill="#3a3f31">runtime.NumGoroutine returns</text>
-    <text class="mono label-sub ink-2" x="14" y="90" fill="#3a3f31">to baseline within 1s</text>
+    <text class="mono label-sub ink-2" x="14" y="90" fill="#3a3f31">to baseline +30 within 10s</text>
   </g>
 
   <!-- Rate-limit + resource caps note (under Registry) -->
@@ -266,7 +266,7 @@
   <line x1="1070" y1="540" x2="1070" y2="572" class="stroke-accent" marker-end="url(#arr-accent)" />
 
   <!-- Trunk label, placed above the trunk line in clear horizontal space -->
-  <text class="mono label-arrow accent" x="940" y="528" fill="#c25b1a">event &#183; FIFO &#183; iter under BroadcastMu</text>
+  <text class="mono label-arrow accent" x="940" y="528" fill="#c25b1a">event &#183; per-subscriber FIFO &#183; no channel-wide lock</text>
 
   <!-- ============================================================ -->
   <!-- SUBSCRIBERS ROW (4 + ellipsis)                               -->

@@ -27,6 +27,7 @@
     msgCount: $('msgCount'),
     stressStatus: $('stressStatus'),
     statsGrid: $('statsGrid'),
+    statsCaption: $('statsCaption'),
     statsRaw: $('statsRaw'),
     statsAge: $('statsAge'),
   };
@@ -39,6 +40,7 @@
   let stressActive = false;
   let lastStatsAt = 0;
   let logCleared = false;
+  let statsSubPending = false;
 
   // ---------------- helpers ----------------
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -112,8 +114,10 @@
     while (els.log.children.length > 200) {
       els.log.removeChild(els.log.lastChild);
     }
-    messageCount++;
-    els.msgCount.textContent = `${messageCount} received`;
+    if (kind === 'event') {
+      messageCount++;
+      els.msgCount.textContent = `${messageCount} received`;
+    }
   }
 
   function send(obj) {
@@ -155,7 +159,8 @@
       setStatus('connected', 'connected');
       setUiConnected(true);
       // Auto-subscribe to the stats system channel.
-      send({ event: 'subscribe', channel: STATS_CHANNEL });
+      statsSubPending = true;
+      send({ type: 'subscribe', channel: STATS_CHANNEL });
     };
     ws.onmessage = (e) => {
       let frame;
@@ -174,6 +179,7 @@
       }
       ws = null;
       socketId = null;
+      statsSubPending = false;
     };
   }
 
@@ -181,31 +187,46 @@
     if (ws) ws.close(1000, 'user-disconnect');
   }
 
+  // Frames use "type" as the discriminator, matching the server
+  // (internal/conn/handler.go) and docs/PROTOCOL.md.
   function handleFrame(frame) {
-    const ev = frame.event;
-    if (ev === 'connected') {
-      socketId = frame.socket_id || (frame.data && frame.data.socket_id) || null;
+    const t = frame.type;
+    if (t === 'connected') {
+      socketId = frame.socket_id || null;
       els.socketId.textContent = socketId || '—';
       logFrame('system', '', `connected sid=${socketId || '?'}`);
       return;
     }
-    if (ev === 'subscribed') {
+    if (t === 'subscribed') {
+      if (frame.channel === STATS_CHANNEL) statsSubPending = false;
       subscribed.add(frame.channel);
       refreshSubList();
       logFrame('system', frame.channel, 'subscribed');
       return;
     }
-    if (ev === 'unsubscribed') {
+    if (t === 'unsubscribed') {
       subscribed.delete(frame.channel);
       refreshSubList();
       logFrame('system', frame.channel, 'unsubscribed');
       return;
     }
-    if (ev === 'error') {
-      logFrame('error', frame.channel || '', frame.message || JSON.stringify(frame));
+    if (t === 'error') {
+      // Error frames carry code+message but no channel. If the only
+      // subscribe in flight is the automatic stats-channel one and the
+      // server rejects it as reserved, degrade the stats panel honestly
+      // and keep the demo log free of an expected, self-inflicted error.
+      if (frame.code === 'RESERVED_CHANNEL' && statsSubPending) {
+        statsSubPending = false;
+        els.statsCaption.textContent = 'client subscription to the _wirefan-stats reserved channel is not enabled on this server build.';
+        els.statsGrid.style.display = 'none';
+        els.statsRaw.textContent = 'stats channel not open to clients on this server build';
+        return;
+      }
+      const msg = frame.code ? `${frame.code}: ${frame.message || ''}` : (frame.message || JSON.stringify(frame));
+      logFrame('error', '', msg);
       return;
     }
-    if (ev === 'event' || ev === 'message') {
+    if (t === 'event') {
       const ch = frame.channel || '';
       if (ch === STATS_CHANNEL) {
         renderStats(frame.data);
@@ -230,6 +251,7 @@
       try { snap = JSON.parse(snap); } catch (_) { /* leave as string */ }
     }
     if (typeof snap === 'object' && snap !== null) {
+      els.statsGrid.style.display = '';
       els.statsGrid.querySelectorAll('[data-stat]').forEach((node) => {
         const key = node.dataset.stat;
         if (key in snap) node.textContent = formatStat(snap[key]);
@@ -261,7 +283,7 @@
   function subscribe() {
     const ch = els.channelName.value.trim();
     if (!ch) return;
-    send({ event: 'subscribe', channel: ch });
+    send({ type: 'subscribe', channel: ch });
   }
   function publish() {
     const ch = els.channelName.value.trim();
@@ -270,7 +292,7 @@
     const raw = els.msgBody.value.trim();
     try { data = JSON.parse(raw); }
     catch (_) { data = raw; }
-    send({ event: 'publish', channel: ch, data });
+    send({ type: 'publish', channel: ch, data });
   }
 
   // ---------------- stress test ----------------
