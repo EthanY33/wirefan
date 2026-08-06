@@ -8,6 +8,19 @@ documented at the end if Oracle capacity is unavailable.
 The host targeted in commands: `wirefan.ethanyucetepe.dev`. Substitute your own
 hostname throughout if forking.
 
+Three facts the whole runbook leans on:
+
+- **`--allowed-origins` is required.** wirefan refuses to start without it,
+  and refuses `*` outside `--dev`. Every invocation below passes it.
+- **The admin token is a file, not a log line.** On first boot wirefan writes
+  a token to `$WIREFAN_STATE_DIR/admin.token` (mode 0600) and reuses it on
+  every later boot. It is never printed. You read the file, or you set
+  `WIREFAN_ADMIN_TOKEN` yourself.
+- **The admin listener is separate from the public one.** `/v1/keys`,
+  `/metrics`, and `/debug/pprof/*` live on `--admin-addr` (default
+  `127.0.0.1:6060`), which is never exposed through Caddy. Key minting and
+  scraping happen from the host.
+
 ---
 
 ## 0. Prerequisites
@@ -50,7 +63,7 @@ hostname throughout if forking.
 > unavailable for 24+ hours, jump to **Path B: Cloudflare Tunnel** below.
 
 Once the instance is **Running**, copy the **Public IP** from the instance
-detail page — you'll use it as `<public-ip>` below.
+detail page; you'll use it as `<public-ip>` below.
 
 ---
 
@@ -134,54 +147,56 @@ unless noted otherwise.
 sudo docker pull ghcr.io/ethany33/wirefan:latest
 ```
 
-Create the system user, config dir, and data dir:
+Create the config dir and the state dir. The state dir holds `admin.token`
+and `wirefan.db`, so it is the one path that must survive redeploys:
 
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin wirefan || true
 sudo mkdir -p /etc/wirefan /var/lib/wirefan
-sudo chown -R wirefan:wirefan /var/lib/wirefan
 ```
 
-Copy the env template from the repo. Easiest way is to clone the repo on the
-host (read-only) just to grab the deploy/ files:
+Copy the deploy templates from the repo. Easiest way is to clone the repo on
+the host (read-only) just to grab the `deploy/` files:
 
 ```bash
 sudo apt-get install -y git
 git clone https://github.com/EthanY33/wirefan.git /tmp/wirefan-src
 sudo cp /tmp/wirefan-src/deploy/.env.example /etc/wirefan/env
-sudo cp /tmp/wirefan-src/deploy/Caddyfile /etc/caddy/Caddyfile  # used in step 5
 sudo cp /tmp/wirefan-src/deploy/wirefan.service /etc/systemd/system/wirefan.service
+# deploy/Caddyfile is copied in step 5, after the caddy package creates /etc/caddy
 sudo chmod 0600 /etc/wirefan/env
-sudo chown wirefan:wirefan /etc/wirefan/env
 ```
 
-Edit `/etc/wirefan/env` to taste:
+Edit `/etc/wirefan/env`:
 
 ```bash
 sudo nano /etc/wirefan/env
 ```
 
-Settings to consider uncommenting:
+The template documents every variable. The two that matter here:
 
-- `WIREFAN_ADMIN_TOKEN=` — set a stable admin Bearer so it survives restarts.
-- `WIREFAN_SIGNING_SECRET=` — set a stable HMAC secret so already-issued
-  channel tokens stay valid across restarts.
-- `OTEL_EXPORTER_OTLP_ENDPOINT=` — leave empty unless you have an OTel
-  collector to point at.
-
-> **Honest gotcha.** Reading those env vars in `cmd/wirefan/main.go` is a
-> deferred task — the unit file sources `EnvironmentFile=-/etc/wirefan/env`
-> and the Docker option below uses `--env-file`, so the values reach the
-> process, but until the wiring lands wirefan still mints fresh secrets at
-> boot. Until then, expect tokens to invalidate on every restart and pull
-> the admin Bearer from journal each time (see step 9).
+- `WIREFAN_TRUSTED_PROXIES`: **required behind Caddy.** wirefan caps
+  concurrent connections per client IP (200 by default). With this unset,
+  every connection through Caddy is attributed to Caddy's IP, so the per-IP
+  cap silently becomes a global 200-connection ceiling. Set it to
+  `172.17.0.0/16` for the Docker mode below (Caddy reaches the container
+  through the default bridge), or `127.0.0.1` for the native-binary mode.
+- `WIREFAN_ADMIN_TOKEN`: optional. Leave it unset and wirefan generates a
+  token on first boot, persists it at `/var/lib/wirefan/admin.token`, and
+  reuses it forever after. Set it only if you want to pick the value.
 
 ### 4a. Pick a deploy mode for systemd
 
 The shipped `deploy/wirefan.service` runs `/usr/local/bin/wirefan` directly
 (binary-on-disk). With Docker, you have two equally valid options.
 
-**Option A — Run the container under systemd (recommended for this runbook).**
+**Option A: run the container under systemd (recommended for this runbook).**
+
+The container runs as distroless `nonroot` (uid 65532), so the bind-mounted
+state dir must be writable by that uid:
+
+```bash
+sudo chown -R 65532:65532 /var/lib/wirefan
+```
 
 Override `ExecStart` so systemd manages the container's lifecycle:
 
@@ -189,16 +204,25 @@ Override `ExecStart` so systemd manages the container's lifecycle:
 sudo systemctl edit wirefan
 ```
 
-Paste:
+Paste (replace the origin with your hostname):
 
 ```ini
 [Service]
+# If a previous container crashed without cleaning up, the name would
+# collide and wedge every restart; the leading "-" makes "no such
+# container" non-fatal.
+ExecStartPre=-/usr/bin/docker rm -f wirefan
 ExecStart=
 ExecStart=/usr/bin/docker run --rm --name wirefan \
     -p 8080:8080 \
+    -p 127.0.0.1:6060:6060 \
     --env-file /etc/wirefan/env \
     -v /var/lib/wirefan:/var/lib/wirefan \
-    ghcr.io/ethany33/wirefan:latest
+    ghcr.io/ethany33/wirefan:latest \
+    --listen=:8080 \
+    --admin-addr=0.0.0.0:6060 \
+    --allowed-origins=https://wirefan.ethanyucetepe.dev \
+    --db-path=/var/lib/wirefan/wirefan.db
 ExecStop=/usr/bin/docker stop -t 30 wirefan
 # The shipped unit's hardening (ProtectSystem=strict, etc.) is designed for a
 # native binary; clear those so `docker run` works. Empty assignments unset.
@@ -220,7 +244,17 @@ WorkingDirectory=
 The empty `ExecStart=` line **first** is required by systemd to clear the
 shipped value before adding ours.
 
-**Option B — Extract the binary from the image and put it at
+Two flag notes:
+
+- `--admin-addr=0.0.0.0:6060` is required in Docker: bound to container
+  loopback, the admin listener would be unreachable through the port
+  mapping. The `-p 127.0.0.1:6060:6060` publish keeps it host-loopback-only,
+  so it is still not internet-reachable.
+- `--db-path` is explicit here for clarity; it is also the default
+  (`$WIREFAN_STATE_DIR/wirefan.db`, and the image sets
+  `WIREFAN_STATE_DIR=/var/lib/wirefan`).
+
+**Option B: extract the binary from the image and put it at
 `/usr/local/bin/wirefan`.** This keeps every `wirefan.service` hardening flag
 and gives you a smaller process tree. Tradeoff: you re-extract on every
 update.
@@ -231,7 +265,13 @@ CID=$(sudo docker create ghcr.io/ethany33/wirefan:latest)
 sudo docker cp $CID:/wirefan /usr/local/bin/wirefan
 sudo docker rm $CID
 sudo chmod +x /usr/local/bin/wirefan
-# unit file already points at /usr/local/bin/wirefan, no override needed
+
+# The shipped unit runs as the wirefan user; create it and hand it the state dir
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin wirefan || true
+sudo chown -R wirefan:wirefan /var/lib/wirefan
+
+# Edit the unit's --allowed-origins placeholder to your hostname
+sudo nano /etc/systemd/system/wirefan.service
 ```
 
 Either way, finish with:
@@ -243,7 +283,9 @@ sudo systemctl status wirefan
 ```
 
 You should see `active (running)`. If not, jump to **Logs** in the operational
-runbook section.
+runbook section. The most common first-boot failure is a missing or invalid
+`--allowed-origins`: wirefan exits immediately with a usage error rather than
+starting insecurely.
 
 ---
 
@@ -258,8 +300,8 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
 sudo apt-get update && sudo apt-get install -y caddy
 ```
 
-The Caddyfile was already copied in step 4. If you didn't copy it then, do
-it now:
+Now that the caddy package has created `/etc/caddy`, install the shipped
+config over the stock one:
 
 ```bash
 sudo cp /tmp/wirefan-src/deploy/Caddyfile /etc/caddy/Caddyfile
@@ -272,9 +314,13 @@ sudo systemctl reload caddy
 sudo systemctl status caddy
 ```
 
-Caddy will try to fetch a Let's Encrypt cert immediately — but it will fail
+Caddy will try to fetch a Let's Encrypt cert immediately, but it will fail
 until DNS is in place (next step) and Oracle ingress lets 80/443 through
 (step 7). Errors at this stage are fine; Caddy retries with backoff.
+
+> **Reminder:** Caddy forwards `X-Forwarded-For`, but wirefan ignores it
+> unless the proxy's address is listed in `WIREFAN_TRUSTED_PROXIES` (step 4).
+> If you skipped that, the per-IP connection cap is now a global cap.
 
 ---
 
@@ -334,73 +380,75 @@ From your laptop:
 
 ```bash
 curl -i https://wirefan.ethanyucetepe.dev/v1/health
-# expected: HTTP/1.1 200 OK + JSON body {"status":"ok",...}
+# expected: HTTP/1.1 200 OK, plain-text body: ok
 
 curl -i https://wirefan.ethanyucetepe.dev/
 # expected: HTTP/1.1 200 OK + the demo HTML page
 ```
 
-End-to-end pubsub check:
-
-1. Open `https://wirefan.ethanyucetepe.dev/` in two browser tabs.
-2. In each tab, the demo client subscribes to a channel called `test`.
-3. Publish a message in tab A -> tab B receives it within ~50 ms.
-
 If TLS isn't working yet but `:80` is, you'll get a 308 redirect to https
 (Caddy default). If you get connection-refused, ingress (step 7) is still
 blocking.
 
+The end-to-end pub/sub check needs an API key, so it comes after step 9.
+
 ---
 
-## 9. Capture an admin Bearer + mint API keys
+## 9. Read the admin token + mint API keys
 
-The admin Bearer is logged at process startup. With Docker (Option A):
+The admin token is **never printed**. On first boot wirefan writes it to
+`$WIREFAN_STATE_DIR/admin.token` with mode 0600 and reuses that file on every
+later boot. Both deploy modes above put the state dir at `/var/lib/wirefan`
+(for Docker it is a bind mount, so the file is visible on the host):
 
 ```bash
-sudo docker logs wirefan 2>&1 | grep -i "admin token"
+sudo cat /var/lib/wirefan/admin.token
 ```
 
-With the native binary (Option B):
+If you set `WIREFAN_ADMIN_TOKEN` in `/etc/wirefan/env`, that value is the
+token and no file is consulted.
+
+Key minting happens on the **admin listener**, which both deploy modes keep
+on host loopback (`127.0.0.1:6060`). It is deliberately not reachable through
+Caddy, so mint from the server itself:
 
 ```bash
-sudo journalctl -u wirefan | grep -i "admin token"
-```
-
-You should see a line with a token like
-`admin token: wfa_live_...` — copy it.
-
-> **Reminder:** until the env-var wiring task lands, this token is regenerated
-> on every restart. If you set `WIREFAN_ADMIN_TOKEN=` in `/etc/wirefan/env`,
-> grep won't find a generated one — you'll just use the value you set.
-
-Mint a production API key for an app server to use:
-
-```bash
-curl -X POST https://wirefan.ethanyucetepe.dev/v1/keys \
-    -H "Authorization: Bearer <admin-token-here>" \
+curl -s -X POST http://127.0.0.1:6060/v1/keys \
+    -H "Authorization: Bearer $(sudo cat /var/lib/wirefan/admin.token)" \
     -H "Content-Type: application/json" \
     -d '{"name":"production-app"}'
 ```
 
-Response includes a `secret` shown **once**. Save it in your app server's
-config — you cannot recover it later.
+The response includes the key `id` and a `secret` shown **once**. Save the
+secret in your app server's config; you cannot recover it later. Keys are
+stored in SQLite at `/var/lib/wirefan/wirefan.db` and survive restarts.
+
+Now the end-to-end pub/sub check:
+
+1. Open `https://wirefan.ethanyucetepe.dev/?key=<key-id>` in two browser tabs.
+   The `?key=` parameter pre-fills the API key field; nothing connects on its
+   own.
+2. In each tab, click **connect**, then **subscribe** to the demo channel.
+3. Publish a message in tab A -> tab B receives it.
 
 ---
 
 ## 10. Monitoring
 
-The wirefan process exposes Prometheus metrics on the same port as the API:
+wirefan exposes Prometheus metrics on the **admin listener**, not the public
+one:
 
 ```bash
-# from inside the host
-curl http://localhost:8080/metrics | head
+# from the host
+curl http://127.0.0.1:6060/metrics | head
 ```
 
 You have two reasonable options for external scraping:
 
 1. **Add a second Caddy site** for `metrics.wirefan.ethanyucetepe.dev`,
-   protected by basic-auth or IP allowlist, that proxies to `:8080/metrics`.
-   Quick, but exposes the metrics surface to the internet.
+   protected by basic-auth or IP allowlist, that proxies to
+   `127.0.0.1:6060/metrics`. Quick, but exposes the metrics surface to the
+   internet.
 2. **Tailscale tunnel.** Install Tailscale on the Oracle host, scrape from a
    Prometheus running on your home network. No public exposure, no auth to
    manage. Recommended.
@@ -410,33 +458,21 @@ endpoint. The wirefan histograms are documented in `docs/DESIGN.md`.
 
 ---
 
-## 11. Run benchmarks against the production host
+## 11. Benchmarks
 
-This is the Task 25 follow-up: capture real numbers from the deployed host.
-
-On the Oracle instance (or any box that can reach it):
-
-```bash
-# Build the loadtest binary on the host so it's native arm64
-cd /tmp/wirefan-src
-go build -o /tmp/loadtest ./cmd/loadtest
-
-# Mint a production-test key and export it
-export WIREFAN_KEY=<key-id-from-step-9>
-export WIREFAN_HOST=wirefan.ethanyucetepe.dev
-
-bash scripts/bench.sh
-```
-
-The script writes pprof PNGs to `deploy/profiles/` and a markdown summary
-fragment. Update `docs/BENCHMARKS.md` with the numbers and commit.
+Published numbers and the reproduction methodology live in
+`docs/BENCHMARKS.md`; the reproduction commands there run the benchmark in a
+CPU- and memory-constrained local container, not against this host. If you
+want to sanity-check the deployed instance, `cmd/loadtest` can point at any
+reachable wirefan; mind that the per-key rate limit (100 msg/s, burst 200)
+and the per-IP cap both shape what a single-key, single-source run can show.
+`scripts/bench.sh` documents the flags a clean run needs.
 
 ---
 
-## 12. OG card real numbers + GitHub social preview
+## 12. GitHub social preview
 
-After step 11 you have real p99 / fanout-rate numbers. Update
-`docs/og-card.svg` with them, rasterize:
+Rasterize the social card and upload it:
 
 ```bash
 # from a machine with rsvg-convert or Inkscape
@@ -444,7 +480,7 @@ rsvg-convert -w 1280 -h 640 docs/og-card.svg -o docs/og-card.png
 ```
 
 Then go to GitHub repo -> **Settings** -> **General** -> **Social preview** ->
-**Upload an image** -> pick `docs/og-card.png`. This is Task 34's deliverable.
+**Upload an image** -> pick `docs/og-card.png`.
 
 ---
 
@@ -497,10 +533,15 @@ Tradeoffs:
    ```
 6. **Run wirefan locally.** From the repo root on the home machine:
    ```bash
-   make build
-   ./bin/wirefan
+   go build -o bin/wirefan ./cmd/wirefan
+   WIREFAN_TRUSTED_PROXIES=127.0.0.1 ./bin/wirefan \
+       --listen=:8080 \
+       --admin-addr=127.0.0.1:6060 \
+       --allowed-origins=https://wirefan.ethanyucetepe.dev
    ```
-   (Or use the same systemd unit if you want it managed.)
+   (cloudflared connects from localhost, so it is the "proxy" the per-IP cap
+   must trust. Use the same systemd unit if you want it managed; the state
+   dir defaults to `./var` when `WIREFAN_STATE_DIR` is unset.)
 7. **Run the tunnel.**
    ```bash
    cloudflared tunnel run wirefan
@@ -509,10 +550,11 @@ Tradeoffs:
    ```bash
    sudo cloudflared service install
    ```
-8. **Smoke test** the same way as step 8.
+8. **Smoke test** the same way as step 8 (admin token at `./var/admin.token`
+   in this mode, key minting still at `http://127.0.0.1:6060/v1/keys`).
 
 The DNS record Cloudflare creates is automatically proxied (orange cloud) for
-this path — that's correct for tunnels because Cloudflare itself terminates
+this path; that's correct for tunnels because Cloudflare itself terminates
 TLS at the edge before forwarding through the tunnel.
 
 ---
@@ -527,6 +569,12 @@ Day-to-day commands once the host is up.
 sudo systemctl restart wirefan
 ```
 
+Restarts are cheap for durable state: the admin token and API keys live in
+`/var/lib/wirefan`, so both survive. Subscribe tokens for `private-`/`presence-`
+channels are signed with a per-process secret, so a restart invalidates any
+already-issued token and the client must fetch a new one from
+`POST /v1/auth/sign`. The demo client does not auto-reconnect; reload the page.
+
 ### Logs
 
 ```bash
@@ -540,6 +588,8 @@ For Docker mode:
 ```bash
 sudo docker logs -f wirefan
 ```
+
+(There is no admin token in these logs, by design. It is a file; see step 9.)
 
 ### Update to a new image
 
@@ -556,8 +606,9 @@ restart.
 
 ### Backup
 
-The SQLite store at `/var/lib/wirefan/wirefan.db` holds API keys and any
-persisted control-plane state. Back it up with rsync on a cron:
+The state dir `/var/lib/wirefan` holds the two files that matter:
+`wirefan.db` (SQLite, the API keys) and `admin.token`. Back up the db with
+rsync on a cron:
 
 ```bash
 # on a backup machine
@@ -576,12 +627,12 @@ sudo sqlite3 /var/lib/wirefan/wirefan.db ".backup /tmp/wirefan-snapshot.db"
 
 ### Drain check
 
-The `/v1/health` endpoint flips to `503 Service Unavailable` during graceful
-shutdown so load balancers can drain:
+The `/v1/health` endpoint (public listener) flips to `503` with body
+`draining` during graceful shutdown so load balancers can drain; in steady
+state it returns `200` with body `ok`:
 
 ```bash
-curl -I http://localhost:8080/v1/health
-# 200 OK in steady state; 503 during shutdown
+curl -i http://localhost:8080/v1/health
 ```
 
 ### Process resource usage
@@ -591,11 +642,11 @@ sudo docker stats wirefan          # docker mode
 top -p $(pgrep -f wirefan)         # native mode
 ```
 
-If memory grows unboundedly, capture a heap profile:
+If memory grows unboundedly, capture a heap profile from the admin listener:
 
 ```bash
-curl http://localhost:8080/debug/pprof/heap > /tmp/heap.pprof
-go tool pprof -png /tmp/heap.pprof > heap.png
+curl -s http://127.0.0.1:6060/debug/pprof/heap > /tmp/heap.pprof
+go tool pprof -top /tmp/heap.pprof
 ```
 
 ---
@@ -646,7 +697,8 @@ For data corruption: SQLite is a single file, so restore is
 ```bash
 sudo systemctl stop wirefan
 sudo cp ./backups/wirefan-20260501.db /var/lib/wirefan/wirefan.db
-sudo chown wirefan:wirefan /var/lib/wirefan/wirefan.db
+sudo chown 65532:65532 /var/lib/wirefan/wirefan.db   # docker mode
+# sudo chown wirefan:wirefan /var/lib/wirefan/wirefan.db   # native mode
 sudo systemctl start wirefan
 ```
 
@@ -655,13 +707,50 @@ backup contains the keys; everything else is rebuilt from `deploy/`.
 
 ---
 
+## Appendix: verify the image locally
+
+Run this on any box with Docker before pushing anywhere:
+
+```bash
+docker build -t wirefan:dev -f deploy/Dockerfile .
+
+docker run --rm --name wirefan-smoke \
+    -p 8080:8080 -p 127.0.0.1:6060:6060 \
+    wirefan:dev \
+    --listen=:8080 --admin-addr=0.0.0.0:6060 --dev --allowed-origins='*'
+```
+
+In another shell:
+
+```bash
+curl -i http://localhost:8080/v1/health    # 200, body "ok"
+
+# The admin token is a file inside the container; distroless has no shell,
+# so copy it out:
+docker cp wirefan-smoke:/var/lib/wirefan/admin.token ./admin.token
+curl -s -X POST http://127.0.0.1:6060/v1/keys \
+    -H "Authorization: Bearer $(cat admin.token)" \
+    -d '{"name":"smoke"}'
+# expect: {"id":"...","name":"smoke","secret":"..."}
+```
+
+The db file is created at `/var/lib/wirefan/wirefan.db` inside the container
+(verify with `docker cp wirefan-smoke:/var/lib/wirefan/wirefan.db /tmp/x.db`).
+Without a volume mount both files vanish with the container; that is fine for
+a smoke test and exactly why production mounts `/var/lib/wirefan`.
+
+---
+
 ## Cross-references
 
-- `deploy/Dockerfile` — multi-stage build, distroless runtime, cgo for sqlite.
-- `deploy/Caddyfile` — reverse-proxy + auto-TLS config.
-- `deploy/wirefan.service` — systemd unit (binary-on-disk by default).
-- `deploy/.env.example` — template for `/etc/wirefan/env`.
-- `deploy/README.md` — short orientation to the deploy/ directory.
-- `docs/DESIGN.md` — runtime architecture, fanout, backpressure.
-- `docs/PROTOCOL.md` — wire protocol clients implement.
-- `docs/BENCHMARKS.md` — numbers from the bench in step 11.
+- `deploy/Dockerfile`: multi-stage build, distroless runtime, cgo for
+  sqlite, nonroot-writable state dir at `/var/lib/wirefan`.
+- `deploy/Caddyfile`: reverse-proxy + auto-TLS config.
+- `deploy/wirefan.service`: systemd unit (binary-on-disk by default).
+- `deploy/.env.example`: template for `/etc/wirefan/env`, documents
+  `WIREFAN_TRUSTED_PROXIES`, `WIREFAN_STATE_DIR`, `WIREFAN_IP_CAP`,
+  `WIREFAN_ADMIN_TOKEN`.
+- `deploy/README.md`: short orientation to the deploy/ directory.
+- `docs/DESIGN.md`: runtime architecture, fanout, backpressure.
+- `docs/PROTOCOL.md`: wire protocol clients implement.
+- `docs/BENCHMARKS.md`: benchmark methodology and published numbers.
