@@ -1,0 +1,46 @@
+File: wirefan
+Build ID: ae513c21723b84651f3523f05365b3063c8d0573
+Type: inuse_space
+Time: 2026-08-06 00:45:17 EDT
+Showing nodes accounting for 10263.83kB, 100% of 10263.83kB total
+      flat  flat%   sum%        cum   cum%
+ 2056.01kB 20.03% 20.03%  2056.01kB 20.03%  bufio.NewReaderSize (inline)
+ 2056.01kB 20.03% 40.06%  2056.01kB 20.03%  bufio.NewWriterSize (inline)
+ 1536.70kB 14.97% 55.04%  1536.70kB 14.97%  runtime.mallocgc
+ 1024.20kB  9.98% 65.01%  1024.20kB  9.98%  context.(*cancelCtx).propagateCancel
+  516.64kB  5.03% 70.05%   516.64kB  5.03%  time.newTimer
+  512.88kB  5.00% 75.04%  1537.08kB 14.98%  github.com/EthanY33/wirefan/internal/conn.Run
+  512.88kB  5.00% 80.04%   512.88kB  5.00%  vendor/golang.org/x/net/http2/hpack.init
+  512.23kB  4.99% 85.03%   512.23kB  4.99%  github.com/coder/websocket.newConn
+  512.17kB  4.99% 90.02%   512.17kB  4.99%  net/textproto.MIMEHeader.Set (inline)
+  512.10kB  4.99% 95.01%   512.10kB  4.99%  github.com/EthanY33/wirefan/internal/conn.(*Conn).handleSubscribe
+  512.01kB  4.99%   100%   512.01kB  4.99%  time.NewTicker
+         0     0%   100%  2056.01kB 20.03%  bufio.NewReader (inline)
+         0     0%   100%  1024.20kB  9.98%  context.WithCancel
+         0     0%   100%   516.64kB  5.03%  context.WithDeadline (inline)
+         0     0%   100%   516.64kB  5.03%  context.WithDeadlineCause
+         0     0%   100%   516.64kB  5.03%  context.WithTimeout
+         0     0%   100%  1024.20kB  9.98%  context.withCancel (inline)
+         0     0%   100%   512.10kB  4.99%  github.com/EthanY33/wirefan/internal/conn.(*Conn).handle
+         0     0%   100%   512.10kB  4.99%  github.com/EthanY33/wirefan/internal/conn.(*Conn).readPump
+         0     0%   100%  1028.65kB 10.02%  github.com/EthanY33/wirefan/internal/conn.(*Conn).writePump
+         0     0%   100%  1028.65kB 10.02%  github.com/EthanY33/wirefan/internal/conn.Run.func1
+         0     0%   100%   512.10kB  4.99%  github.com/EthanY33/wirefan/internal/conn.Run.func2
+         0     0%   100%  2561.48kB 24.96%  github.com/EthanY33/wirefan/internal/server.(*UpgradeHandler).ServeHTTP
+         0     0%   100%  1024.41kB  9.98%  github.com/coder/websocket.Accept (inline)
+         0     0%   100%  1024.41kB  9.98%  github.com/coder/websocket.accept
+         0     0%   100%  2561.48kB 24.96%  net/http.(*ServeMux).ServeHTTP
+         0     0%   100%  6673.50kB 65.02%  net/http.(*conn).serve
+         0     0%   100%   512.17kB  4.99%  net/http.Header.Set (inline)
+         0     0%   100%  2056.01kB 20.03%  net/http.newBufioReader
+         0     0%   100%  2056.01kB 20.03%  net/http.newBufioWriterSize
+         0     0%   100%  2561.48kB 24.96%  net/http.serverHandler.ServeHTTP
+         0     0%   100%   512.88kB  5.00%  runtime.doInit (inline)
+         0     0%   100%   512.88kB  5.00%  runtime.doInit1
+         0     0%   100%   512.88kB  5.00%  runtime.main
+         0     0%   100%  1536.70kB 14.97%  runtime.malg
+         0     0%   100%  1536.70kB 14.97%  runtime.newobject
+         0     0%   100%  1536.70kB 14.97%  runtime.newproc.func1
+         0     0%   100%  1536.70kB 14.97%  runtime.newproc1
+         0     0%   100%  1536.70kB 14.97%  runtime.systemstack
+         0     0%   100%   516.64kB  5.03%  time.AfterFunc

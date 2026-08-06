@@ -1,0 +1,49 @@
+File: wirefan
+Build ID: ae513c21723b84651f3523f05365b3063c8d0573
+Type: cpu
+Time: 2026-08-06 00:45:04 EDT
+Duration: 15s, Total samples = 11.58s (77.20%)
+Showing nodes accounting for 8.87s, 76.60% of 11.58s total
+Dropped 263 nodes (cum <= 0.06s)
+Showing top 40 nodes out of 172
+      flat  flat%   sum%        cum   cum%
+     5.32s 45.94% 45.94%      5.32s 45.94%  internal/runtime/syscall/linux.Syscall6
+     0.53s  4.58% 50.52%      0.53s  4.58%  runtime.futex
+     0.37s  3.20% 53.71%      0.83s  7.17%  runtime.selectgo
+     0.18s  1.55% 55.27%      0.18s  1.55%  internal/runtime/atomic.(*Uint32).CompareAndSwap (inline)
+     0.18s  1.55% 56.82%      0.26s  2.25%  runtime.sellock
+     0.17s  1.47% 58.29%      0.94s  8.12%  context.WithDeadlineCause
+     0.12s  1.04% 59.33%      0.12s  1.04%  internal/sync.(*Mutex).Lock (inline)
+     0.12s  1.04% 60.36%      0.14s  1.21%  runtime.unlock2
+     0.11s  0.95% 61.31%      0.16s  1.38%  runtime.lock2
+     0.10s  0.86% 62.18%      0.10s  0.86%  internal/runtime/maps.h2 (inline)
+     0.10s  0.86% 63.04%      0.21s  1.81%  runtime.(*waitq).dequeue (inline)
+     0.10s  0.86% 63.90%      0.10s  0.86%  runtime.memclrNoHeapPointers
+     0.10s  0.86% 64.77%      0.10s  0.86%  runtime.spanClass.sizeclass (inline)
+     0.09s  0.78% 65.54%      0.09s  0.78%  bufio.(*Writer).WriteByte
+     0.08s  0.69% 66.23%      0.08s  0.69%  runtime.nanotime (inline)
+     0.07s   0.6% 66.84%      6.19s 53.45%  github.com/coder/websocket.(*Conn).writeFrame
+     0.07s   0.6% 67.44%      0.08s  0.69%  runtime.(*mspan).writeHeapBitsSmall
+     0.07s   0.6% 68.05%      0.51s  4.40%  runtime.chansend
+     0.06s  0.52% 68.57%      0.34s  2.94%  github.com/coder/websocket.(*Conn).writer (inline)
+     0.06s  0.52% 69.08%      5.30s 45.77%  net.(*netFD).Write
+     0.06s  0.52% 69.60%      0.62s  5.35%  runtime.newobject
+     0.06s  0.52% 70.12%      0.06s  0.52%  runtime.nextFreeFast (inline)
+     0.05s  0.43% 70.55%      0.07s   0.6%  context.parentCancelCtx
+     0.05s  0.43% 70.98%      8.16s 70.47%  github.com/EthanY33/wirefan/internal/conn.(*Conn).writePump
+     0.05s  0.43% 71.42%      0.42s  3.63%  github.com/coder/websocket.(*mu).lock
+     0.05s  0.43% 71.85%      0.07s   0.6%  internal/runtime/maps.(*Iter).Next
+     0.05s  0.43% 72.28%      0.09s  0.78%  internal/runtime/maps.(*Map).deleteSmall
+     0.05s  0.43% 72.71%      0.12s  1.04%  runtime.(*mcentral).cacheSpan
+     0.05s  0.43% 73.14%      0.27s  2.33%  runtime.mapassign
+     0.04s  0.35% 73.49%      0.54s  4.66%  bufio.(*Reader).fill
+     0.04s  0.35% 73.83%      0.29s  2.50%  github.com/coder/websocket.swapTimeoutStop
+     0.04s  0.35% 74.18%      0.50s  4.32%  io.(*multiReader).Read
+     0.04s  0.35% 74.53%      0.78s  6.74%  runtime.mallocgc
+     0.04s  0.35% 74.87%      0.28s  2.42%  runtime.reentersyscall
+     0.04s  0.35% 75.22%      0.70s  6.04%  runtime.schedule
+     0.04s  0.35% 75.56%      5.17s 44.65%  syscall.RawSyscall6
+     0.03s  0.26% 75.82%      0.21s  1.81%  runtime.(*mcache).nextFree
+     0.03s  0.26% 76.08%      0.07s   0.6%  runtime.casgstatus
+     0.03s  0.26% 76.34%      0.47s  4.06%  runtime.mallocgcSmallScanNoHeader
+     0.03s  0.26% 76.60%      0.07s   0.6%  runtime.scanObjectsSmall
