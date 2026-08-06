@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -79,6 +80,33 @@ func openStore(cfg appConfig) (store.Store, error) {
 	}
 }
 
+// newRegistry and newFanout select the channel-registry and fanout
+// implementations per --registry/--fanout. Both pairs implement the same
+// interfaces and pass the same test suites; the flags exist so the
+// benchmark matrix (docs/BENCHMARKS.md) exercises real binaries, not
+// hand-edited builds.
+func newRegistry(kind string) (registry.Registry, error) {
+	switch kind {
+	case "sync-map":
+		return registry.NewSyncMap(), nil
+	case "sharded":
+		return registry.NewSharded(), nil
+	default:
+		return nil, errors.New("unknown registry: " + kind)
+	}
+}
+
+func newFanout(kind string) (fanout.Fanout, error) {
+	switch kind {
+	case "per-conn":
+		return fanout.NewPerConn(), nil
+	case "sharded":
+		return fanout.NewShardedPool(runtime.GOMAXPROCS(0)), nil
+	default:
+		return nil, errors.New("unknown fanout: " + kind)
+	}
+}
+
 func run(ctx context.Context, cfg appConfig) error {
 	st, err := openStore(cfg)
 	if err != nil {
@@ -99,8 +127,17 @@ func run(ctx context.Context, cfg appConfig) error {
 		return err
 	}
 	defer func() { _ = otelShutdown(context.Background()) }()
-	reg := registry.NewSyncMap()
-	fan := fanout.NewPerConn()
+	reg, err := newRegistry(cfg.registry)
+	if err != nil {
+		return err
+	}
+	fan, err := newFanout(cfg.fanout)
+	if err != nil {
+		return err
+	}
+	// server.Run closes the fanout on graceful shutdown; this defer covers
+	// early-error returns before Run starts. Close is idempotent.
+	defer func() { _ = fan.Close() }()
 	rl := ratelimit.New(100, 200, time.Hour)
 	defer rl.Close()
 	h := hub.New()
@@ -202,11 +239,19 @@ func parseFlags(args []string) (appConfig, error) {
 	dev := fs.Bool("dev", false, "developer mode: permits --allowed-origins=*")
 	storeKind := fs.String("store", "sqlite", "key store backend: sqlite (persistent, default) or memory (wiped on restart)")
 	dbPath := fs.String("db-path", "", "sqlite database file (default <state-dir>/wirefan.db; state dir is $WIREFAN_STATE_DIR or ./var)")
+	registryKind := fs.String("registry", "sync-map", "channel registry implementation: sync-map or sharded")
+	fanoutKind := fs.String("fanout", "per-conn", "fanout implementation: per-conn or sharded (worker pool sized to GOMAXPROCS)")
 	if err := fs.Parse(args); err != nil {
 		return appConfig{}, err
 	}
 	if *storeKind != "sqlite" && *storeKind != "memory" {
 		return appConfig{}, errors.New("--store must be sqlite or memory")
+	}
+	if *registryKind != "sync-map" && *registryKind != "sharded" {
+		return appConfig{}, errors.New("--registry must be sync-map or sharded")
+	}
+	if *fanoutKind != "per-conn" && *fanoutKind != "sharded" {
+		return appConfig{}, errors.New("--fanout must be per-conn or sharded")
 	}
 	if *origins == "" {
 		return appConfig{}, errors.New("--allowed-origins is required (use --allowed-origins=https://your.host or pass --dev with --allowed-origins=*)")
@@ -236,7 +281,9 @@ func parseFlags(args []string) (appConfig, error) {
 			AdminAddr:      *adminAddr,
 			AllowedOrigins: cleaned,
 		},
-		store:  *storeKind,
-		dbPath: *dbPath,
+		store:    *storeKind,
+		dbPath:   *dbPath,
+		registry: *registryKind,
+		fanout:   *fanoutKind,
 	}, nil
 }
