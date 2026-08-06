@@ -55,9 +55,9 @@ a:hover { color: var(--accent); }
   font-family: var(--serif);
 }
 .brand-mark {
-  font-size: 22px;
-  color: var(--accent);
-  transform: translateY(2px);
+  width: 28px;
+  height: 28px;
+  transform: translateY(6px);
   display: inline-block;
 }
 .brand-name {
