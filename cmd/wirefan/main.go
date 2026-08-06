@@ -23,6 +23,17 @@ import (
 	"github.com/EthanY33/wirefan/internal/store"
 )
 
+// appConfig is the full process configuration: the server's network surface
+// plus the implementation selections (store, registry, fanout) that main
+// wires together before handing deps to server.New.
+type appConfig struct {
+	srv      server.Config
+	store    string // "sqlite" | "memory"
+	dbPath   string // sqlite file path; empty means <state-dir>/wirefan.db
+	registry string // "sync-map" | "sharded"
+	fanout   string // "per-conn" | "sharded"
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -37,8 +48,43 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, cfg server.Config) error {
-	st := store.NewMemory()
+// openStore selects the key store per --store. SQLite is the default so
+// minted API keys survive restarts; --store=memory keeps the old wipe-on-boot
+// behavior for tests and hermetic benchmark cells. The SQLite path is
+// resolved to an absolute path because store.NewSQLite rejects relative
+// paths (DSN-injection guard).
+func openStore(cfg appConfig) (store.Store, error) {
+	switch cfg.store {
+	case "memory":
+		return store.NewMemory(), nil
+	case "sqlite":
+		p := cfg.dbPath
+		if p == "" {
+			dir, err := ensureStateDir()
+			if err != nil {
+				return nil, err
+			}
+			p = filepath.Join(dir, "wirefan.db")
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
+			return nil, err
+		}
+		return store.NewSQLite(abs)
+	default:
+		return nil, errors.New("unknown store: " + cfg.store)
+	}
+}
+
+func run(ctx context.Context, cfg appConfig) error {
+	st, err := openStore(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
 	adminToken, err := resolveAdminToken()
 	if err != nil {
 		return err
@@ -58,7 +104,7 @@ func run(ctx context.Context, cfg server.Config) error {
 	rl := ratelimit.New(100, 200, time.Hour)
 	defer rl.Close()
 	h := hub.New()
-	s := server.New(cfg, server.Deps{
+	s := server.New(cfg.srv, server.Deps{
 		Store:         st,
 		AdminToken:    adminToken,
 		Registry:      reg,
@@ -98,11 +144,8 @@ func resolveAdminToken() (string, error) {
 	if t := os.Getenv("WIREFAN_ADMIN_TOKEN"); t != "" {
 		return t, nil
 	}
-	stateDir := os.Getenv("WIREFAN_STATE_DIR")
-	if stateDir == "" {
-		stateDir = "var"
-	}
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+	stateDir, err := ensureStateDir()
+	if err != nil {
 		return "", err
 	}
 	tokenPath := filepath.Join(stateDir, "admin.token")
@@ -129,6 +172,20 @@ func resolveAdminToken() (string, error) {
 	return t, nil
 }
 
+// ensureStateDir resolves the state directory ($WIREFAN_STATE_DIR, falling
+// back to ./var) and creates it with 0700 so only the service user can read
+// the admin token and key database it will contain.
+func ensureStateDir() (string, error) {
+	dir := os.Getenv("WIREFAN_STATE_DIR")
+	if dir == "" {
+		dir = "var"
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 // parseFlags binds the listener and origin policy from CLI flags. Default
 // for --listen preserves the pre-flag :8080 behavior. The admin listener
 // defaults to 127.0.0.1:6060 so /metrics and /debug/pprof/* are no longer
@@ -137,17 +194,22 @@ func resolveAdminToken() (string, error) {
 // --allowed-origins is required: refusing to start when it is "*" outside
 // --dev makes "skip origin check" an explicit choice rather than the
 // silent default it used to be.
-func parseFlags(args []string) (server.Config, error) {
+func parseFlags(args []string) (appConfig, error) {
 	fs := flag.NewFlagSet("wirefan", flag.ContinueOnError)
 	addr := fs.String("listen", ":8080", "public listener address (WS, /v1/auth/sign, /v1/health, static client)")
 	adminAddr := fs.String("admin-addr", "127.0.0.1:6060", "admin listener address (/metrics, /debug/pprof/*, /v1/keys); empty disables")
 	origins := fs.String("allowed-origins", "", "comma-separated WebSocket Origin allowlist (e.g. https://example.com,https://staging.example.com); '*' is rejected outside --dev")
 	dev := fs.Bool("dev", false, "developer mode: permits --allowed-origins=*")
+	storeKind := fs.String("store", "sqlite", "key store backend: sqlite (persistent, default) or memory (wiped on restart)")
+	dbPath := fs.String("db-path", "", "sqlite database file (default <state-dir>/wirefan.db; state dir is $WIREFAN_STATE_DIR or ./var)")
 	if err := fs.Parse(args); err != nil {
-		return server.Config{}, err
+		return appConfig{}, err
+	}
+	if *storeKind != "sqlite" && *storeKind != "memory" {
+		return appConfig{}, errors.New("--store must be sqlite or memory")
 	}
 	if *origins == "" {
-		return server.Config{}, errors.New("--allowed-origins is required (use --allowed-origins=https://your.host or pass --dev with --allowed-origins=*)")
+		return appConfig{}, errors.New("--allowed-origins is required (use --allowed-origins=https://your.host or pass --dev with --allowed-origins=*)")
 	}
 	parts := strings.Split(*origins, ",")
 	cleaned := make([]string, 0, len(parts))
@@ -159,18 +221,22 @@ func parseFlags(args []string) (server.Config, error) {
 		cleaned = append(cleaned, p)
 	}
 	if len(cleaned) == 0 {
-		return server.Config{}, errors.New("--allowed-origins parsed to empty list")
+		return appConfig{}, errors.New("--allowed-origins parsed to empty list")
 	}
 	if !*dev {
 		for _, o := range cleaned {
 			if o == "*" {
-				return server.Config{}, errors.New("--allowed-origins=* requires --dev")
+				return appConfig{}, errors.New("--allowed-origins=* requires --dev")
 			}
 		}
 	}
-	return server.Config{
-		Addr:           *addr,
-		AdminAddr:      *adminAddr,
-		AllowedOrigins: cleaned,
+	return appConfig{
+		srv: server.Config{
+			Addr:           *addr,
+			AdminAddr:      *adminAddr,
+			AllowedOrigins: cleaned,
+		},
+		store:  *storeKind,
+		dbPath: *dbPath,
 	}, nil
 }
