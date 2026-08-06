@@ -87,7 +87,7 @@
     <rect class="accent-soft" x="0" y="0" width="1500" height="28" />
     <line x1="0" y1="28" x2="1500" y2="28" class="stroke-rule" />
     <text class="mono label-lane accent" x="14" y="19" fill="#c25b1a">data plane &#183; ws /v1/connect</text>
-    <text class="mono label-tag dim" x="1486" y="19" text-anchor="end" fill="#7a7560">read pump &#183; write pump &#183; per-channel mutex</text>
+    <text class="mono label-tag dim" x="1486" y="19" text-anchor="end" fill="#7a7560">read pump &#183; write pump &#183; per-subscriber FIFO</text>
   </g>
 
   <!-- ============================================================ -->
@@ -215,7 +215,7 @@
     <line x1="14" y1="32" x2="266" y2="32" class="stroke-rule" />
     <text class="mono label-sub ink-2" x="14" y="54" fill="#3a3f31">1k connection churn &#8594;</text>
     <text class="mono label-sub ink-2" x="14" y="72" fill="#3a3f31">runtime.NumGoroutine returns</text>
-    <text class="mono label-sub ink-2" x="14" y="90" fill="#3a3f31">to baseline within 1s</text>
+    <text class="mono label-sub ink-2" x="14" y="90" fill="#3a3f31">to baseline +30 within 10s</text>
   </g>
 
   <!-- Rate-limit + resource caps note (under Registry) -->
