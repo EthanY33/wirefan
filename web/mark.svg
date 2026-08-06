@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" role="img" aria-label="wirefan">
+  <!-- Square brand mark for wirefan. Matches the og-card.svg palette
+       (paper #f5f1ea, ink #2b2b2b, rust accent #c25b1a) and visual
+       grammar (publisher hub + ring → 4 subscriber leaves). Sized
+       80×80; pairs cleanly as a 96px README header logo. -->
+  <rect width="80" height="80" rx="14" fill="#f5f1ea"/>
+  <!-- 4 spokes, distinct angles, no overlap -->
+  <line x1="24" y1="40" x2="60" y2="14" stroke="#c25b1a" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="24" y1="40" x2="62" y2="30" stroke="#c25b1a" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="24" y1="40" x2="62" y2="50" stroke="#c25b1a" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="24" y1="40" x2="60" y2="66" stroke="#c25b1a" stroke-width="2.4" stroke-linecap="round"/>
+  <!-- subscriber leaves -->
+  <circle cx="60" cy="14" r="4" fill="#2b2b2b"/>
+  <circle cx="62" cy="30" r="4" fill="#2b2b2b"/>
+  <circle cx="62" cy="50" r="4" fill="#2b2b2b"/>
+  <circle cx="60" cy="66" r="4" fill="#2b2b2b"/>
+  <!-- publisher hub with signature outer ring -->
+  <circle cx="24" cy="40" r="11" fill="none" stroke="#c25b1a" stroke-width="1.6" opacity="0.5"/>
+  <circle cx="24" cy="40" r="7" fill="#c25b1a"/>
+</svg>

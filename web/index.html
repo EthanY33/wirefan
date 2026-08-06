@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>wirefan &mdash; live demo</title>
+  <link rel="icon" type="image/svg+xml" href="/mark.svg">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="masthead">
     <div class="masthead-row">
       <div class="brand">
-        <span class="brand-mark">&#9698;</span>
+        <img class="brand-mark" src="/mark.svg" alt="" width="28" height="28">
         <span class="brand-name">wirefan</span>
         <span class="brand-sub">/ a small WebSocket fanout server</span>
       </div>
@@ -96,7 +97,7 @@
         <span class="panel-status mono" id="statsAge">&mdash;</span>
       </div>
       <div class="panel-body">
-        <p class="caption">streamed from the <span class="mono">_wirefan-stats</span> system channel.</p>
+        <p class="caption" id="statsCaption">published to the <span class="mono">_wirefan-stats</span> system channel.</p>
         <div class="stats-grid" id="statsGrid">
           <div class="stat">
             <div class="stat-label">connections</div>
