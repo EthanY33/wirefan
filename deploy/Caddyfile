@@ -7,7 +7,7 @@ wirefan.ethanyucetepe.dev {
 
     # Forward the client IP for wirefan's per-IP connection cap. wirefan only
     # trusts X-Forwarded-For from addresses listed in the WIREFAN_TRUSTED_PROXIES
-    # env var (see deploy/.env.example) — set it to this proxy's address, or
+    # env var (see deploy/.env.example); set it to this proxy's address, or
     # every connection is attributed to the proxy IP and the per-IP cap
     # becomes a global ceiling.
     reverse_proxy localhost:8080 {
