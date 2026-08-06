@@ -55,6 +55,7 @@ type Server struct {
 	adminSrv    *http.Server
 	store       store.Store
 	hub         *hub.Hub
+	fan         fanout.Fanout
 	replayCache *auth.ReplayCache
 }
 
@@ -69,6 +70,7 @@ func New(cfg Config, deps Deps) *Server {
 		adminMux:    http.NewServeMux(),
 		store:       deps.Store,
 		hub:         deps.Hub,
+		fan:         deps.Fanout,
 		replayCache: rc,
 	}
 
@@ -157,6 +159,12 @@ func (s *Server) Run(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	s.hub.Drain(shutdownCtx, 30*time.Second)
+	// Stop fanout workers after Drain: no new broadcasts arrive once conns
+	// are drained, and Close waits for queued ones so the goroutine-leak
+	// invariant holds for worker-pool fanouts too.
+	if s.fan != nil {
+		_ = s.fan.Close()
+	}
 	if s.adminSrv != nil {
 		_ = s.adminSrv.Shutdown(shutdownCtx)
 	}

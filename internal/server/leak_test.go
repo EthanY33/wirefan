@@ -19,9 +19,24 @@ import (
 	"github.com/coder/websocket"
 )
 
+// TestNoGoroutineLeakAfterChurn proves the leak invariant for every fanout
+// the --fanout flag can select. The sharded pool's workers spin up before
+// the baseline sample and are torn down via Close in cleanup, so a stuck
+// worker or an unclosed pool shows up as a leak.
 func TestNoGoroutineLeakAfterChurn(t *testing.T) {
+	t.Run("fanout=per-conn", func(t *testing.T) {
+		testNoGoroutineLeakAfterChurn(t, fanout.NewPerConn())
+	})
+	t.Run("fanout=sharded", func(t *testing.T) {
+		f := fanout.NewShardedPool(4)
+		t.Cleanup(func() { _ = f.Close() })
+		testNoGoroutineLeakAfterChurn(t, f)
+	})
+}
+
+func testNoGoroutineLeakAfterChurn(t *testing.T, fan fanout.Fanout) {
 	// Set up handler dependencies first so their persistent goroutines (rate-limiter
-	// gcLoop, etc) are part of the baseline rather than counted as leaks.
+	// gcLoop, fanout workers, etc) are part of the baseline rather than counted as leaks.
 	s := store.NewMemory()
 	secret, _ := auth.GenerateSecret()
 	k, _ := s.CreateKey(context.Background(), "t", auth.HashSecret(secret))
@@ -33,7 +48,7 @@ func TestNoGoroutineLeakAfterChurn(t *testing.T) {
 		AllowedOrigins: []string{"*"},
 		Registry:       registry.NewSyncMap(),
 		SigningSecret:  "test-signing-secret",
-		Fanout:         fanout.NewPerConn(),
+		Fanout:         fan,
 		RateLimit:      rl,
 		Policy:         conn.PolicyDisconnect{},
 		Hub:            hub.New(),
