@@ -349,7 +349,11 @@
     // payload. Objects only: never silently promote a user's string or
     // number payload into an object. Any client can put any value here,
     // so the receiving chip is a display convenience, not an identity claim.
-    if (socketId && data !== null && typeof data === 'object' && !Array.isArray(data)) {
+    // Skip the stats channel: renderStats consumes its frame before the
+    // generic event path strips _from, so stamping it there would surface
+    // the key in the raw snapshot pane.
+    if (ch !== STATS_CHANNEL && socketId && data !== null
+        && typeof data === 'object' && !Array.isArray(data)) {
       data = { ...data, _from: socketId };
     }
     send({ type: 'publish', channel: ch, data });
