@@ -48,7 +48,7 @@ request with a plain HTTP response:
 | ---- | ---------------------------------------------------------------- |
 | 401  | `key` query param missing, unknown, or revoked.                  |
 | 403  | (Reserved.) Origin not in allowlist — surfaced by the WS lib as upgrade failure. |
-| 429  | Per-source-IP active-connection cap reached (default 200).       |
+| 429  | Per-source-IP active-connection cap reached (default 200, `WIREFAN_IP_CAP`). |
 
 ### 3.3 First server frame
 
@@ -58,10 +58,11 @@ until it has received this frame.
 
 ## 4. Auth flow
 
-`public-*` (and any non-`private-`, non-`_`-prefixed) channel names
-require no token. `private-*` channels require an HMAC token that is
-**bound to the issuing socket_id**, so a token leaked to a third party
-cannot be replayed on a different connection.
+`public-*` (and any non-`private-`, non-`presence-`,
+non-`_`-prefixed) channel names require no token. `private-*` and
+`presence-*` channels require an HMAC token that is **bound to the
+issuing socket_id**, so a token leaked to a third party cannot be
+replayed on a different connection.
 
 ```
 +----------+        +-------------+       +---------+         +----------+
@@ -96,9 +97,12 @@ cannot be replayed on a different connection.
                                           |<----------------------|       |
 ```
 
-Token TTL is **5 minutes** from issuance (`auth.SignToken` in
-`internal/server/rest.go`). Reconnects get a new `socket_id` and
-therefore must obtain a new token.
+Token TTL is **5 minutes** from issuance (`auth.SignToken`, called by
+the sign handler in `internal/server/rest.go`). Tokens are also
+**single-use**: each carries a random `jti` that the server records on
+first successful verify, so replaying the same token (even on the same
+connection) fails with `AUTH_REPLAYED`. Reconnects get a new
+`socket_id` and therefore must obtain a new token.
 
 ## 5. Message shapes
 
@@ -141,7 +145,7 @@ Sent once, immediately after upgrade.
 {
   "type": "subscribe",
   "channel": "private-room42",
-  "token": "1714932000000:VXNl...c2lnbg"
+  "token": "1714932000000:9f8a...c41d:VXNl...c2lnbg"
 }
 ```
 
@@ -222,15 +226,25 @@ may retry or take corrective action.
 
 ### 5.10 Token format
 
-`SignToken` in `internal/auth/token.go` produces:
+`SignToken` in `internal/auth/token.go` produces a three-part value:
 
 ```
-<expiry_unix_ms>:<base64url_no_padding(HMAC_SHA256(secret, "<expiry>|<socket_id>|<channel>"))>
+<expiry_unix_ms>:<jti>:<base64url_no_padding(HMAC_SHA256(secret, "<expiry_unix_ms>|<socket_id>|<channel>|<jti>"))>
 ```
 
-Verification recomputes the MAC for `(expiry, socket_id, channel)` and
-compares with `hmac.Equal`. Tokens are checked for expiry first; an
-expired token returns `AUTH_FAILED`.
+`<jti>` is 16 random bytes, hex-encoded (32 chars), generated fresh
+per token. It is part of the MAC payload, so it cannot be swapped
+without invalidating the signature.
+
+Verification (`auth.VerifyTokenAgainst`) proceeds in order: parse the
+three parts, reject if expired, recompute the MAC for
+`(expiry, socket_id, channel, jti)` and compare with `hmac.Equal`,
+then check the `jti` against the server's replay cache. A `jti` seen
+before is rejected with `AUTH_REPLAYED`, which makes every token
+one-time-use; every other failure mode (malformed, expired, bad
+signature) surfaces as `AUTH_FAILED`. Expired cache entries are
+swept once a minute, bounding replay-cache memory to roughly the
+token issuance rate times the 5-minute TTL.
 
 ## 6. Channel naming
 
@@ -239,11 +253,18 @@ expired token returns `AUTH_FAILED`.
 | `public-*`      | No             | Yes                        | Any subscriber can also publish.          |
 | (any other)     | No             | Yes                        | Treated like `public-` for protocol purposes. |
 | `private-*`     | Yes (HMAC)     | Yes                        | Subscribe requires a `token` bound to `socket_id`. |
-| `_*` (underscore) | Subscribe-only by clients; client publishes return `RESERVED_CHANNEL`. | Reserved for the server. |
+| `presence-*`    | Yes (HMAC)     | Yes                        | Auth like `private-`; member-list events are not implemented. |
+| `_*` (underscore) | n/a — client subscribe and publish both return `RESERVED_CHANNEL`. | No | Reserved for the server. |
+
+Channel names are limited to 128 bytes, must be non-empty, and may
+not contain control characters; violations return `BAD_CHANNEL`.
 
 The reserved name in use today is `_wirefan-stats`, periodically
 populated by `hub.PublishStatsLoop` with a server-generated `event`
-frame.
+frame. Note the tension in v1: client subscribes to `_*` are rejected
+along with publishes, so stats frames currently reach only server-side
+subscribers; a read-only carve-out for `_wirefan-stats` is a known
+follow-up.
 
 ## 7. Error codes
 
@@ -253,13 +274,17 @@ close the WebSocket — the client can keep using the connection.
 | Code                | Trigger                                                              |
 | ------------------- | -------------------------------------------------------------------- |
 | `BAD_JSON`          | Frame body could not be unmarshaled into the incoming envelope.      |
+| `BAD_CHANNEL`       | Channel name empty, over 128 bytes, or contains control characters.  |
 | `BAD_TYPE`          | `type` is not one of `subscribe`, `unsubscribe`, `publish`.          |
-| `AUTH_FAILED`       | `private-*` subscribe with missing, malformed, expired, or invalid token. |
+| `AUTH_FAILED`       | `private-*`/`presence-*` subscribe with missing, malformed, expired, or invalid token. |
+| `AUTH_REPLAYED`     | Subscribe token whose `jti` was already used (tokens are single-use). |
 | `NOT_SUBSCRIBED`    | `publish` to a channel this conn has not subscribed to.              |
-| `RATE_LIMITED`      | Publish rate exceeded (per API key, see §9).                         |
-| `RESERVED_CHANNEL`  | Client publish targeted a `_`-prefixed channel.                      |
+| `RATE_LIMITED`      | Per-API-key budget exceeded: publish rate, or control-op (subscribe/unsubscribe) rate. |
+| `RATE_LIMITED_CONN` | Per-connection publish budget exceeded (see §9).                     |
+| `RESERVED_CHANNEL`  | Client subscribe or publish targeted a `_`-prefixed channel.         |
 | `LIMIT_CHANNELS`    | Conn already has 64 active subscriptions.                            |
 | `LIMIT_SUBSCRIBERS` | Channel already has 10 000 subscribers.                              |
+| `SUBSCRIBE_FAILED`  | Subscribe kept racing the registry sweeper past its internal retry budget; safe for the client to retry. |
 
 ## 8. WebSocket close codes
 
@@ -281,16 +306,20 @@ connection open. A v2 protocol may tighten this.
 | Limit                            | Value          | Source                                           |
 | -------------------------------- | -------------- | ------------------------------------------------ |
 | Max inbound frame size           | 64 KiB         | `internal/conn/pumps.go` (`SetReadLimit`)        |
+| Max channel name length          | 128 bytes      | `maxChannelNameLen` in `handler.go`              |
 | Max channels per connection      | 64             | `defaultMaxChannelsPerConn` in `conn.go`         |
 | Max subscribers per channel      | 10 000         | `defaultMaxSubsPerChannel` in `conn.go`          |
-| Publish rate, sustained          | 100 / sec      | `ratelimit.New(100, 200, …)` in `cmd/wirefan/main.go` |
-| Publish rate, burst              | 200            | same                                             |
-| Active conns per source IP       | 200            | `defaultIPCap` in `internal/server/upgrade.go`   |
+| Publish rate per API key, sustained | 100 / sec   | `ratelimit.New(100, 200, …)` in `cmd/wirefan/main.go` |
+| Publish rate per API key, burst  | 200            | same                                             |
+| Publish rate per connection, sustained / burst | 50 / sec, 100 | `defaultConnPublishRate` / `defaultConnPublishBurst` in `conn.go` |
+| Active conns per source IP       | 200 (override: `WIREFAN_IP_CAP` env) | `defaultIPCap` in `internal/server/upgrade.go` |
 | Per-conn send buffer             | 64 messages    | `sendChanSize` in `conn.go`                      |
 | Token TTL                        | 5 min          | `internal/server/rest.go`                        |
 
-Rate limit keys are API key IDs — every connection authenticated with
-the same key shares one bucket.
+The per-API-key bucket is shared by every connection authenticated
+with the same key (subscribe/unsubscribe control ops draw from it
+too); the per-connection bucket bounds any single socket on top of
+that.
 
 ## 10. Ordering guarantees
 
@@ -342,21 +371,37 @@ No `error` frame is sent on the disconnect path: the client sees a
 
 ## 13. REST control plane
 
-All endpoints live on the same HTTP listener as `/v1/connect`.
+Endpoints are split across two listeners. The **public listener**
+(`--listen`, default `:8080`) carries the data plane and the one
+endpoint app servers call; the **admin listener** (`--admin-addr`,
+default `127.0.0.1:6060`, loopback on purpose) carries key management,
+metrics, and profiling.
+
+Public listener:
+
+| Method | Path                  | Auth                          | Purpose                                |
+| ------ | --------------------- | ----------------------------- | -------------------------------------- |
+| GET    | `/v1/connect`         | `?key=<id>`                   | WebSocket upgrade (§3).                |
+| POST   | `/v1/auth/sign`       | `Bearer <id>:<secret>`        | Sign a private-channel token. Body: `{socket_id, channel}`. Returns `{token}`. |
+| GET    | `/v1/health`          | none                          | `200 ok` while serving; `503 draining` during shutdown. |
+| GET    | `/`                   | none                          | Embedded demo client (web/).           |
+
+Admin listener:
 
 | Method | Path                  | Auth                          | Purpose                                |
 | ------ | --------------------- | ----------------------------- | -------------------------------------- |
 | POST   | `/v1/keys`            | `Bearer <admin_token>`        | Create API key. Returns `{id, name, secret}` (secret shown once). |
 | GET    | `/v1/keys`            | `Bearer <admin_token>`        | List keys (no secrets).                |
 | DELETE | `/v1/keys/{id}`       | `Bearer <admin_token>`        | Revoke a key.                          |
-| POST   | `/v1/auth/sign`       | `Bearer <id>:<secret>`        | Sign a private-channel token. Body: `{socket_id, channel}`. Returns `{token}`. |
-| GET    | `/v1/health`          | none                          | `200 ok` while serving; `503 draining` during shutdown. |
-| GET    | `/metrics`            | none                          | Prometheus exposition.                 |
-| ANY    | `/debug/pprof/*`      | none                          | Standard `net/http/pprof` endpoints.   |
-| GET    | `/`                   | none                          | Embedded demo client (web/).           |
+| GET    | `/metrics`            | none (loopback-bound)         | Prometheus exposition.                 |
+| ANY    | `/debug/pprof/*`      | none (loopback-bound)         | Standard `net/http/pprof` endpoints.   |
 
-The admin token is regenerated on each process start and printed to
-stdout. It is held in memory only — there is no admin recovery path.
+The admin token is **persisted, not printed**. Resolution order at
+boot: the `WIREFAN_ADMIN_TOKEN` env var if set; else the contents of
+`<state-dir>/admin.token` (`WIREFAN_STATE_DIR`, default `./var`); else
+a freshly generated token written to that file with mode 0600 and
+reused on every subsequent boot. Operators retrieve it by reading the
+file.
 
 ## 14. Versioning
 
