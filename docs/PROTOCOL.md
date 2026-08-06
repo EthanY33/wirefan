@@ -254,7 +254,7 @@ token issuance rate times the 5-minute TTL.
 | (any other)     | No             | Yes                        | Treated like `public-` for protocol purposes. |
 | `private-*`     | Yes (HMAC)     | Yes                        | Subscribe requires a `token` bound to `socket_id`. |
 | `presence-*`    | Yes (HMAC)     | Yes                        | Auth like `private-`; member-list events are not implemented. |
-| `_*` (underscore) | n/a — client subscribe and publish both return `RESERVED_CHANNEL`. | No | Reserved for the server. |
+| `_*` (underscore) | n/a (client subscribe and publish both return `RESERVED_CHANNEL`) | No | Reserved for the server. |
 
 Channel names are limited to 128 bytes, must be non-empty, and may
 not contain control characters; violations return `BAD_CHANNEL`.

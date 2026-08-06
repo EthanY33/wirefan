@@ -228,7 +228,7 @@ ARCHITECTURE.md is **navigation**, not specification. Keep it in sync:
   reordered shutdown)? Update the lifecycle section and re-check the
   file:symbol landmarks.
 - **Renamed or moved a function?** The file:symbol landmarks in this
-  doc rot more slowly than line numbers, but they still rot —
+  doc rot more slowly than line numbers, but they still rot;
   `make docs-sync` is a manual reminder, not an enforcement.
 - **Added a new "common task"?** Add a row to "Where to look when".
 
