@@ -24,7 +24,9 @@
 #   bash scripts/bench.sh
 #
 # Tunables (env): CONNS, CHANNELS, RATE, DURATION, RAMPUP, REPS, CELLS,
-# PROFILE_CELL (cell label to pprof, e.g. "sharded-sharded"; empty = none).
+# PROFILE_CELL (cell label to pprof, e.g. "sharded-sharded"; empty = none),
+# RUN_TAG (suffix inserted into results filenames, e.g. "-dropcheck", so
+# verification runs never overwrite previously published raw files).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -45,6 +47,7 @@ MEMORY="${MEMORY:-6g}"
 IP_CAP="${IP_CAP:-20000}"
 PROFILE_CELL="${PROFILE_CELL:-}"
 PROFILE_SECONDS="${PROFILE_SECONDS:-15}"
+RUN_TAG="${RUN_TAG:-}"
 # CELLS: space-separated "fanout/registry" pairs
 CELLS="${CELLS:-per-conn/sync-map per-conn/sharded sharded/sync-map sharded/sharded}"
 
@@ -72,7 +75,7 @@ scrape_published() {
 run_cell() {
   local fanout="$1" registry="$2" rep="$3"
   local label="${fanout}-${registry}"
-  local out="results/${label}-c${CONNS}-rep${rep}.txt"
+  local out="results/${label}-c${CONNS}${RUN_TAG}-rep${rep}.txt"
   local token
   token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
 
@@ -158,15 +161,36 @@ run_cell() {
   curl -fsS "${ADMIN}/metrics" | grep '^wirefan_broadcast_latency_seconds' >> "$out" \
     || fail "latency histogram scrape failed for ${label}"
   awk '/^wirefan_broadcast_latency_seconds_sum/{s=$2} /^wirefan_broadcast_latency_seconds_count/{c=$2} END{if(c>0) printf "SERVER_LATENCY mean_us=%.2f count=%d\n", s/c*1e6, c}' "$out" | tee -a "$out"
+
+  # Record the container's effective GOMAXPROCS (Docker's --cpus quota is
+  # rounded up by the Go runtime, so 1 vCPU does not mean GOMAXPROCS=1;
+  # the sharded fanout sizes its worker pool from this value).
+  curl -fsS "${ADMIN}/metrics" | awk '/^go_sched_gomaxprocs_threads/ {printf "GOMAXPROCS %d\n", $2}' | tee -a "$out"
+
+  # Slow-consumer drop check: the server drops events to subscribers whose
+  # send buffer is full (wirefan_messages_dropped_total, see
+  # internal/conn). Any drop means "delivered" silently undercounts the
+  # offered load, so a nonzero drop counter fails the cell. The CounterVec
+  # emits no series until the first drop; absence is the passing case.
+  local drops total_drops
+  drops=$(curl -fsS "${ADMIN}/metrics" | grep '^wirefan_messages_dropped_total' || true)
+  if [ -n "$drops" ]; then
+    echo "$drops" | tee -a "$out"
+    total_drops=$(echo "$drops" | awk '{s+=$2} END{printf "%d", s}')
+    [ "$total_drops" = "0" ] || fail "server dropped ${total_drops} messages during ${label} rep ${rep}"
+  else
+    echo "DROPPED none" | tee -a "$out"
+  fi
   local delta sent
   delta=$(awk -v a="$after" -v b="$before" 'BEGIN{printf "%d", a-b}')
   sent=$(awk '/^SUMMARY /{for(i=1;i<=NF;i++) if($i ~ /^sent=/){split($i,kv,"="); print kv[2]}}' "$out")
   {
     echo "CROSSCHECK wirefan_messages_published_total_delta=${delta} client_sent=${sent}"
   } | tee -a "$out"
-  if [ "$delta" != "$sent" ]; then
-    echo "WARNING: server accepted ${delta} but client sent ${sent} for ${label} rep ${rep}" | tee -a "$out"
-  fi
+  # The cross-check is an honesty check, so a mismatch is fatal, not a
+  # warning: a warned-but-published cell is exactly the contamination
+  # failure mode this harness exists to prevent.
+  [ "$delta" = "$sent" ] || fail "crosscheck mismatch: server accepted ${delta}, client sent ${sent} for ${label} rep ${rep}"
   [ "$delta" -gt 0 ] || fail "zero server-side throughput for ${label} rep ${rep}"
 
   cleanup
