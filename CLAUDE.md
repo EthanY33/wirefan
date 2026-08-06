@@ -61,7 +61,7 @@ Deferred follow-ups from per-task code reviews are tracked in the ethan-memory O
 
 Junctioned from `~/.claude/projects/C--Users-ethan-Desktop-Projects-wirefan/memory/` so it auto-loads when a session starts in this repo.
 
-Consult the file for the current list before starting new work to avoid duplicating fixes. (Earlier examples named here — `SecretHash` exposure in `GET /v1/keys` and `X-Forwarded-For` handling for the per-IP cap — are both fixed; do not re-fix them.)
+Consult the file for the current list before starting new work to avoid duplicating fixes. (Earlier examples named here, `SecretHash` exposure in `GET /v1/keys` and `X-Forwarded-For` handling for the per-IP cap, are both fixed; do not re-fix them.)
 
 ## Deferred (do not implement without reopening design)
 
