@@ -25,7 +25,9 @@ func TestRunReturnsOnContextCancel(t *testing.T) {
 			AdminAddr:      "127.0.0.1:0",
 			AllowedOrigins: []string{"*"},
 		},
-		store: "memory",
+		store:    "memory",
+		registry: "sync-map",
+		fanout:   "per-conn",
 	}
 	t.Setenv("WIREFAN_STATE_DIR", t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -88,6 +90,58 @@ func TestParseFlagsStoreDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestParseFlagsRegistryFanoutDefaultsAndValidation(t *testing.T) {
+	cfg, err := parseFlags([]string{"--dev", "--allowed-origins=*"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.registry != "sync-map" || cfg.fanout != "per-conn" {
+		t.Fatalf("defaults: registry=%q fanout=%q, want sync-map/per-conn", cfg.registry, cfg.fanout)
+	}
+	cfg, err = parseFlags([]string{"--dev", "--allowed-origins=*", "--registry=sharded", "--fanout=sharded"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.registry != "sharded" || cfg.fanout != "sharded" {
+		t.Fatalf("got registry=%q fanout=%q", cfg.registry, cfg.fanout)
+	}
+	if _, err := parseFlags([]string{"--dev", "--allowed-origins=*", "--registry=bogus"}); err == nil {
+		t.Fatal("expected error for --registry=bogus")
+	}
+	if _, err := parseFlags([]string{"--dev", "--allowed-origins=*", "--fanout=bogus"}); err == nil {
+		t.Fatal("expected error for --fanout=bogus")
+	}
+}
+
+// TestRunBootsWithShardedSelections exercises the full wiring path for the
+// non-default implementations, including fanout worker teardown on cancel.
+func TestRunBootsWithShardedSelections(t *testing.T) {
+	t.Setenv("WIREFAN_STATE_DIR", t.TempDir())
+	cfg := appConfig{
+		srv: server.Config{
+			Addr:           "127.0.0.1:0",
+			AdminAddr:      "",
+			AllowedOrigins: []string{"*"},
+		},
+		store:    "memory",
+		registry: "sharded",
+		fanout:   "sharded",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, cfg) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return within 2s of ctx cancel")
+	}
+}
+
 // freeAddr reserves an ephemeral loopback port and releases it so the server
 // under test can bind it. Small race window between Close and the server's
 // Listen, acceptable for a test.
@@ -133,8 +187,10 @@ func TestSQLiteKeyPersistsAcrossRestart(t *testing.T) {
 			AdminAddr:      admAddr,
 			AllowedOrigins: []string{"*"},
 		},
-		store:  "sqlite",
-		dbPath: filepath.Join(stateDir, "wirefan.db"),
+		store:    "sqlite",
+		dbPath:   filepath.Join(stateDir, "wirefan.db"),
+		registry: "sync-map",
+		fanout:   "per-conn",
 	}
 
 	// Boot #1: mint a key.
