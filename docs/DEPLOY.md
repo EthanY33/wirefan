@@ -161,8 +161,8 @@ the host (read-only) just to grab the `deploy/` files:
 sudo apt-get install -y git
 git clone https://github.com/EthanY33/wirefan.git /tmp/wirefan-src
 sudo cp /tmp/wirefan-src/deploy/.env.example /etc/wirefan/env
-sudo cp /tmp/wirefan-src/deploy/Caddyfile /etc/caddy/Caddyfile  # used in step 5
 sudo cp /tmp/wirefan-src/deploy/wirefan.service /etc/systemd/system/wirefan.service
+# deploy/Caddyfile is copied in step 5, after the caddy package creates /etc/caddy
 sudo chmod 0600 /etc/wirefan/env
 ```
 
@@ -208,6 +208,10 @@ Paste (replace the origin with your hostname):
 
 ```ini
 [Service]
+# If a previous container crashed without cleaning up, the name would
+# collide and wedge every restart; the leading "-" makes "no such
+# container" non-fatal.
+ExecStartPre=-/usr/bin/docker rm -f wirefan
 ExecStart=
 ExecStart=/usr/bin/docker run --rm --name wirefan \
     -p 8080:8080 \
@@ -296,8 +300,8 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
 sudo apt-get update && sudo apt-get install -y caddy
 ```
 
-The Caddyfile was already copied in step 4. If you didn't copy it then, do
-it now:
+Now that the caddy package has created `/etc/caddy`, install the shipped
+config over the stock one:
 
 ```bash
 sudo cp /tmp/wirefan-src/deploy/Caddyfile /etc/caddy/Caddyfile
@@ -422,7 +426,9 @@ stored in SQLite at `/var/lib/wirefan/wirefan.db` and survive restarts.
 Now the end-to-end pub/sub check:
 
 1. Open `https://wirefan.ethanyucetepe.dev/?key=<key-id>` in two browser tabs.
-2. Both tabs connect and subscribe to the demo channel.
+   The `?key=` parameter pre-fills the API key field; nothing connects on its
+   own.
+2. In each tab, click **connect**, then **subscribe** to the demo channel.
 3. Publish a message in tab A -> tab B receives it.
 
 ---
@@ -563,10 +569,11 @@ Day-to-day commands once the host is up.
 sudo systemctl restart wirefan
 ```
 
-Restarts are cheap: the admin token and API keys live in
-`/var/lib/wirefan`, so both survive. Subscribe tokens are short-lived and
-signed with a per-process secret, so clients re-request them after a restart
-(the demo client does this automatically).
+Restarts are cheap for durable state: the admin token and API keys live in
+`/var/lib/wirefan`, so both survive. Subscribe tokens for `private-`/`presence-`
+channels are signed with a per-process secret, so a restart invalidates any
+already-issued token and the client must fetch a new one from
+`POST /v1/auth/sign`. The demo client does not auto-reconnect; reload the page.
 
 ### Logs
 
