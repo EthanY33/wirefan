@@ -327,8 +327,10 @@ that.
   `Fanout` implementations preserve publish order and the per-conn
   send chan is also FIFO.
 * **Cross-publisher:** No global ordering. Two publishers writing
-  concurrently to the same channel will interleave at the granularity
-  of `Fanout.Broadcast` calls.
+  concurrently to the same channel interleave arbitrarily, and
+  different subscribers may observe their messages in different
+  orders: nothing serialises concurrent `Broadcast` calls on one
+  channel.
 * **Cross-channel:** No ordering. Two channels share no synchronisation.
 * **At-most-once delivery.** Drops under backpressure (see §11) are
   silent from the subscriber's point of view; no resend or sequence
