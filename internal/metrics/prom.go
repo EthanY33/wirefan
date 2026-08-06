@@ -16,10 +16,11 @@ import (
 
 var (
 	Connections = prometheus.NewGauge(prometheus.GaugeOpts{Name: "wirefan_connections_total"})
-	// Channels is defined for completeness but is NOT yet incremented in this
-	// commit. Accurate channel counting requires a hook in the registry that
-	// distinguishes create vs. lookup; that wiring lands with the
-	// _wirefan-stats system channel (Task 22) or a registry-level callback.
+	// Channels is defined for completeness but is NOT incremented anywhere.
+	// Accurate channel counting requires a hook in the registry that
+	// distinguishes create vs. lookup; the _wirefan-stats publisher instead
+	// reads the registry's Len() directly (see cmd/wirefan), which is the
+	// source of truth. Wiring this gauge would need a registry-level callback.
 	Channels  = prometheus.NewGauge(prometheus.GaugeOpts{Name: "wirefan_channels_total"})
 	Published = prometheus.NewCounter(prometheus.CounterOpts{Name: "wirefan_messages_published_total"})
 	Dropped   = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "wirefan_messages_dropped_total"}, []string{"reason"})
@@ -48,14 +49,36 @@ func readValue(m prometheus.Metric) float64 {
 	return 0
 }
 
+// readVecTotal sums every child of a CounterVec (all label combinations).
+// Collect is used because a Vec has no single value to Write; each child is
+// still read from the same collectors /metrics exposes.
+func readVecTotal(vec *prometheus.CounterVec) float64 {
+	ch := make(chan prometheus.Metric)
+	go func() {
+		vec.Collect(ch)
+		close(ch)
+	}()
+	var total float64
+	for m := range ch {
+		total += readValue(m)
+	}
+	return total
+}
+
 // SnapshotBasic returns the counters the _wirefan-stats system channel
-// publishes: active connections and total messages published. Channel count
-// comes from the registry (see cmd/wirefan) because the Channels gauge is
-// not wired to registry create/delete events.
+// publishes. The "connections", "published", and "dropped" keys are a
+// contract with the demo client's stat tiles (web/index.html data-stat
+// attributes); "messages_published_total" is kept as a Prometheus-shaped
+// alias of "published". Channel count comes from the registry (see
+// cmd/wirefan) because the Channels gauge is not wired to registry
+// create/delete events.
 func SnapshotBasic() map[string]int64 {
+	published := int64(readValue(Published))
 	return map[string]int64{
 		"connections":              int64(readValue(Connections)),
-		"messages_published_total": int64(readValue(Published)),
+		"published":                published,
+		"messages_published_total": published,
+		"dropped":                  int64(readVecTotal(Dropped)),
 	}
 }
 
