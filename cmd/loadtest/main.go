@@ -62,6 +62,7 @@ type counters struct {
 	connected  atomic.Int64 // dials that produced a usable WebSocket
 	dialFailed atomic.Int64 // dial or handshake errors
 	subFailed  atomic.Int64 // subscribe that did not get a "subscribed" ack
+	diedEarly  atomic.Int64 // established conns whose socket failed before the duration elapsed
 	sent       atomic.Int64 // publish frames written to the socket
 	recv       atomic.Int64 // "event" frames received
 
@@ -166,6 +167,7 @@ func report(ctrs *counters, lats []int64) {
 	connected := ctrs.connected.Load()
 	dialFailed := ctrs.dialFailed.Load()
 	subFailed := ctrs.subFailed.Load()
+	diedEarly := ctrs.diedEarly.Load()
 	sentN := ctrs.sent.Load()
 	recvN := ctrs.recv.Load()
 
@@ -189,6 +191,7 @@ func report(ctrs *counters, lats []int64) {
 	fmt.Printf("conns connected:  %d\n", connected)
 	fmt.Printf("conns dial-fail:  %d\n", dialFailed)
 	fmt.Printf("conns sub-fail:   %d\n", subFailed)
+	fmt.Printf("conns died early: %d\n", diedEarly)
 	ctrs.dialErrMu.Lock()
 	for msg, n := range ctrs.dialErrKinds {
 		fmt.Printf("  dial error x%d: %s\n", n, msg)
@@ -239,8 +242,8 @@ func report(ctrs *counters, lats []int64) {
 	}
 
 	// Single machine-parseable line for harness scripts.
-	fmt.Printf("SUMMARY attempted=%d connected=%d dial_failed=%d sub_failed=%d sent=%d recv=%d server_errors=%d delivered_per_s=%.0f p50_us=%.1f p99_us=%.1f p999_us=%.1f max_us=%.1f\n",
-		attempted, connected, dialFailed, subFailed, sentN, recvN, errTotal,
+	fmt.Printf("SUMMARY attempted=%d connected=%d dial_failed=%d sub_failed=%d died_early=%d sent=%d recv=%d server_errors=%d delivered_per_s=%.0f p50_us=%.1f p99_us=%.1f p999_us=%.1f max_us=%.1f\n",
+		attempted, connected, dialFailed, subFailed, diedEarly, sentN, recvN, errTotal,
 		float64(recvN)/(*duration).Seconds(), p50us, p99us, p999us, maxus)
 
 	switch {
@@ -250,6 +253,9 @@ func report(ctrs *counters, lats []int64) {
 	case dialFailed > 0 || subFailed > 0:
 		fmt.Fprintln(os.Stderr, "FAIL: some connections failed to establish; not a clean run")
 		os.Exit(3)
+	case diedEarly > 0:
+		fmt.Fprintln(os.Stderr, "FAIL: established connections died before the duration elapsed; not a clean run")
+		os.Exit(7)
 	case *publishers > 0 && sentN == 0:
 		fmt.Fprintln(os.Stderr, "FAIL: zero messages sent; not a clean run")
 		os.Exit(4)
@@ -394,6 +400,14 @@ func runConn(ctx context.Context, wg *sync.WaitGroup, url, channel string, isPub
 					"data":    map[string]int64{"t": time.Now().UnixNano()},
 				})
 				if err := c.Write(ctx, websocket.MessageText, payload); err != nil {
+					// A write error before the duration elapsed means this
+					// established conn died mid-run (server crash, container
+					// teardown, network reset). Silent truncation here would
+					// deflate throughput invisibly, so it is counted and
+					// fails the run.
+					if pubCtx.Err() == nil && ctx.Err() == nil {
+						ctrs.diedEarly.Add(1)
+					}
 					goto done
 				}
 				ctrs.sent.Add(1)
