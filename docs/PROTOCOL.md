@@ -254,17 +254,20 @@ token issuance rate times the 5-minute TTL.
 | (any other)     | No             | Yes                        | Treated like `public-` for protocol purposes. |
 | `private-*`     | Yes (HMAC)     | Yes                        | Subscribe requires a `token` bound to `socket_id`. |
 | `presence-*`    | Yes (HMAC)     | Yes                        | Auth like `private-`; member-list events are not implemented. |
-| `_*` (underscore) | n/a (client subscribe and publish both return `RESERVED_CHANNEL`) | No | Reserved for the server. |
+| `_wirefan-stats` | No | No (publish returns `RESERVED_CHANNEL`) | Read-only carve-out: clients may subscribe to receive server stats snapshots. |
+| `_*` (any other underscore name) | n/a (client subscribe and publish both return `RESERVED_CHANNEL`) | No | Reserved for the server. |
 
 Channel names are limited to 128 bytes, must be non-empty, and may
 not contain control characters; violations return `BAD_CHANNEL`.
 
 The reserved name in use today is `_wirefan-stats`, periodically
 populated by `hub.PublishStatsLoop` with a server-generated `event`
-frame. Note the tension in v1: client subscribes to `_*` are rejected
-along with publishes, so stats frames currently reach only server-side
-subscribers; a read-only carve-out for `_wirefan-stats` is a known
-follow-up.
+frame carrying aggregate counters (`connections`, `channels`,
+`published`, `dropped`). It is the single exception to the `_*`
+reservation: clients may subscribe to exactly `_wirefan-stats`
+(the demo's live stats panel depends on this), but publishing to it,
+and subscribing to any other `_`-prefixed name, still returns
+`RESERVED_CHANNEL`.
 
 ## 7. Error codes
 
@@ -281,7 +284,7 @@ close the WebSocket — the client can keep using the connection.
 | `NOT_SUBSCRIBED`    | `publish` to a channel this conn has not subscribed to.              |
 | `RATE_LIMITED`      | Per-API-key budget exceeded: publish rate, or control-op (subscribe/unsubscribe) rate. |
 | `RATE_LIMITED_CONN` | Per-connection publish budget exceeded (see §9).                     |
-| `RESERVED_CHANNEL`  | Client subscribe or publish targeted a `_`-prefixed channel.         |
+| `RESERVED_CHANNEL`  | Client publish targeted a `_`-prefixed channel, or subscribe targeted one other than `_wirefan-stats`. |
 | `LIMIT_CHANNELS`    | Conn already has 64 active subscriptions.                            |
 | `LIMIT_SUBSCRIBERS` | Channel already has 10 000 subscribers.                              |
 | `SUBSCRIBE_FAILED`  | Subscribe kept racing the registry sweeper past its internal retry budget; safe for the client to retry. |

@@ -115,7 +115,8 @@ numbers do not).
 
 7. `internal/conn/pumps.go` — `readPump` reads a frame, calls `c.handle`.
 8. `internal/conn/handler.go: handle` — dispatches on `type`:
-   - `subscribe` → `handler.go: handleSubscribe`. For
+   - `subscribe` → `handler.go: handleSubscribe`. Rejects reserved
+     `_*` channels except the read-only `_wirefan-stats` carve-out. For
      `private-*` channels, verifies a socket-bound HMAC token with
      `auth.VerifyTokenAgainst` (jti replay cache). Caps channels per
      conn at `defaultMaxChannelsPerConn` (`internal/conn/conn.go`).
