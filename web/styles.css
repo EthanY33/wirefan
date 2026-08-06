@@ -17,6 +17,7 @@
   --serif: "Iowan Old Style", "Hoefler Text", "Palatino Linotype", Palatino, Georgia, serif;
   --mono: "JetBrains Mono", "IBM Plex Mono", "Menlo", "Consolas", "Roboto Mono", monospace;
   --sans: "Inter", -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --peer-color: var(--accent);
 }
 
 * { box-sizing: border-box; }
@@ -106,6 +107,18 @@ a:hover { color: var(--accent); }
   padding: 6px 10px;
   background: var(--accent-soft);
 }
+.peer-badge {
+  display: none;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 11px;
+  background: var(--peer-color);
+  color: var(--paper);
+}
+body.is-connected .peer-badge { display: inline-block; }
 
 /* ---------- grid ---------- */
 .grid {
@@ -308,6 +321,23 @@ a:hover { color: var(--accent); }
 .log-row .tag.sys { color: var(--accent); border-color: var(--accent); }
 .log-row .tag.err { color: var(--err); border-color: var(--err); }
 .log-row .ch { color: var(--olive); margin-right: 8px; }
+.log-row .peer-chip {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  margin-right: 6px;
+  color: var(--paper);
+}
+.log-row--new { animation: rowArrive 1200ms ease-out; }
+@keyframes rowArrive {
+  0%, 35% { background: var(--accent-soft); }
+  100%    { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .log-row--new { animation: none; }
+}
 
 /* ---------- stats ---------- */
 .caption {
