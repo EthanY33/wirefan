@@ -180,8 +180,8 @@ sequenceDiagram
     Run->>Run: cancel(); drain other pump
   else slow consumer
     Run->>Run: closeReq fires
-    Run->>Run: cancel(); drain BOTH pumps
     Run->>Run: ws.Close(1008)
+    Run->>Run: cancel(); drain BOTH pumps
   end
   Run->>Run: closed.Store(true)
   Run->>Run: Hub.Unsubscribe all subs
@@ -193,8 +193,16 @@ Key invariants from `internal/conn/conn.go`:
 
 1. `Run` is the only goroutine that may block on `errc`. It picks the
    first pump to return, calls `cancel()`, and drains the other.
-2. On a `closeReq` (slow-consumer signal from `Send`), `Run` cancels
-   and drains *both* pumps because neither has reported yet.
+2. On a `closeReq` (slow-consumer signal from `Send`), `Run` calls
+   `ws.Close(1008)` *before* `cancel()`, then drains *both* pumps because
+   neither has reported yet. The order matters and is not the intuitive
+   one: cancelling first fails `writePump`'s in-flight `Write` mid-frame,
+   and coder/websocket then tears the conn down as an abnormal closure so
+   the explicit 1008 never reaches the peer. Delivery of the 1008 is still
+   best effort, since `ws.Close` needs the writer mutex that a stuck
+   `writePump` may be holding inside a blocked TCP write, which is why
+   `TestSlowConsumerDisconnects` asserts the behavior rather than the wire
+   code (see `ecaec3b`).
 3. `c.closed.Store(true)` fires *before* unsubscribing. Any in-flight
    `Broadcast` snapshot still pointing at this conn will see
    `closed == true` in `Send` and short-circuit to `ErrSlowConsumer`
