@@ -203,6 +203,51 @@ func TestSubscribeReservedRejected(t *testing.T) {
 	}
 }
 
+// TestSubscribeStatsChannelAllowed proves the one carve-out from the
+// reserved-channel rule: clients may subscribe (read-only) to exactly
+// "_wirefan-stats" so the demo's live stat tiles work.
+func TestSubscribeStatsChannelAllowed(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "_wirefan-stats"})
+	got := readJSON(t, c)
+	if got["type"] != "subscribed" || got["channel"] != "_wirefan-stats" {
+		t.Fatalf("expected subscribed/_wirefan-stats, got %+v", got)
+	}
+}
+
+// TestPublishStatsChannelRejected proves the carve-out is read-only: a
+// client subscribed to "_wirefan-stats" still cannot publish to it.
+func TestPublishStatsChannelRejected(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "_wirefan-stats"})
+	if got := readJSON(t, c); got["type"] != "subscribed" {
+		t.Fatalf("subscribe ack: %+v", got)
+	}
+	sendJSON(t, c, map[string]any{
+		"type":    "publish",
+		"channel": "_wirefan-stats",
+		"data":    map[string]any{"forged": true},
+	})
+	got := readJSON(t, c)
+	if got["type"] != "error" || got["code"] != "RESERVED_CHANNEL" {
+		t.Fatalf("expected RESERVED_CHANNEL on publish, got %+v", got)
+	}
+}
+
+// TestSubscribeOtherReservedStillRejected proves the carve-out is exact:
+// every other "_"-prefixed name, including near-misses of the stats
+// channel, remains reserved on subscribe.
+func TestSubscribeOtherReservedStillRejected(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+	for _, name := range []string{"_wirefan-stats2", "_wirefan", "_stats", "__wirefan-stats"} {
+		sendJSON(t, c, map[string]any{"type": "subscribe", "channel": name})
+		got := readJSON(t, c)
+		if got["type"] != "error" || got["code"] != "RESERVED_CHANNEL" {
+			t.Fatalf("channel %q: expected RESERVED_CHANNEL, got %+v", name, got)
+		}
+	}
+}
+
 // newSharedEnvConns spins up an httptest WS server backed by ONE registry
 // + hub + rate limiter so that publishes on one conn fan out to subscribers
 // on the other. Each dialed conn gets a unique socket-id ("conn-0", "conn-1",
