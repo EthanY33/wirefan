@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,7 +26,26 @@ import (
 // to open more than this many sockets from the same IP gets 429s. Sized to
 // be well above what a real human juggling browser tabs would generate, but
 // well below the kind of fan-out a single phantom-conn loop can issue.
+// Override with WIREFAN_IP_CAP (load generators and single-NAT deployments
+// legitimately exceed 200 conns per IP).
 const defaultIPCap = 200
+
+// parseIPCap resolves the per-IP cap from a WIREFAN_IP_CAP value, mirroring
+// the parse-once-at-startup pattern of WIREFAN_TRUSTED_PROXIES. Empty,
+// non-numeric, or non-positive values fall back to the default with a
+// warning rather than blocking boot on a typo.
+func parseIPCap(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultIPCap
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		slog.Warn("invalid WIREFAN_IP_CAP, using default", "value", sanitizeLogValue(raw), "default", defaultIPCap)
+		return defaultIPCap
+	}
+	return n
+}
 
 // UpgradeDeps bundles dependencies for /v1/connect. AllowedOrigins and
 // ReplayCache are upgrade-specific (origin allowlist and the server-wide
@@ -56,7 +76,7 @@ func NewUpgradeHandler(deps UpgradeDeps) *UpgradeHandler {
 		deps:           deps,
 		trustedProxies: parseTrustedProxies(os.Getenv("WIREFAN_TRUSTED_PROXIES")),
 		ipCount:        map[string]int{},
-		ipCap:          defaultIPCap,
+		ipCap:          parseIPCap(os.Getenv("WIREFAN_IP_CAP")),
 	}
 }
 
