@@ -5,8 +5,11 @@
 wirefan.ethanyucetepe.dev {
     encode gzip
 
-    # Forward client IP for the per-IP phantom-conn cap (Task 23).
-    # wirefan reads X-Forwarded-For when --trust-proxy is set (TBD flag).
+    # Forward the client IP for wirefan's per-IP connection cap. wirefan only
+    # trusts X-Forwarded-For from addresses listed in the WIREFAN_TRUSTED_PROXIES
+    # env var (see deploy/.env.example) — set it to this proxy's address, or
+    # every connection is attributed to the proxy IP and the per-IP cap
+    # becomes a global ceiling.
     reverse_proxy localhost:8080 {
         header_up X-Forwarded-For {remote_host}
         header_up X-Real-IP {remote_host}
