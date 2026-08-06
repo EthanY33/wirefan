@@ -1,6 +1,11 @@
 module github.com/EthanY33/wirefan
 
-go 1.26.5
+// Consumers building this module (CI go-version, deploy/Dockerfile builder
+// stage) need a Go 1.26 toolchain; keeping the go directive at the minor
+// release avoids forcing every downstream past each patch bump.
+go 1.26.0
+
+toolchain go1.26.5
 
 require (
 	github.com/mattn/go-sqlite3 v1.14.44
