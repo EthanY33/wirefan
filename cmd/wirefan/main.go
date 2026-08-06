@@ -151,10 +151,14 @@ func run(ctx context.Context, cfg appConfig) error {
 		Policy:        conn.PolicyDisconnect{},
 		Hub:           h,
 	})
-	// Stats publisher: emits per-channel subscriber counts.
+	// Stats publisher: emits live gauges on the _wirefan-stats channel.
+	// Values come from the same collectors /metrics exposes, plus the
+	// registry's channel count (the Channels gauge is intentionally not
+	// wired to registry events; reg.Len() is the source of truth).
 	go hub.PublishStatsLoop(ctx, reg, 5*time.Second, func() map[string]int64 {
-		// TODO: wire to actual prometheus collector values via testutil
-		return map[string]int64{}
+		snap := metrics.SnapshotBasic()
+		snap["channels"] = int64(reg.Len())
+		return snap
 	})
 	// Channel GC: removes channels that have lost all their subscribers.
 	// Sub.Subscribe verifies Deleted under SubsMu, so the GC and a racing
