@@ -63,7 +63,7 @@ Three facts the whole runbook leans on:
 > unavailable for 24+ hours, jump to **Path B: Cloudflare Tunnel** below.
 
 Once the instance is **Running**, copy the **Public IP** from the instance
-detail page — you'll use it as `<public-ip>` below.
+detail page; you'll use it as `<public-ip>` below.
 
 ---
 
@@ -174,13 +174,13 @@ sudo nano /etc/wirefan/env
 
 The template documents every variable. The two that matter here:
 
-- `WIREFAN_TRUSTED_PROXIES` — **required behind Caddy.** wirefan caps
+- `WIREFAN_TRUSTED_PROXIES`: **required behind Caddy.** wirefan caps
   concurrent connections per client IP (200 by default). With this unset,
   every connection through Caddy is attributed to Caddy's IP, so the per-IP
   cap silently becomes a global 200-connection ceiling. Set it to
   `172.17.0.0/16` for the Docker mode below (Caddy reaches the container
   through the default bridge), or `127.0.0.1` for the native-binary mode.
-- `WIREFAN_ADMIN_TOKEN` — optional. Leave it unset and wirefan generates a
+- `WIREFAN_ADMIN_TOKEN`: optional. Leave it unset and wirefan generates a
   token on first boot, persists it at `/var/lib/wirefan/admin.token`, and
   reuses it forever after. Set it only if you want to pick the value.
 
@@ -189,7 +189,7 @@ The template documents every variable. The two that matter here:
 The shipped `deploy/wirefan.service` runs `/usr/local/bin/wirefan` directly
 (binary-on-disk). With Docker, you have two equally valid options.
 
-**Option A — Run the container under systemd (recommended for this runbook).**
+**Option A: run the container under systemd (recommended for this runbook).**
 
 The container runs as distroless `nonroot` (uid 65532), so the bind-mounted
 state dir must be writable by that uid:
@@ -250,7 +250,7 @@ Two flag notes:
   (`$WIREFAN_STATE_DIR/wirefan.db`, and the image sets
   `WIREFAN_STATE_DIR=/var/lib/wirefan`).
 
-**Option B — Extract the binary from the image and put it at
+**Option B: extract the binary from the image and put it at
 `/usr/local/bin/wirefan`.** This keeps every `wirefan.service` hardening flag
 and gives you a smaller process tree. Tradeoff: you re-extract on every
 update.
@@ -310,7 +310,7 @@ sudo systemctl reload caddy
 sudo systemctl status caddy
 ```
 
-Caddy will try to fetch a Let's Encrypt cert immediately — but it will fail
+Caddy will try to fetch a Let's Encrypt cert immediately, but it will fail
 until DNS is in place (next step) and Oracle ingress lets 80/443 through
 (step 7). Errors at this stage are fine; Caddy retries with backoff.
 
@@ -416,7 +416,7 @@ curl -s -X POST http://127.0.0.1:6060/v1/keys \
 ```
 
 The response includes the key `id` and a `secret` shown **once**. Save the
-secret in your app server's config — you cannot recover it later. Keys are
+secret in your app server's config; you cannot recover it later. Keys are
 stored in SQLite at `/var/lib/wirefan/wirefan.db` and survive restarts.
 
 Now the end-to-end pub/sub check:
@@ -548,7 +548,7 @@ Tradeoffs:
    in this mode, key minting still at `http://127.0.0.1:6060/v1/keys`).
 
 The DNS record Cloudflare creates is automatically proxied (orange cloud) for
-this path — that's correct for tunnels because Cloudflare itself terminates
+this path; that's correct for tunnels because Cloudflare itself terminates
 TLS at the edge before forwarding through the tunnel.
 
 ---
@@ -736,14 +736,14 @@ a smoke test and exactly why production mounts `/var/lib/wirefan`.
 
 ## Cross-references
 
-- `deploy/Dockerfile` — multi-stage build, distroless runtime, cgo for
+- `deploy/Dockerfile`: multi-stage build, distroless runtime, cgo for
   sqlite, nonroot-writable state dir at `/var/lib/wirefan`.
-- `deploy/Caddyfile` — reverse-proxy + auto-TLS config.
-- `deploy/wirefan.service` — systemd unit (binary-on-disk by default).
-- `deploy/.env.example` — template for `/etc/wirefan/env`, documents
+- `deploy/Caddyfile`: reverse-proxy + auto-TLS config.
+- `deploy/wirefan.service`: systemd unit (binary-on-disk by default).
+- `deploy/.env.example`: template for `/etc/wirefan/env`, documents
   `WIREFAN_TRUSTED_PROXIES`, `WIREFAN_STATE_DIR`, `WIREFAN_IP_CAP`,
   `WIREFAN_ADMIN_TOKEN`.
-- `deploy/README.md` — short orientation to the deploy/ directory.
-- `docs/DESIGN.md` — runtime architecture, fanout, backpressure.
-- `docs/PROTOCOL.md` — wire protocol clients implement.
-- `docs/BENCHMARKS.md` — benchmark methodology and published numbers.
+- `deploy/README.md`: short orientation to the deploy/ directory.
+- `docs/DESIGN.md`: runtime architecture, fanout, backpressure.
+- `docs/PROTOCOL.md`: wire protocol clients implement.
+- `docs/BENCHMARKS.md`: benchmark methodology and published numbers.

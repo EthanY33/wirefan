@@ -4,7 +4,7 @@
 # mattn/go-sqlite3 (cgo-only) can compile. Building on Debian (glibc) and
 # running on distroless/base-debian12 (also glibc) keeps the libc ABI matched.
 #
-# Stage 2: distroless/base-debian12 — minimal runtime that still ships glibc,
+# Stage 2: distroless/base-debian12, a minimal runtime that still ships glibc,
 # so the cgo-linked binary loads cleanly. Runs as the built-in `nonroot` user
 # (uid 65532), which cannot write /var. The state dir (admin token + SQLite
 # db) therefore lives at /var/lib/wirefan, created below and owned by
@@ -22,7 +22,7 @@ RUN go mod download
 COPY . .
 
 # CGO required for mattn/go-sqlite3. -s -w strips debug info to shrink the
-# binary. Native arch by default — for cross-builds use `docker buildx build
+# binary. Native arch by default; for cross-builds use `docker buildx build
 # --platform linux/arm64` from an x86_64 dev box.
 RUN CGO_ENABLED=1 go build \
     -ldflags="-s -w" \
@@ -44,7 +44,7 @@ ENV WIREFAN_STATE_DIR=/var/lib/wirefan
 VOLUME ["/var/lib/wirefan"]
 
 # 8080: public listener (WS, /v1/health, demo). 6060: admin listener
-# (/v1/keys, /metrics, /debug/pprof) — publish it bound to loopback only,
+# (/v1/keys, /metrics, /debug/pprof); publish it bound to loopback only,
 # e.g. `-p 127.0.0.1:6060:6060`.
 EXPOSE 8080 6060
 
