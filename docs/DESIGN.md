@@ -17,20 +17,22 @@ distributed pub-sub bus, a chat product, or a Pusher drop-in. The
 deliberate scope is "the smallest correct thing that demonstrates a
 realtime backend at portfolio quality."
 
-What it is, this version: one Go process; one TCP listener; one
-sqlite file (or memory); WebSocket upgrade at `/v1/connect`; REST
-control plane at `/v1/*`; per-channel FIFO ordering for any single
-publisher; three slow-consumer backpressure strategies (default
-**disconnect**); two `Fanout` and two `Registry` impls selectable at
-boot for benchmark comparability.
+What it is, this version: one Go process; a public listener plus a
+loopback admin listener; one sqlite file (or memory); WebSocket
+upgrade at `/v1/connect`; REST control plane at `/v1/*`;
+per-subscriber FIFO ordering (each subscriber sees any single
+publisher's messages in publish order); three slow-consumer
+backpressure strategies (default **disconnect**); two `Fanout` and
+two `Registry` impls selectable at boot (`--fanout`, `--registry`)
+for benchmark comparability.
 
 What it isn't, by explicit non-goal (§14): not multi-server, not a
 history store, not a presence service, not a client SDK, not a
 Pusher-protocol drop-in.
 
 The contract in one sentence: at-most-once JSON delivery on named
-channels, ordered per-publisher per-channel, with bounded memory and
-a principled answer for slow consumers.
+channels, per-subscriber FIFO from any single publisher, with bounded
+memory and a principled answer for slow consumers.
 
 ---
 
@@ -48,7 +50,7 @@ flowchart LR
     Conn[Conn<br/>read+write pumps]
     Hub[Hub<br/>conn set + drain]
     Reg[Registry<br/>name -> *Channel]
-    Ch[Channel<br/>BroadcastMu + subs]
+    Ch[Channel<br/>subscriber set]
     Fan[Fanout<br/>per-conn / sharded]
     RL[RateLimiter<br/>per key_id]
     St[Store<br/>memory / sqlite]
@@ -77,7 +79,7 @@ Each box is one Go package under `internal/`:
 | Component   | Package                | Role                                                                 |
 | ----------- | ---------------------- | -------------------------------------------------------------------- |
 | Hub         | `internal/hub`         | Process-wide conn set; broadcasts close frames on shutdown drain.    |
-| Channel     | `internal/registry`    | Per-channel `BroadcastMu` mutex + subscriber set. FIFO point.        |
+| Channel     | `internal/registry`    | Per-channel subscriber set under `SubsMu` (RWMutex). Broadcast snapshot point. |
 | Conn        | `internal/conn`        | Per-WS lifecycle: read pump, write pump, dispatch, policy hook.      |
 | Fanout      | `internal/fanout`      | Interface + `PerConn` (inline) + `ShardedPool` (worker queues).      |
 | Registry    | `internal/registry`    | Interface + `sync.Map` + 16-shard `RWMutex+map` impls.               |
@@ -93,29 +95,28 @@ Sources: `internal/{hub,conn,fanout,registry,auth,store,ratelimit,metrics,server
 
 ## 3. Concurrency model
 
-The classic Go WebSocket pattern, with one wirefan-specific addition:
-a **per-channel broadcast mutex** that gives FIFO ordering for any
-single publisher.
+The classic Go WebSocket pattern. The one place wirefan diverges from
+the obvious design is the broadcast path: there is deliberately **no
+per-channel broadcast lock**.
 
-### 3.1 Per-channel `BroadcastMu`
+### 3.1 Per-subscriber FIFO, no channel-wide lock
 
 ```go
 // internal/registry/registry.go
 type Channel struct {
     Name        string
-    BroadcastMu sync.Mutex   // serialize broadcasts (FIFO)
     SubsMu      sync.RWMutex
     Subscribers map[Subscriber]struct{}
+    Deleted     atomic.Bool // set by the registry sweeper; see registry/sweep.go
 }
 ```
 
-The broadcast loop holds `BroadcastMu` for the entire iteration:
+The broadcast loop snapshots the subscriber set under a read lock,
+releases it, then sends:
 
 ```go
 // internal/hub/channel.go
 func Broadcast(c *registry.Channel, msg []byte) {
-    c.BroadcastMu.Lock()
-    defer c.BroadcastMu.Unlock()
     c.SubsMu.RLock()
     subs := make([]registry.Subscriber, 0, len(c.Subscribers))
     for s := range c.Subscribers {
@@ -123,36 +124,37 @@ func Broadcast(c *registry.Channel, msg []byte) {
     }
     c.SubsMu.RUnlock()
     for _, s := range subs {
-        _ = s.Send(msg) // policy resolution at conn layer
+        _ = s.Send(msg) // policy resolution lives at the conn layer
     }
 }
 ```
 
-Why two mutexes:
+`SubsMu` is an `RWMutex` so subscribe/unsubscribe (writers) don't
+fight with the snapshot read inside `Broadcast`. Nothing serialises
+two concurrent `Broadcast` calls on the same channel.
 
-- `SubsMu` is `RWMutex` so subscribe/unsubscribe (writers) don't fight
-  with the snapshot read inside `Broadcast`.
-- `BroadcastMu` is `sync.Mutex`. Held only for the duration of one
-  broadcast. If two publishers race on the same channel, their
-  iterations are *fully serialised* — there is no interleaving of
-  individual `Send` calls between them.
+**What ordering survives.** Every `Send` pushes onto that
+subscriber's buffered `chan []byte`, and Go guarantees chan-send
+order equals chan-receive order; the subscriber's `writePump` drains
+the chan in order. A single publisher's publishes are processed
+sequentially on its own read goroutine, so each of its broadcasts
+completes its `Send` to a given subscriber before the next begins.
+Result: **per-subscriber FIFO from any single publisher**. Two
+publishers racing on one channel may be observed in different orders
+by different subscribers; that is not a protocol guarantee and never
+was one a client could rely on portably. PROTOCOL.md §10 is the
+authoritative user-visible statement.
 
-**FIFO proof sketch.** Take publishers `P` and `Q` on channel `C`,
-and any subscriber `S`. `P.publish(m1)` calls `Broadcast(C, m1)`,
-which acquires `C.BroadcastMu`, snapshots subs, and pushes `m1` onto
-each subscriber's `send` chan in some order. `Q.publish(m2)` likewise
-acquires `C.BroadcastMu`. The mutex is `sync.Mutex` so one of the two
-runs to completion before the other starts iterating. Every `Send` in
-the inner loop pushes onto a per-conn `chan []byte` (FIFO by Go runtime
-guarantee), and the per-conn `writePump` drains that chan in order.
-Therefore for any subscriber `S` that received both `m1` and `m2`,
-the order is identical to the order in which `BroadcastMu` was
-acquired.
-
-This does **not** give cross-publisher ordering — that requires a
-global serialisation point we deliberately don't build. It also does
-not give cross-channel ordering. PROTOCOL.md §10 is the user-visible
-form of the same statement.
+**Why the lock was removed.** Early versions held a per-channel
+broadcast mutex for the whole send loop, which upgraded the guarantee
+to channel-wide total ordering. It was removed (commit `22fd26d`)
+because serializing broadcasts turns one slow subscriber into a
+head-of-line block for the entire channel: under `PolicyDisconnect`
+a stalled peer can pin a `Send` for up to the write deadline, and
+with the lock held that stall freezes every publisher and every
+other subscriber on the channel for the duration. Trading an
+ordering guarantee nobody's client could portably depend on for the
+elimination of a cross-subscriber stall is the better contract.
 
 ### 3.2 Per-connection lifecycle
 
@@ -196,13 +198,14 @@ Key invariants from `internal/conn/conn.go`:
 3. `c.closed.Store(true)` fires *before* unsubscribing. Any in-flight
    `Broadcast` snapshot still pointing at this conn will see
    `closed == true` in `Send` and short-circuit to `ErrSlowConsumer`
-   instead of pushing onto a dying chan. This avoids the
-   "stale-snapshot deadlock" where a Broadcast holding `BroadcastMu`
-   would otherwise wait forever on a chan that nobody is draining.
-4. Empty channels are intentionally not deleted from the registry on
-   unsubscribe (TOCTOU with concurrent `GetOrCreate`). A registry GC
-   pass for genuinely abandoned channels can land later; today
-   they're cheap (one mutex + an empty map).
+   instead of pushing onto a chan that nobody will ever drain.
+4. Empty channels are not deleted inline on unsubscribe (TOCTOU with
+   a concurrent `GetOrCreate`). Instead a background sweeper
+   (`registry.SweepLoop`, started in `cmd/wirefan/main.go: run`)
+   removes channels that have lost all subscribers; it marks
+   `Channel.Deleted` under `SubsMu`, and `hub.Subscribe` re-checks
+   that flag under the same lock so a racing subscribe never lands
+   on an orphaned channel reference.
 
 ### 3.3 Hub-level drain on shutdown
 
@@ -233,9 +236,10 @@ return s.srv.Shutdown(shutdownCtx)
 
 `internal/server/leak_test.go` proves the lifecycle: 1 000 connect/
 disconnect churn under `-race`, then `runtime.NumGoroutine()` must
-return to baseline (within +5 for httptest noise) within 5 seconds.
-This is the load-bearing proof that nothing in the conn lifecycle
-holds a goroutine reference past close.
+return to baseline (tolerance 30, for httptest and CI runner noise;
+a real per-conn leak would show as ~2 000) within a 10-second
+deadline. This is the load-bearing proof that nothing in the conn
+lifecycle holds a goroutine reference past close.
 
 ---
 
@@ -244,8 +248,9 @@ holds a goroutine reference past close.
 Three of wirefan's internal seams are interfaces with two
 implementations. The reason is not framework-style flexibility — it's
 **benchmark comparability** and **scope reduction**. We commit to one
-default and ship the alternative behind a flag so the BENCHMARKS.md
-matrix can show the trade-off rather than asserting it.
+default and ship the alternative behind a flag (`--fanout`,
+`--registry`, `--store` in `cmd/wirefan/main.go`) so the
+BENCHMARKS.md matrix can show the trade-off rather than asserting it.
 
 ### 4.1 `Fanout` — `internal/fanout/`
 
@@ -255,10 +260,10 @@ type Fanout interface {
 }
 ```
 
-| Impl              | When it wins                                                                   |
-| ----------------- | ------------------------------------------------------------------------------ |
-| `PerConn`         | Default. Inline call from publisher's read goroutine — zero extra hops.        |
-| `ShardedPool`     | When channel-level mutex contention dominates: 2×NumCPU workers, FNV-shard `channel.Name`. |
+| Impl              | Flag                | When it wins                                                       |
+| ----------------- | ------------------- | ------------------------------------------------------------------ |
+| `PerConn`         | `--fanout=per-conn` | Default. Inline call from publisher's read goroutine — zero extra hops. |
+| `ShardedPool`     | `--fanout=sharded`  | Fixed worker pool, FNV-shard by `channel.Name`; overlaps broadcasts across cores when many channels are hot. |
 
 `PerConn` is one line: `hub.Broadcast(c, msg)`. It runs on the
 publisher's goroutine. Latency is best when publishers are sparse
@@ -271,9 +276,9 @@ name. A small worker pool drains queues and runs the actual
 ability to overlap broadcasts across CPU cores when many channels
 are hot simultaneously.
 
-Either way, `BroadcastMu` is the FIFO point — sharding the dispatch
-doesn't break per-channel ordering because both impls funnel through
-`hub.Broadcast`.
+Either way the ordering story is unchanged: both impls funnel through
+`hub.Broadcast`, and per-subscriber FIFO is preserved by each
+subscriber's buffered send chan (§3.1), not by the dispatch strategy.
 
 ### 4.2 `Registry` — `internal/registry/`
 
@@ -287,10 +292,10 @@ type Registry interface {
 }
 ```
 
-| Impl       | When it wins                                                              |
-| ---------- | ------------------------------------------------------------------------- |
-| `SyncMap`  | Default. Read-heavy workloads, mostly-stable channel set.                 |
-| `Sharded`  | Mostly-write or churning channel sets: 16 fixed shards, RWMutex per shard. |
+| Impl       | Flag                  | When it wins                                                              |
+| ---------- | --------------------- | ------------------------------------------------------------------------- |
+| `SyncMap`  | `--registry=sync-map` | Default. Read-heavy workloads, mostly-stable channel set.                 |
+| `Sharded`  | `--registry=sharded`  | Mostly-write or churning channel sets: 16 fixed shards, RWMutex per shard. |
 
 `SyncMap` uses Go's `sync.Map`, which is optimised for read-mostly
 maps with stable keys. Channels are typically created once and read
@@ -313,10 +318,10 @@ type Store interface {
 }
 ```
 
-| Impl     | When it wins                                                          |
-| -------- | --------------------------------------------------------------------- |
-| `Memory` | Tests, ephemeral demo, "throwaway key" mode.                          |
-| `SQLite` | Production default. WAL journal, `_busy_timeout=5000`, single-file.   |
+| Impl     | Flag             | When it wins                                                          |
+| -------- | ---------------- | --------------------------------------------------------------------- |
+| `SQLite` | `--store=sqlite` | Default. WAL journal, `_busy_timeout=5000`, single file at `--db-path`. |
+| `Memory` | `--store=memory` | Tests, hermetic benchmark cells, "throwaway key" ephemeral demo mode. |
 
 `Store` is small on purpose: keys only. Channel state is in-memory
 because a multi-host wirefan would need a different design entirely
@@ -335,19 +340,31 @@ issued by the operator's app server.
 `auth.HashSecret` is a `sha256` of the secret. The store keeps only
 the hash. `auth.VerifySecret` uses `crypto/subtle.ConstantTimeCompare`.
 
-REST endpoints take `Authorization: Bearer <admin_token>` (the admin
-token printed on stdout at boot) for `/v1/keys`, and
-`Authorization: Bearer <key_id>:<secret>` for `/v1/auth/sign`. WS
-upgrade takes `?key=<key_id>` only — the secret never crosses the
-browser.
+REST endpoints take `Authorization: Bearer <admin_token>` for
+`/v1/keys` (served on the loopback admin listener), and
+`Authorization: Bearer <key_id>:<secret>` for `/v1/auth/sign`. The
+admin token is never printed: it is read from `WIREFAN_ADMIN_TOKEN`
+if set, else persisted at `<state-dir>/admin.token` (mode 0600,
+reused across restarts; see `cmd/wirefan/main.go:
+resolveAdminToken`). WS upgrade takes `?key=<key_id>` only — the
+secret never crosses the browser.
 
 ### 5.2 HMAC channel tokens
 
-`private-*` channels require a token. `auth.SignToken` produces
-`<expMs>:<base64url(HMAC_SHA256(secret, "<expMs>|<socket_id>|<channel>"))>`.
+`private-*` channels require a token. `auth.SignToken` produces a
+three-part value:
+
+```
+<expMs>:<jti>:<base64url(HMAC_SHA256(secret, "<expMs>|<socket_id>|<channel>|<jti>"))>
+```
+
 The MAC binds the token to the issuing connection's `socket_id`, so a
-leaked token cannot be replayed on a different connection. TTL is
-5 min, asserted before signature check by `auth.VerifyToken`.
+leaked token cannot be replayed on a different connection. The `jti`
+(16 random bytes, hex) is inside the MAC payload and is recorded by a
+per-server `auth.ReplayCache` on first successful verify, making each
+token single-use even on its own connection; a swept background loop
+evicts expired entries. TTL is 5 min, asserted before the signature
+check by `auth.VerifyTokenAgainst`.
 
 ### 5.3 Why a separate signing secret (option b)
 
@@ -386,8 +403,15 @@ JSON-decoded — works in browsers but adds protocol surface (subprotocol
 negotiation) for no clear gain at this scope. Rejected for protocol
 simplicity. The defence in depth here is the per-source-IP
 connection cap (`defaultIPCap = 200` in
-`internal/server/upgrade.go`), key revocation, and the fact that
-`?key=<id>` is *not* a bearer token — the secret is not in the URL.
+`internal/server/upgrade.go`, overridable via the `WIREFAN_IP_CAP`
+env var), key revocation, and the fact that `?key=<id>` is *not* a
+bearer token — the secret is not in the URL.
+
+One scoping note on the origin check: `--allowed-origins` is a
+browser-only speed bump (a non-browser client can send any `Origin`
+header it likes). The real access control is the API key plus the
+socket-bound HMAC token; the origin allowlist just stops casual
+cross-site embedding of the public endpoint.
 
 ---
 
@@ -395,12 +419,13 @@ connection cap (`defaultIPCap = 200` in
 
 wirefan's only persistent state is API keys.
 
-- **SQLite (default).** Single file, WAL journal, 5 s busy timeout.
-  Zero ops. Backups are `cp keys.db keys.db.bak`. The `mattn/go-sqlite3`
-  driver is the only cgo dep; it's stable and well-known. We pay the
-  cgo cost once at build time, not at runtime.
-- **Memory.** Used for tests and the "ephemeral demo" mode where keys
-  vanish on restart. Useful in CI, useful for the embedded demo.
+- **SQLite (default, `--store=sqlite`).** Single file at `--db-path`
+  (default `<state-dir>/wirefan.db`), WAL journal, 5 s busy timeout.
+  Zero ops. Backups are `cp wirefan.db wirefan.db.bak`. The
+  `mattn/go-sqlite3` driver is the only cgo dep; it's stable and
+  well-known. We pay the cgo cost once at build time, not at runtime.
+- **Memory (`--store=memory`).** Used for tests, hermetic benchmark
+  cells, and the "ephemeral demo" mode where keys vanish on restart.
 - **Postgres.** Considered, rejected for v1. Postgres would need a
   connection pool, a migration tool, an ops story, and a TLS
   config. The benefit (multi-host shared keystore) is irrelevant
@@ -451,9 +476,8 @@ maintenance. Adopting it costs nothing and ages better.
 Adding Redis would mean: pub-sub topic per channel, dedup of locally-
 originated messages, a sticky-session story (or a per-message
 ordering token), and a dependency on a network service. The single-
-host design hits the relevant numbers (BENCHMARKS.md target: 1k×100×
-10/s on one Always Free vCPU). §12 sketches what multi-host would
-look like.
+host scope is deliberate; measured single-host numbers live in
+BENCHMARKS.md. §12 sketches what multi-host would look like.
 
 ### 8.3 Custom epoll loop (`gnet`, `nbio`)
 
@@ -525,7 +549,7 @@ Every limit exists to bound a specific failure mode. Sources:
 | Max subscribers per channel     | 10 000        | Per-broadcast iteration cost; fans out into N×64 send chans. |
 | Send chan size                  | 64            | Per-conn buffered queue depth before backpressure trips. |
 | Publish rate, sustained / burst | 100/s / 200   | Per `key_id`. Spam protection across all conns sharing a key. |
-| Active conns per source IP      | 200           | Phantom-conn / runaway-tab bound.                        |
+| Active conns per source IP      | 200 (`WIREFAN_IP_CAP`) | Phantom-conn / runaway-tab bound.               |
 | Token TTL                       | 5 min         | Replay window.                                           |
 | WS read deadline                | 60 s          | Idle / dead-peer detection. Combined with 30 s ping.     |
 | WS write deadline               | 10 s          | Stalled-peer write detection.                            |
@@ -539,8 +563,11 @@ Soft vs hard:
 - *Hard* (closes the conn): frame size (1009), slow consumer (1008),
   read deadline (1001), drain (1001).
 
-The hardcoded constants will move behind flags before v1 stabilises;
-PROTOCOL.md §9 lists the source of truth.
+Store, registry, and fanout selection plus the per-IP cap are already
+runtime-configurable (`--store`, `--registry`, `--fanout`,
+`WIREFAN_IP_CAP`); the conn-level constants above remain compile-time
+values in `internal/conn/conn.go`. PROTOCOL.md §9 lists the source of
+truth.
 
 ---
 
@@ -562,11 +589,11 @@ Three layers, all opt-in at the network edge.
   - `wirefan_auth_failures_total` (counter)
 - **slog** — structured logs to stdout. `slog.Default()` is the
   emitter; the operator picks the handler at boot.
-- **pprof** — `/debug/pprof/*` is mounted. In production it should be
-  bound to localhost (or behind admin auth) — wirefan exposes it on
-  the same listener for v1 because the deploy target (Caddy in
-  front, see Task 31) terminates TLS upstream and can route the
-  endpoint at the proxy layer.
+- **pprof** — `/debug/pprof/*` is mounted on the separate admin
+  listener (`--admin-addr`, default `127.0.0.1:6060`) together with
+  `/metrics` and `/v1/keys`, so neither profiling nor key management
+  is reachable through the public listener or a misconfigured
+  ingress. Keep the admin listener on loopback or an internal VLAN.
 - **OTel** — `internal/metrics/otel.go`. Returns a no-op shutdown
   when `endpoint == ""` (the production default). Handing in an
   OTLP HTTP endpoint activates the tracer provider; we don't ship
@@ -658,9 +685,10 @@ of scope for v1.
 - **Pusher-protocol compat.** Some protocol shapes (presence-* events,
   `pusher:ping`) are well-trodden. Adopting them would let Pusher
   client SDKs work unchanged; doing so creeps the spec. Deferred.
-- **Channel-state GC.** Empty-but-never-deleted channels accumulate.
-  Today they're cheap; at high churn, a sweeper goroutine could
-  delete channels that have been empty for a TTL.
+- **Channel-state GC cadence.** A sweeper (`registry.SweepLoop`)
+  already deletes channels that have lost all subscribers. Whether
+  the fixed sweep interval should become adaptive (or flag-tunable)
+  under high channel churn is open.
 
 ---
 
@@ -692,5 +720,6 @@ document, not a quiet feature add.
   the original locked spec this implementation tracks against.
 - `internal/conn/conn.go` — the `Run` lifecycle and pump
   coordination invariants discussed in §3.2.
-- `internal/hub/channel.go` — the `BroadcastMu` FIFO point of §3.1.
+- `internal/hub/channel.go` — the lock-free broadcast snapshot and
+  per-subscriber FIFO rationale of §3.1.
 - `internal/server/leak_test.go` — the goroutine-leak proof of §3.4.
