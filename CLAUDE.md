@@ -33,7 +33,7 @@ make bench                      # benchmark suite (see docs/BENCHMARKS.md)
 
 See `ARCHITECTURE.md` for the full tour. Quick pointers:
 
-- `cmd/wirefan/` — server entry; `parseFlags` binds `--listen`, `--admin-addr`, `--allowed-origins`, `--dev`
+- `cmd/wirefan/` — server entry; `parseFlags` binds `--listen`, `--admin-addr`, `--allowed-origins`, `--dev`, `--store=sqlite|memory`, `--db-path`, `--registry=sync-map|sharded`, `--fanout=per-conn|sharded`. Env: `WIREFAN_ADMIN_TOKEN`, `WIREFAN_STATE_DIR`, `WIREFAN_TRUSTED_PROXIES`, `WIREFAN_IP_CAP`.
 - `cmd/loadtest/` — load generator
 - `internal/conn/` — per-connection state; tunable constants live here
 - `internal/registry/` — channel registry (sharded + syncmap variants, idle sweep)
@@ -52,7 +52,7 @@ See `ARCHITECTURE.md` for the full tour. Quick pointers:
 - **Plan-faithful by default** — divergence from `docs/superpowers/plans/2026-05-04-wirefan-implementation.md` requires justification noted at the diff site.
 - **Server-side signing secret architecture (option b)** — single server-held HMAC secret; **NOT** per-key signing (option a was explicitly rejected).
 - Conn-level constants (`sendChanSize`, ping/read deadlines, max channels) live in `internal/conn/conn.go`. Change them there, not at call sites.
-- **Per-subscriber FIFO only** — `hub.Broadcast` snapshots subscribers under `RLock` then sends concurrently; ordering is preserved per-conn by the buffered send chan. Per-channel total ordering is **not** a protocol guarantee (`BroadcastMu` was removed in 22fd26d to kill head-of-line blocking on slow subscribers — see `internal/hub/channel.go:42-50`).
+- **Per-subscriber FIFO only** — `hub.Broadcast` snapshots subscribers under `RLock` then sends concurrently; ordering is preserved per-conn by the buffered send chan. Per-channel total ordering is **not** a protocol guarantee (the per-channel broadcast mutex was removed in 22fd26d to kill head-of-line blocking on slow subscribers — see `internal/hub/channel.go: Broadcast`).
 - **Goroutine-leak invariant** is proven by `internal/server/leak_test.go`. Do not regress; if a new feature spawns goroutines, add to that test.
 
 ## Active hardening backlog
@@ -65,7 +65,7 @@ Deferred follow-ups from per-task code reviews are tracked in the ethan-memory O
 
 Junctioned from `~/.claude/projects/C--Users-ethan-Desktop-Projects-wirefan/memory/` so it auto-loads when a session starts in this repo.
 
-Examples currently on it: `SecretHash` exposure in `GET /v1/keys`, `X-Forwarded-For` honoring for per-IP cap, etc. Consult before starting new work to avoid duplicating fixes.
+Consult the file for the current list before starting new work to avoid duplicating fixes. (Earlier examples named here, `SecretHash` exposure in `GET /v1/keys` and `X-Forwarded-For` handling for the per-IP cap, are both fixed; do not re-fix them.)
 
 ## Deferred (do not implement without reopening design)
 

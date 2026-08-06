@@ -2,6 +2,10 @@
   <img src="docs/social.png" alt="wirefan" width="100%">
 </p>
 
+<p align="center">
+  <a href="https://github.com/EthanY33/wirefan/actions/workflows/ci.yml"><img src="https://github.com/EthanY33/wirefan/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+</p>
+
 # wirefan
 
 > Single-binary Go WebSocket fanout server. Channel-based pub/sub,
@@ -9,22 +13,40 @@
 > zero runtime dependencies. Goroutine-leak invariant proven under
 > 1000-connection churn (`internal/server/leak_test.go`).
 
+wirefan is a from-scratch, auditable single-process alternative to running
+Centrifugo or soketi when what you need is channel fan-out with token auth,
+not clustering, an admin UI, or multi-transport.
+
 ---
+
+<!-- DEMO-GIF -->
 
 ## Quickstart
 
 ```bash
 git clone https://github.com/EthanY33/wirefan
 cd wirefan
-make build
-./bin/wirefan
-# Admin Bearer is printed once on stdout (and persisted to
-# cmd/wirefan/var/admin.token for ops continuity).
-# Open http://localhost:8080 in two tabs to see live fanout.
+go build -o bin/wirefan ./cmd/wirefan     # CGO required (sqlite driver)
+./bin/wirefan --dev --allowed-origins='*'
 ```
 
-The server logs an admin Bearer token at startup. Use it to mint an API key,
-then connect a WebSocket client to `ws://localhost:8080/v1/connect?key=<id>`.
+The admin Bearer token is never printed. On first boot it is generated and
+written to `var/admin.token` (override the directory with
+`WIREFAN_STATE_DIR`, or supply the token directly via
+`WIREFAN_ADMIN_TOKEN`); later boots reuse the same file. Use it to mint an
+API key against the loopback admin listener:
+
+```bash
+ADMIN=$(cat var/admin.token)
+curl -s -X POST http://127.0.0.1:6060/v1/keys \
+  -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"dev"}'
+# -> {"id":"01K...","name":"dev","secret":"..."}
+```
+
+Open `http://localhost:8080/?key=<id>` in two tabs to see live fanout, or
+connect any WebSocket client to `ws://localhost:8080/v1/connect?key=<id>`.
 Full walk-through in [`ARCHITECTURE.md`](ARCHITECTURE.md#quickstart-for-contributors).
 
 ---
@@ -43,7 +65,8 @@ Two planes share one process:
   `/metrics` (Prometheus) and `/debug/pprof/*` for production debugging.
 
 Swappable interfaces (`Fanout`, `Registry`, `Store`, backpressure `Policy`)
-mean the same wire path benchmarks two strategies. See
+mean the same wire path benchmarks two strategies, selectable at boot with
+`--fanout`, `--registry`, and `--store`. See
 [`ARCHITECTURE.md`](ARCHITECTURE.md) for the repo map and request lifecycle,
 and [`docs/DESIGN.md`](docs/DESIGN.md) for the rationale behind each choice.
 
@@ -51,13 +74,25 @@ and [`docs/DESIGN.md`](docs/DESIGN.md) for the rationale behind each choice.
 
 ## Performance
 
-Methodology, the `Fanout × Registry` matrix runner (`scripts/bench.sh`), and
-the `cmd/loadtest` driver are in place. Reproducible numbers from a 1-vCPU
-ARM reference box are pending, since the project is currently undeployed. See
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the methodology and target
-matrix; numbers get filled in after the first hosted deploy.
+No number appears in this section unless it was measured: every published
+row must trace to a raw output file committed under `results/`, produced by
+`scripts/bench.sh` driving `cmd/loadtest` against the server in a
+CPU-constrained Docker container (`--cpus=1 --memory=6g`, amd64,
+Windows/WSL2 host, loadtest on the host over loopback). The benchmark
+protocol spreads publishers across a pool of API keys so the per-key rate
+limiter is never the thing being measured. Full methodology and the exact
+reproduction commands are in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-What's verified today:
+<!-- BENCH-RESULTS -->
+
+Reproduce with:
+
+```bash
+docker build -t wirefan:dev -f deploy/Dockerfile .
+bash scripts/bench.sh
+```
+
+What's verified in the test suite, independent of hardware:
 
 - Goroutine-leak invariant: 1000-connection churn under `-race` returns to
   baseline within tolerance (`internal/server/leak_test.go`).
@@ -104,8 +139,10 @@ Full message catalog, error codes, close codes, and the HMAC flow for
   material on disk, and tokens are bound to `socket_id` so a leak can't be
   replayed on a different connection.
 - **Pluggable `Fanout` and `Registry`.** The same code path benchmarks two
-  strategies (per-conn goroutine vs sharded worker pool; `sync.Map` vs
-  sharded RWMutex). The default ships per-conn fanout with a sync-map registry.
+  strategies (inline per-conn dispatch vs sharded worker pool; `sync.Map` vs
+  sharded RWMutex), selected at boot with `--fanout=per-conn|sharded` and
+  `--registry=sync-map|sharded`. The default ships per-conn fanout with a
+  sync-map registry.
 
 ---
 
