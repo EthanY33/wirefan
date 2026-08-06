@@ -32,6 +32,11 @@ The matrix exercises the two flag-selectable axes:
 | `--fanout` | `per-conn` (default), `sharded` (worker pool sized to GOMAXPROCS) |
 | `--registry` | `sync-map` (default), `sharded` (16 shards, RWMutex+map) |
 
+Note on GOMAXPROCS: the Go runtime rounds the container's `--cpus` quota
+up, so the 1-vCPU container runs with GOMAXPROCS=2 (recorded as
+`GOMAXPROCS 2` in the [verification rep raw files](../results/)). Every
+`sharded` fanout cell therefore ran a 2-worker pool.
+
 Each cell:
 
 1. Boots a fresh container with the cell's `--fanout`/`--registry` flags.
@@ -46,29 +51,56 @@ Each cell:
 4. Repeats 3 times. The published row is the median-throughput repetition
    and every figure in the row comes from that single repetition's raw file.
 
-A run only counts as clean if every connection dialed, subscribed, and
-survived the full duration, and the server sent zero error frames
-(`cmd/loadtest` exits nonzero otherwise, which aborts the whole matrix).
+A run only counts as clean if every connection dialed and subscribed,
+no publishing connection died before the duration elapsed, and the
+server sent zero error frames (`cmd/loadtest` exits nonzero otherwise,
+which aborts the whole matrix). At the time the published repetitions
+ran, the mid-run survival check covered publishing connections only;
+the current harness also fails a run when a subscriber-only socket dies
+early, and the per-scale verification reps below ran with that check
+active (`died_early=0` in all four).
 Cells that aborted on a transient dial or subscribe failure were rerun in
 full; only fully clean 3-repetition cells appear here. Per-connection
 publish rates were chosen per scale so the aggregate offered load stays
 within what the 1-vCPU container sustains cleanly; probe runs above these
 rates failed that bar and are not published.
 
-Two independent honesty checks are recorded in every raw file:
+Three independent honesty checks back the tables:
 
 - **Cross-check**: the client-side sent count is compared against the
-  server's own `wirefan_messages_published_total` counter delta. All 39
-  published repetitions match exactly.
+  server's own `wirefan_messages_published_total` counter delta,
+  recorded in every raw file. All 39 published repetitions match
+  exactly. The current harness fails the whole matrix on any mismatch.
 - **Server-side latency**: the `wirefan_broadcast_latency_seconds`
   histogram is scraped after each run. The container's Linux clock resolves
   nanoseconds; the Windows host wall clock quantizes client-observed
   latency at roughly 0.5 ms (the measured tick is printed in each raw file
   as `host clock res`), so client percentiles are floor-limited at that
   granularity.
+- **Slow-consumer drops**: the server drops events to subscribers whose
+  send buffer fills (`wirefan_messages_dropped_total`, see
+  `internal/conn`). A drop would make "delivered" silently undercount
+  the offered load. The current harness scrapes the counter after every
+  cell and fails on any drop; because that scrape landed after the
+  published matrix ran, it was verified with one confirming repetition
+  per scale, committed alongside the matrix, all recording
+  `DROPPED none`:
+  [c100](../results/per-conn-sync-map-c100-dropcheck-rep1.txt),
+  [c500](../results/per-conn-sync-map-c500-dropcheck-rep1.txt),
+  [c1000](../results/per-conn-sync-map-c1000-dropcheck-rep1.txt),
+  [c5000](../results/per-conn-sync-map-c5000-dropcheck-rep1.txt).
 
 "Delivered msg/s" is messages received by subscribers per second
-(fan-out output, not publish input). "Broadcast mean" is the mean time a
+(fan-out output, not publish input). It is a function of the ramp-up
+window: publishers start publishing as soon as they connect, so
+messages published before a given subscriber has dialed are never
+delivered to it. That is why recv/sent reads below the nominal 10
+subscribers per channel, and why it reads lowest at 5,000 connections,
+the only scale run with a 20 s ramp-up (all other rows used the 5 s
+default; exact invocations are under Reproducing). Rows with different
+ramp-ups are not directly comparable on delivered msg/s.
+
+"Broadcast mean" is the mean time a
 publish spends in the server's broadcast call: for `per-conn` fanout that
 covers enqueueing to every subscriber's send buffer; for `sharded` fanout
 it covers handoff to the worker pool, which is why it reads lower.
@@ -119,12 +151,14 @@ different channel shapes will produce different ceilings.
 
 ## Reading the matrix
 
-- At these offered loads every cell delivers the full load (delivered
-  throughput is identical across cells at each scale), so the axes do not
-  differentiate on throughput here. They differentiate on where time is
-  spent.
+- At these offered loads every cell delivers the full load: delivered
+  throughput matches across cells at each scale, and the confirming
+  drop-check repetitions at every scale record zero slow-consumer drops
+  (`DROPPED none`). So the axes do not differentiate on throughput
+  here. They differentiate on where time is spent.
 - `sharded` fanout roughly halves the time the publisher spends in the
-  broadcast call (7 to 14 us vs 15 to 25 us) because it hands the write
+  broadcast call (7.0 to 14.1 us vs 16.9 to 25.4 us across the table
+  rows) because it hands the write
   work to a worker pool instead of enqueueing every subscriber inline. On
   a 1-CPU container that does not translate into more delivered
   throughput; the same core still does the socket writes.
@@ -140,9 +174,11 @@ profiled repetition's numbers are not in the tables). Rendered with
 `go tool pprof -top`; text output committed:
 
 - [`docs/profiles/per-conn-sync-map-c500-cpu-top.txt`](profiles/per-conn-sync-map-c500-cpu-top.txt):
-  45.9% of samples are in `Syscall6` under `websocket.(*Conn).writeFrame`
-  (53.5% cumulative). The hot path is socket writes, not wirefan
-  bookkeeping; the registry and hub do not appear in the top nodes.
+  the write path dominates: `conn.(*Conn).writePump` covers 70.5% of
+  samples cumulatively, `websocket.(*Conn).writeFrame` 53.5%, and
+  `net.(*netFD).Write` (the write syscall) 45.8%. The hot path is
+  socket writes, not wirefan bookkeeping; the registry and hub do not
+  appear in the top nodes.
 - [`docs/profiles/per-conn-sync-map-c500-heap-top.txt`](profiles/per-conn-sync-map-c500-heap-top.txt):
   about 10 MB in use under load; the top consumers are the per-connection
   bufio read/write buffers (about 40% combined).
@@ -168,9 +204,13 @@ CONNS=500  CHANNELS=50  RATE=10  REPS=3 DURATION=30s CELLS="per-conn/sync-map" b
 ```
 
 `scripts/bench.sh` fails hard on any server death, mint failure, dial or
-subscribe failure, mid-run disconnect, server error frame, or
-zero-throughput cell. The exact docker invocation, key-pool size, and both
-honesty checks are recorded in every `results/*.txt` file.
+subscribe failure, mid-run disconnect (publisher or subscriber), server
+error frame, client/server publish-count mismatch, nonzero
+slow-consumer drop counter, or zero-throughput cell. The exact docker
+invocation and key-pool size are recorded in every `results/*.txt`
+file; the drop-counter and GOMAXPROCS lines appear in files produced by
+the current harness, including the four `*-dropcheck-rep1.txt`
+verification files that cover every published scale.
 
 An ARM row (Ampere A1, the intended production target) may be added later;
 no ARM numbers exist yet.
