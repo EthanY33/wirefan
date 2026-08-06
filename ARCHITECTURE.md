@@ -13,29 +13,32 @@
 
 ```bash
 git clone https://github.com/EthanY33/wirefan && cd wirefan
-go build ./...                  # sanity check
-make build                      # -> bin/wirefan
-make test                       # full unit suite
-make test-race                  # race-detector pass
-./bin/wirefan                   # listens on :8080, logs admin token
+go build ./...                            # sanity check (CGO required: sqlite driver)
+make build                                # -> bin/wirefan
+make test                                 # full unit suite
+make test-race                            # race-detector pass
+./bin/wirefan --dev --allowed-origins='*' # public :8080, admin 127.0.0.1:6060
 ```
 
-The server prints an admin Bearer token at startup
-(`cmd/wirefan/main.go:49`). Use it to mint an API key:
+`--allowed-origins` is required; `'*'` is only accepted together with
+`--dev`. The admin Bearer token is never printed: on first boot it is
+written to `var/admin.token` (or `$WIREFAN_STATE_DIR/admin.token`) and
+reused on later boots; see `cmd/wirefan/main.go: resolveAdminToken`.
+Use it to mint an API key against the admin listener:
 
 ```bash
-ADMIN=...                       # paste from server log
-curl -s -XPOST localhost:8080/v1/keys \
+ADMIN=$(cat var/admin.token)
+curl -s -XPOST http://127.0.0.1:6060/v1/keys \
   -H "Authorization: Bearer $ADMIN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"dev"}'
-# -> {"id":"K-...","name":"dev","secret":"S-..."}
+# -> {"id":"01K...","name":"dev","secret":"..."}   (id/secret are hex+ULID, shown once)
 ```
 
 Open a WebSocket with `websocat` and play with the protocol:
 
 ```bash
-KEY=K-...
+KEY=01K...                      # the "id" field from the mint response
 websocat "ws://localhost:8080/v1/connect?key=$KEY"
 > {"type":"subscribe","channel":"chat"}
 > {"type":"publish","channel":"chat","data":{"hello":"world"}}
@@ -81,59 +84,64 @@ Top-level files of note:
 ## Request lifecycle
 
 A client connects, subscribes, then publishes. Here is the path through
-the code, with file:line landmarks.
+the code, with file:symbol landmarks (symbols survive refactors; line
+numbers do not).
 
 **Boot.**
 
-1. `cmd/wirefan/main.go:23` — `main()` sets up signal-cancelable context.
-2. `cmd/wirefan/main.go:32` — `run(ctx)` wires `store`, `auth`, `metrics`,
+1. `cmd/wirefan/main.go: main` — sets up the signal-cancelable context.
+2. `cmd/wirefan/main.go: run` — wires `store`, `auth`, `metrics`,
    `registry`, `fanout`, `ratelimit`, `hub`, then constructs the server.
-3. `internal/server/server.go:31` — `server.New` registers routes:
-   `/v1/health`, REST under `/v1/keys` and `/v1/auth/sign`, WS at
-   `/v1/connect`, `/metrics`, `/debug/pprof/*`, and the embedded demo at `/`.
-4. `internal/server/server.go:54` — `Server.Run` starts `http.Server` and
-   blocks on ctx; on cancel it sets the health probe to draining and
+3. `internal/server/server.go: New` — registers routes. Public mux:
+   `/v1/health`, `/v1/auth/sign`, WS at `/v1/connect`, and the embedded
+   demo at `/`. Admin mux (separate listener, `--admin-addr`, default
+   `127.0.0.1:6060`): `/v1/keys`, `/metrics`, `/debug/pprof/*`.
+4. `internal/server/server.go: Server.Run` — starts both `http.Server`s
+   and blocks on ctx; on cancel it sets the health probe to draining and
    calls `Hub.Drain` before `srv.Shutdown`.
 
 **Connect.**
 
-5. `internal/server/upgrade.go:76` — `UpgradeHandler.ServeHTTP` validates
+5. `internal/server/upgrade.go: UpgradeHandler.ServeHTTP` — validates
    the `?key=` query, applies the per-IP phantom-conn cap
-   (`upgrade.go:96`), upgrades via `coder/websocket`, mints a ULID
-   `socket_id`, and hands off to `conn.Run`.
-6. `internal/conn/conn.go:62` — `conn.Run` registers the conn with the
+   (`defaultIPCap`, overridable via `WIREFAN_IP_CAP`), upgrades via
+   `coder/websocket`, mints a ULID `socket_id`, and hands off to
+   `conn.Run`.
+6. `internal/conn/conn.go: Run` — registers the conn with the
    Hub (for shutdown drain), sends the `connected` hello frame, then
    spawns `writePump` and `readPump` (`internal/conn/pumps.go`).
 
 **Subscribe / publish.**
 
 7. `internal/conn/pumps.go` — `readPump` reads a frame, calls `c.handle`.
-8. `internal/conn/handler.go:23` — `handle` dispatches on `type`:
-   - `subscribe` → `handler.go:41` — `handleSubscribe`. For
-     `private-*` channels, verifies an HMAC token with
-     `auth.VerifyToken`. Caps channels per conn at `defaultMaxChannelsPerConn`
-     (`conn.go:51`). Calls `registry.GetOrCreate` then `hub.Subscribe`.
-   - `publish` → `handler.go:71` — `handlePublish`. Rejects reserved
+8. `internal/conn/handler.go: handle` — dispatches on `type`:
+   - `subscribe` → `handler.go: handleSubscribe`. For
+     `private-*` channels, verifies a socket-bound HMAC token with
+     `auth.VerifyTokenAgainst` (jti replay cache). Caps channels per
+     conn at `defaultMaxChannelsPerConn` (`internal/conn/conn.go`).
+     Calls `registry.GetOrCreate` then `hub.Subscribe`.
+   - `publish` → `handler.go: handlePublish`. Rejects reserved
      `_*` channels, requires prior subscription, charges the per-key
      rate limiter, then calls `Fanout.Broadcast`.
-   - `unsubscribe` → `handler.go:100` — `handleUnsubscribe`.
+   - `unsubscribe` → `handler.go: handleUnsubscribe`.
 
 **Fanout.**
 
-9. `internal/fanout/perconn.go` (default) — one goroutine per subscriber
-   per Broadcast. Simple; preferred at low fan-out.
-10. `internal/fanout/sharded.go` — fixed pool of N workers; tasks routed
-    by hash. Used when subscriber counts are high.
+9. `internal/fanout/perconn.go` (default) — inline `hub.Broadcast` on
+   the publisher's own read goroutine. Zero extra hops.
+10. `internal/fanout/sharded.go` — fixed pool of N workers; broadcasts
+    routed by channel-name hash so hot channels overlap across cores.
 11. Both call `Subscriber.Send([]byte)`. For a `Conn`, `Send` runs
     through the configured backpressure `Policy`
-    (`internal/conn/policy.go:6`); on `ErrSlowConsumer` the conn is
-    closed with WebSocket code 1008.
+    (`internal/conn/policy.go: Policy`); on `ErrSlowConsumer` the conn
+    is closed with WebSocket code 1008.
 
 **Shutdown.**
 
 12. SIGTERM cancels the root ctx → `Server.Run` returns, calls
-    `Hub.Drain` (`internal/hub/hub.go:41`), which sends GoingAway close
-    frames to every tracked conn and waits up to 30s for them to deregister.
+    `Hub.Drain` (`internal/hub/hub.go: Drain`), which sends GoingAway
+    close frames to every tracked conn and waits up to 30s for them to
+    deregister.
 
 ---
 
@@ -142,18 +150,18 @@ the code, with file:line landmarks.
 | Goal                                | File                                                  |
 | ----------------------------------- | ----------------------------------------------------- |
 | Add a new client→server message     | `internal/conn/handler.go` (extend `incoming` + `handle`) |
-| Add a new HTTP route                | `internal/server/rest.go` (or `server.go:31` for top-level) |
+| Add a new HTTP route                | `internal/server/rest.go` (or `server.go: New` for top-level) |
 | Tune backpressure / write a Policy  | `internal/conn/policy.go`                             |
-| Tune the per-key rate limit         | `internal/ratelimit/limiter.go` (rps/burst at `cmd/wirefan/main.go:52`) |
+| Tune the per-key rate limit         | `internal/ratelimit/limiter.go` (rps/burst at `cmd/wirefan/main.go: run`) |
 | Add a Prometheus metric             | `internal/metrics/prom.go` (then call `Register`)     |
 | Modify the wire format              | `internal/conn/handler.go` **and update `docs/PROTOCOL.md`** |
-| Tweak resource limits (channels/subs)| `internal/conn/conn.go:50` constants                 |
-| Change the IP phantom-conn cap      | `internal/server/upgrade.go:25` (`defaultIPCap`)      |
-| Swap fanout strategy                | `cmd/wirefan/main.go:51` (`fanout.NewPerConn` ↔ sharded) |
-| Swap registry impl                  | `cmd/wirefan/main.go:50` (`registry.NewSyncMap` ↔ sharded) |
-| Swap store backend                  | `cmd/wirefan/main.go:34` (`store.NewMemory` ↔ sqlite) |
-| Add an admin REST endpoint          | `internal/server/rest.go:23` `Register`               |
-| Modify shutdown behavior            | `internal/server/server.go:54` + `internal/hub/hub.go:41` |
+| Tweak resource limits (channels/subs)| `internal/conn/conn.go` constants                    |
+| Change the IP phantom-conn cap      | `WIREFAN_IP_CAP` env (`internal/server/upgrade.go: defaultIPCap`) |
+| Swap fanout strategy                | `--fanout=per-conn\|sharded` (`cmd/wirefan/main.go: run`) |
+| Swap registry impl                  | `--registry=sync-map\|sharded` (`cmd/wirefan/main.go: run`) |
+| Swap store backend                  | `--store=sqlite\|memory`, `--db-path` (`cmd/wirefan/main.go: run`) |
+| Add an admin REST endpoint          | `internal/server/rest.go: RestHandler.RegisterAdmin`  |
+| Modify shutdown behavior            | `internal/server/server.go: Server.Run` + `internal/hub/hub.go: Drain` |
 | Sign HMAC channel tokens            | `internal/auth/token.go`                              |
 | Edit the demo client UI             | `web/index.html`, `web/client.js`, `web/styles.css`   |
 
@@ -218,10 +226,10 @@ ARCHITECTURE.md is **navigation**, not specification. Keep it in sync:
 - **Added or removed a package under `internal/`?** Update the repo map.
 - **Changed the request lifecycle** (new pump, new dispatch path,
   reordered shutdown)? Update the lifecycle section and re-check the
-  file:line citations.
-- **Renamed a file or moved a function?** The file:line citations in
-  this doc will rot — `make docs-sync` is a manual reminder, not an
-  enforcement.
+  file:symbol landmarks.
+- **Renamed or moved a function?** The file:symbol landmarks in this
+  doc rot more slowly than line numbers, but they still rot —
+  `make docs-sync` is a manual reminder, not an enforcement.
 - **Added a new "common task"?** Add a row to "Where to look when".
 
 The wire format and architectural rationale live elsewhere
