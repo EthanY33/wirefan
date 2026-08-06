@@ -139,7 +139,7 @@ Full message catalog, error codes, close codes, and the HMAC flow for
   material on disk, and tokens are bound to `socket_id` so a leak can't be
   replayed on a different connection.
 - **Pluggable `Fanout` and `Registry`.** The same code path benchmarks two
-  strategies (per-conn goroutine vs sharded worker pool; `sync.Map` vs
+  strategies (inline per-conn dispatch vs sharded worker pool; `sync.Map` vs
   sharded RWMutex), selected at boot with `--fanout=per-conn|sharded` and
   `--registry=sync-map|sharded`. The default ships per-conn fanout with a
   sync-map registry.

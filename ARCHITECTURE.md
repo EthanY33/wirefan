@@ -59,7 +59,7 @@ wirefan/
 ├── internal/
 │   ├── auth/           API-key secret hashing + HMAC channel tokens
 │   ├── conn/           WS Conn lifecycle: pumps, message router, backpressure policies
-│   ├── fanout/         Broadcast strategies (per-conn goroutine, sharded worker pool)
+│   ├── fanout/         Broadcast strategies (inline per-conn, sharded worker pool)
 │   ├── hub/            Process-wide conn set; drains close frames on shutdown
 │   ├── metrics/        Prometheus collectors + OTel hook (dormant by default)
 │   ├── ratelimit/      Per-key token-bucket limiter w/ background GC
