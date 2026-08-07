@@ -80,7 +80,7 @@ func migrate(db *sql.DB, ms []migration) error {
 		latest = ms[len(ms)-1].version
 	}
 	if current > latest {
-		return fmt.Errorf("database schema version %d is newer than this binary supports (max %d); refusing to open — upgrade wirefan instead of downgrading the database", current, latest)
+		return fmt.Errorf("database schema version %d is newer than this binary supports (max %d); refusing to open; upgrade wirefan instead of downgrading the database", current, latest)
 	}
 
 	if current == 0 {
