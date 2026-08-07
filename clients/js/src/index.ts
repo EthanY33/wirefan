@@ -312,6 +312,12 @@ export class WirefanClient {
   #closed = false;
   #attempt = 0;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Bumped on every `connected` frame. Async work that spans an await (the
+   * `authorize()` round trip) captures the epoch first and re-checks it after,
+   * so a token minted against one connection can never be sent on a later one.
+   */
+  #epoch = 0;
 
   #channels = new Map<string, ChannelRecord>();
   #pending: PendingOp[] = [];
@@ -510,6 +516,7 @@ export class WirefanClient {
   }
 
   #onConnected(frame: ConnectedFrame): void {
+    this.#epoch += 1;
     this.#socketId = frame.socket_id;
     const reconnected = this.#attempt > 0;
     this.#attempt = 0;
@@ -606,7 +613,14 @@ export class WirefanClient {
     this.#failPending(
       new ConnectionClosedError("connection dropped", code, reason),
     );
-    for (const rec of this.#channels.values()) rec.confirmed = false;
+    // Reset per-connection subscription state. Clearing `inflight` matters:
+    // a subscribe attempt stuck awaiting authorize() when the drop hit is now
+    // stale (its token targets the dead socket), and the post-reconnect
+    // resubscribe must start a fresh attempt, not adopt the old one.
+    for (const rec of this.#channels.values()) {
+      rec.confirmed = false;
+      rec.inflight = null;
+    }
 
     const canRetry =
       this.#reconnect !== false && this.#attempt + 1 <= this.#reconnect.maxAttempts;
@@ -761,10 +775,13 @@ export class WirefanClient {
   #ensureSubscribed(channel: string, rec: ChannelRecord): Promise<void> {
     if (rec.confirmed) return Promise.resolve();
     if (!rec.inflight) {
-      rec.inflight = this.#sendSubscribe(channel).finally(() => {
+      const attempt: Promise<void> = this.#sendSubscribe(channel).finally(() => {
+        // Only clear our own attempt: #onDrop may already have nulled the
+        // slot and a post-reconnect resubscribe may have installed a new one.
         const cur = this.#channels.get(channel);
-        if (cur) cur.inflight = null;
+        if (cur && cur.inflight === attempt) cur.inflight = null;
       });
+      rec.inflight = attempt;
     }
     return rec.inflight;
   }
@@ -777,9 +794,14 @@ export class WirefanClient {
     if (needsToken(channel)) {
       const socketId = this.#socketId;
       if (!socketId) throw new ConnectionClosedError("not connected");
+      const epoch = this.#epoch;
       // Re-fetched every time: tokens are single-use and socket-bound.
       frame.token = await this.#authorize!({ socketId, channel });
-      if (this.#state !== "connected") {
+      // The authorize() round trip can span a drop, or a drop AND a
+      // reconnect. Checking #state alone is not enough (after a reconnect
+      // the state is "connected" again on a different socket), so require
+      // the same connection epoch, or the token targets a dead socket_id.
+      if (this.#state !== "connected" || this.#epoch !== epoch) {
         throw new ConnectionClosedError("connection dropped while authorizing");
       }
     }

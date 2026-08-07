@@ -93,6 +93,58 @@ describe("reconnect", () => {
     c.close();
   });
 
+  it("abandons an authorize() left in flight by a drop and re-fetches a token for the new socket", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) => autoAccept(ws, `SID${i}`);
+    const calls: string[] = [];
+    let releaseStale!: (token: string) => void;
+    const c = makeClient(h, {
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        if (calls.length === 1) {
+          // First authorize hangs until the test releases it, simulating a
+          // /v1/auth/sign round trip that outlives the WebSocket.
+          return new Promise<string>((resolve) => {
+            releaseStale = resolve;
+          });
+        }
+        return Promise.resolve(`tok-for-${socketId}`);
+      },
+    });
+    await c.connect();
+    const sub = c.subscribe("private-room", () => {});
+    const subOutcome = sub.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await until(() => calls.length === 1, "first authorize");
+
+    // Drop while authorize() is still pending, then reconnect.
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => c.state === "connected" && h.sockets.length === 2, "reconnect");
+
+    // The resubscribe must start a FRESH attempt (second authorize call,
+    // bound to the new socket), not adopt the stale in-flight one.
+    await until(() => calls.length === 2, "authorize re-invoked after reconnect");
+    expect(calls).toEqual(["SID0", "SID1"]);
+
+    // Now the stale authorize resolves with a token minted for the dead
+    // socket. It must never reach the wire.
+    releaseStale("tok-for-SID0");
+    await until(
+      () => h.sockets[1]!.sentFrames().some((f) => f.type === "subscribe"),
+      "resubscribe frame",
+    );
+    await new Promise((r) => setTimeout(r, 20)); // give the stale path time to (wrongly) send
+    const subs = h.sockets[1]!.sentFrames().filter((f) => f.type === "subscribe");
+    expect(subs).toEqual([
+      { type: "subscribe", channel: "private-room", token: "tok-for-SID1" },
+    ]);
+    // The interrupted subscribe() call surfaces the drop instead of lying.
+    expect(await subOutcome).toBeInstanceOf(ConnectionClosedError);
+    c.close();
+  });
+
   it("uses exponential backoff with a cap and deterministic jitter", async () => {
     const h = new FakeWSHarness();
     // Never accept: every dial is closed immediately.
