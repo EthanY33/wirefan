@@ -36,6 +36,13 @@ func NewSQLite(path string) (Store, error) {
 	if err := validateDBPath(path); err != nil {
 		return nil, err
 	}
+	// Inspect an existing file over a read-only connection first: opening
+	// with the WAL DSN rewrites the journal-mode header bytes even when
+	// migrate then refuses, and refusal must leave a file wirefan does not
+	// own untouched.
+	if err := preflight(path, migrations); err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
 	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, err
