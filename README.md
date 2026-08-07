@@ -51,6 +51,26 @@ Full walk-through in [`ARCHITECTURE.md`](ARCHITECTURE.md#quickstart-for-contribu
 
 ---
 
+## Client library
+
+[`clients/js`](clients/js) packages `@wirefan/client`, a zero-dependency
+TypeScript/JavaScript client for browsers and Node 22+: automatic reconnect
+with exponential backoff and jitter, automatic resubscription (tokens are
+re-fetched, since they are single-use and socket-bound), awaitable
+subscribe/unsubscribe, and typed errors carrying the server's error codes.
+The embedded demo above is built on it. Not yet on npm; see
+[`clients/js/README.md`](clients/js/README.md).
+
+```js
+import { WirefanClient } from "@wirefan/client";
+const client = new WirefanClient({ url: "ws://localhost:8080", key: "01K..." });
+await client.connect();
+await client.subscribe("demo", (ev) => console.log(ev.data));
+client.publish("demo", { hello: "world" });
+```
+
+---
+
 ## Architecture
 
 ![Architecture](docs/architecture.svg)
