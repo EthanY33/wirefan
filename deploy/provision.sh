@@ -14,13 +14,18 @@
 #   4. installs /etc/wirefan/env from .env.example (kept if already present)
 #      and pins WIREFAN_TRUSTED_PROXIES=127.0.0.1 for the local-Caddy topology
 #   5. installs Caddy from the official apt repo
-#   6. installs the Caddyfile and the systemd unit with your domain substituted
+#   6. installs the Caddyfile and the systemd unit with your domain
+#      substituted; a previous version that differs is saved to <file>.bak
+#      before being replaced
 #   7. installs the wirefan binary if --binary was given
-#   8. enables + starts wirefan and reloads Caddy (skipped with a loud notice
-#      when systemd is not running, e.g. inside a container)
+#   8. enables + (re)starts wirefan and reloads Caddy (skipped with a loud
+#      notice when systemd is not running, e.g. inside a container); re-runs
+#      restart wirefan so a changed unit or binary actually takes effect
 #
 # Idempotent: safe to re-run. Existing /etc/wirefan/env is never overwritten.
-# Derived files (unit, Caddyfile) are rewritten each run.
+# Derived files (unit, Caddyfile) are rewritten each run and are owned by
+# this script: hand edits to them survive only in the .bak it leaves behind.
+# If this box hosts other Caddy sites, merge them back from the .bak.
 #
 # Secrets: this script generates and prints none. The admin token is created
 # by wirefan itself on first boot at /var/lib/wirefan/admin.token (mode 0600)
@@ -144,11 +149,26 @@ fi
 
 # --- 6. config files (derived, rewritten every run) -------------------------
 
-sed "s/wirefan\.example\.com/$DOMAIN/g" "$SCRIPT_DIR/Caddyfile" > /etc/caddy/Caddyfile
+# Render to a temp file first; if the destination exists with different
+# content (a hand edit, or another Caddy site on this box), keep a .bak so
+# the overwrite is recoverable.
+install_derived() {
+    # $1 = template, $2 = destination
+    local tmp
+    tmp="$(mktemp)"
+    sed "s/wirefan\.example\.com/$DOMAIN/g" "$1" > "$tmp"
+    if [ -f "$2" ] && ! cmp -s "$tmp" "$2"; then
+        cp -f "$2" "$2.bak"
+        echo "provision.sh: NOTICE: $2 differed; previous version saved to $2.bak" >&2
+    fi
+    install -m 0644 -o root -g root "$tmp" "$2"
+    rm -f "$tmp"
+}
+
+install_derived "$SCRIPT_DIR/Caddyfile" /etc/caddy/Caddyfile
 echo "provision.sh: wrote /etc/caddy/Caddyfile for $DOMAIN"
 
-sed "s/wirefan\.example\.com/$DOMAIN/g" "$SCRIPT_DIR/wirefan.service" \
-    > /etc/systemd/system/wirefan.service
+install_derived "$SCRIPT_DIR/wirefan.service" /etc/systemd/system/wirefan.service
 echo "provision.sh: wrote /etc/systemd/system/wirefan.service (allowed origin: https://$DOMAIN)"
 
 # --- 7. binary --------------------------------------------------------------
@@ -168,9 +188,13 @@ fi
 if [ "$HAVE_SYSTEMD" -eq 1 ]; then
     systemctl daemon-reload
     if [ -x /usr/local/bin/wirefan ]; then
-        systemctl enable --now wirefan
+        systemctl enable wirefan
+        # restart, not `enable --now`: on a re-run the service is already
+        # active and `--now` would be a no-op, silently leaving a changed
+        # unit or binary without effect.
+        systemctl restart wirefan
         systemctl reload-or-restart caddy
-        echo "provision.sh: wirefan enabled and started; caddy reloaded"
+        echo "provision.sh: wirefan enabled and (re)started; caddy reloaded"
         echo "provision.sh: verify with: curl -fsS https://$DOMAIN/v1/health   (expect: ok)"
         echo "provision.sh: admin token (first boot writes it): sudo cat /var/lib/wirefan/admin.token"
     else
