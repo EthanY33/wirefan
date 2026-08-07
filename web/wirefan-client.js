@@ -20,7 +20,7 @@ var __classPrivateFieldGet = (this && this.__classPrivateFieldGet) || function (
     if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
     return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
 };
-var _WirefanClient_instances, _WirefanClient_url, _WirefanClient_authorize, _WirefanClient_WS, _WirefanClient_reconnect, _WirefanClient_ackTimeoutMs, _WirefanClient_random, _WirefanClient_ws, _WirefanClient_state, _WirefanClient_socketId, _WirefanClient_closed, _WirefanClient_attempt, _WirefanClient_reconnectTimer, _WirefanClient_epoch, _WirefanClient_channels, _WirefanClient_pending, _WirefanClient_listeners, _WirefanClient_connectWaiters, _WirefanClient_emit, _WirefanClient_setState, _WirefanClient_dial, _WirefanClient_onMessage, _WirefanClient_onConnected, _WirefanClient_onEvent, _WirefanClient_onErrorFrame, _WirefanClient_settleOp, _WirefanClient_failPending, _WirefanClient_rejectConnectWaiters, _WirefanClient_onDrop, _WirefanClient_resubscribeAll, _WirefanClient_ensureSubscribed, _WirefanClient_sendSubscribe, _WirefanClient_sendOp;
+var _WirefanClient_instances, _WirefanClient_url, _WirefanClient_authorize, _WirefanClient_WS, _WirefanClient_reconnect, _WirefanClient_ackTimeoutMs, _WirefanClient_handshakeTimeoutMs, _WirefanClient_random, _WirefanClient_ws, _WirefanClient_state, _WirefanClient_socketId, _WirefanClient_closed, _WirefanClient_attempt, _WirefanClient_reconnectTimer, _WirefanClient_handshakeTimer, _WirefanClient_epoch, _WirefanClient_channels, _WirefanClient_pending, _WirefanClient_listeners, _WirefanClient_connectWaiters, _WirefanClient_emit, _WirefanClient_setState, _WirefanClient_dial, _WirefanClient_clearHandshakeTimer, _WirefanClient_onMessage, _WirefanClient_onConnected, _WirefanClient_onEvent, _WirefanClient_onErrorFrame, _WirefanClient_settleOp, _WirefanClient_failPending, _WirefanClient_rejectConnectWaiters, _WirefanClient_onDrop, _WirefanClient_resubscribeAll, _WirefanClient_ensureSubscribed, _WirefanClient_sendSubscribe, _WirefanClient_sendOp;
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -105,6 +105,7 @@ export class WirefanClient {
         _WirefanClient_WS.set(this, void 0);
         _WirefanClient_reconnect.set(this, void 0);
         _WirefanClient_ackTimeoutMs.set(this, void 0);
+        _WirefanClient_handshakeTimeoutMs.set(this, void 0);
         _WirefanClient_random.set(this, void 0);
         _WirefanClient_ws.set(this, null);
         _WirefanClient_state.set(this, "idle");
@@ -112,6 +113,7 @@ export class WirefanClient {
         _WirefanClient_closed.set(this, false);
         _WirefanClient_attempt.set(this, 0);
         _WirefanClient_reconnectTimer.set(this, null);
+        _WirefanClient_handshakeTimer.set(this, null);
         /**
          * Bumped on every `connected` frame. Async work that spans an await (the
          * `authorize()` round trip) captures the epoch first and re-checks it after,
@@ -138,6 +140,7 @@ export class WirefanClient {
             ? false
             : { ...DEFAULT_RECONNECT, ...(options.reconnect ?? {}) }, "f");
         __classPrivateFieldSet(this, _WirefanClient_ackTimeoutMs, options.ackTimeoutMs ?? 10000, "f");
+        __classPrivateFieldSet(this, _WirefanClient_handshakeTimeoutMs, options.handshakeTimeoutMs ?? 10000, "f");
         __classPrivateFieldSet(this, _WirefanClient_random, options.random ?? Math.random, "f");
     }
     /** Current lifecycle state. */
@@ -196,6 +199,7 @@ export class WirefanClient {
             clearTimeout(__classPrivateFieldGet(this, _WirefanClient_reconnectTimer, "f"));
             __classPrivateFieldSet(this, _WirefanClient_reconnectTimer, null, "f");
         }
+        __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_clearHandshakeTimer).call(this);
         const ws = __classPrivateFieldGet(this, _WirefanClient_ws, "f");
         __classPrivateFieldSet(this, _WirefanClient_ws, null, "f");
         if (ws) {
@@ -295,7 +299,7 @@ export class WirefanClient {
         __classPrivateFieldGet(this, _WirefanClient_ws, "f").send(JSON.stringify({ type: "publish", channel, data }));
     }
 }
-_WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _WirefanClient_WS = new WeakMap(), _WirefanClient_reconnect = new WeakMap(), _WirefanClient_ackTimeoutMs = new WeakMap(), _WirefanClient_random = new WeakMap(), _WirefanClient_ws = new WeakMap(), _WirefanClient_state = new WeakMap(), _WirefanClient_socketId = new WeakMap(), _WirefanClient_closed = new WeakMap(), _WirefanClient_attempt = new WeakMap(), _WirefanClient_reconnectTimer = new WeakMap(), _WirefanClient_epoch = new WeakMap(), _WirefanClient_channels = new WeakMap(), _WirefanClient_pending = new WeakMap(), _WirefanClient_listeners = new WeakMap(), _WirefanClient_connectWaiters = new WeakMap(), _WirefanClient_instances = new WeakSet(), _WirefanClient_emit = function _WirefanClient_emit(event, payload) {
+_WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _WirefanClient_WS = new WeakMap(), _WirefanClient_reconnect = new WeakMap(), _WirefanClient_ackTimeoutMs = new WeakMap(), _WirefanClient_handshakeTimeoutMs = new WeakMap(), _WirefanClient_random = new WeakMap(), _WirefanClient_ws = new WeakMap(), _WirefanClient_state = new WeakMap(), _WirefanClient_socketId = new WeakMap(), _WirefanClient_closed = new WeakMap(), _WirefanClient_attempt = new WeakMap(), _WirefanClient_reconnectTimer = new WeakMap(), _WirefanClient_handshakeTimer = new WeakMap(), _WirefanClient_epoch = new WeakMap(), _WirefanClient_channels = new WeakMap(), _WirefanClient_pending = new WeakMap(), _WirefanClient_listeners = new WeakMap(), _WirefanClient_connectWaiters = new WeakMap(), _WirefanClient_instances = new WeakSet(), _WirefanClient_emit = function _WirefanClient_emit(event, payload) {
     const set = __classPrivateFieldGet(this, _WirefanClient_listeners, "f").get(event);
     if (!set)
         return;
@@ -346,6 +350,29 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
     // The connection is not usable until the `connected` frame (§3.3);
     // onopen is intentionally not treated as "ready".
     ws.onopen = null;
+    // Bound the whole handshake. Without this, an upgrade that succeeds and
+    // then goes silent (no `connected` frame, no close) would strand the
+    // client in "connecting" with no event ever firing.
+    __classPrivateFieldSet(this, _WirefanClient_handshakeTimer, setTimeout(() => {
+        __classPrivateFieldSet(this, _WirefanClient_handshakeTimer, null, "f");
+        if (__classPrivateFieldGet(this, _WirefanClient_ws, "f") !== ws || __classPrivateFieldGet(this, _WirefanClient_state, "f") === "connected")
+            return;
+        // Detach handlers first so ws.close() cannot re-enter #onDrop; then
+        // route through #onDrop once so backoff/maxAttempts work unchanged.
+        ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+        try {
+            ws.close(4000, "handshake-timeout");
+        }
+        catch {
+            // Closing a not-yet-open socket may throw; it is abandoned either way.
+        }
+        __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_onDrop).call(this, undefined, "handshake timeout");
+    }, __classPrivateFieldGet(this, _WirefanClient_handshakeTimeoutMs, "f")), "f");
+}, _WirefanClient_clearHandshakeTimer = function _WirefanClient_clearHandshakeTimer() {
+    if (__classPrivateFieldGet(this, _WirefanClient_handshakeTimer, "f") !== null) {
+        clearTimeout(__classPrivateFieldGet(this, _WirefanClient_handshakeTimer, "f"));
+        __classPrivateFieldSet(this, _WirefanClient_handshakeTimer, null, "f");
+    }
 }, _WirefanClient_onMessage = function _WirefanClient_onMessage(raw) {
     if (typeof raw !== "string")
         return; // protocol is text frames only (§2)
@@ -377,6 +404,7 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
             return;
     }
 }, _WirefanClient_onConnected = function _WirefanClient_onConnected(frame) {
+    __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_clearHandshakeTimer).call(this);
     __classPrivateFieldSet(this, _WirefanClient_epoch, __classPrivateFieldGet(this, _WirefanClient_epoch, "f") + 1, "f");
     __classPrivateFieldSet(this, _WirefanClient_socketId, frame.socket_id, "f");
     const reconnected = __classPrivateFieldGet(this, _WirefanClient_attempt, "f") > 0;
@@ -456,6 +484,7 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
 }, _WirefanClient_onDrop = function _WirefanClient_onDrop(code, reason) {
     if (__classPrivateFieldGet(this, _WirefanClient_closed, "f"))
         return;
+    __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_clearHandshakeTimer).call(this);
     const ws = __classPrivateFieldGet(this, _WirefanClient_ws, "f");
     __classPrivateFieldSet(this, _WirefanClient_ws, null, "f");
     if (ws)

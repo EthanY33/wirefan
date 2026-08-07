@@ -178,6 +178,14 @@ export interface WirefanClientOptions {
   reconnect?: ReconnectOptions | false;
   /** How long to wait for a subscribe/unsubscribe ack. Default 10 000 ms. */
   ackTimeoutMs?: number;
+  /**
+   * How long a dial may take to produce the server's `connected` frame before
+   * the attempt is abandoned and fed to the normal reconnect path. Bounds the
+   * whole handshake (TCP + upgrade + first frame), so a load balancer that
+   * completes the 101 upgrade but never reaches a backend cannot wedge the
+   * client in "connecting" forever. Default 10 000 ms.
+   */
+  handshakeTimeoutMs?: number;
   /** Random source for backoff jitter; injectable for deterministic tests. */
   random?: () => number;
 }
@@ -304,6 +312,7 @@ export class WirefanClient {
   readonly #WS: WebSocketConstructor;
   readonly #reconnect: Required<ReconnectOptions> | false;
   readonly #ackTimeoutMs: number;
+  readonly #handshakeTimeoutMs: number;
   readonly #random: () => number;
 
   #ws: WebSocketLike | null = null;
@@ -312,6 +321,7 @@ export class WirefanClient {
   #closed = false;
   #attempt = 0;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  #handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Bumped on every `connected` frame. Async work that spans an await (the
    * `authorize()` round trip) captures the epoch first and re-checks it after,
@@ -344,6 +354,7 @@ export class WirefanClient {
         ? false
         : { ...DEFAULT_RECONNECT, ...(options.reconnect ?? {}) };
     this.#ackTimeoutMs = options.ackTimeoutMs ?? 10_000;
+    this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? 10_000;
     this.#random = options.random ?? Math.random;
   }
 
@@ -435,6 +446,7 @@ export class WirefanClient {
       clearTimeout(this.#reconnectTimer);
       this.#reconnectTimer = null;
     }
+    this.#clearHandshakeTimer();
     const ws = this.#ws;
     this.#ws = null;
     if (ws) {
@@ -483,6 +495,29 @@ export class WirefanClient {
     // The connection is not usable until the `connected` frame (§3.3);
     // onopen is intentionally not treated as "ready".
     ws.onopen = null;
+    // Bound the whole handshake. Without this, an upgrade that succeeds and
+    // then goes silent (no `connected` frame, no close) would strand the
+    // client in "connecting" with no event ever firing.
+    this.#handshakeTimer = setTimeout(() => {
+      this.#handshakeTimer = null;
+      if (this.#ws !== ws || this.#state === "connected") return;
+      // Detach handlers first so ws.close() cannot re-enter #onDrop; then
+      // route through #onDrop once so backoff/maxAttempts work unchanged.
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try {
+        ws.close(4000, "handshake-timeout");
+      } catch {
+        // Closing a not-yet-open socket may throw; it is abandoned either way.
+      }
+      this.#onDrop(undefined, "handshake timeout");
+    }, this.#handshakeTimeoutMs);
+  }
+
+  #clearHandshakeTimer(): void {
+    if (this.#handshakeTimer !== null) {
+      clearTimeout(this.#handshakeTimer);
+      this.#handshakeTimer = null;
+    }
   }
 
   #onMessage(raw: unknown): void {
@@ -516,6 +551,7 @@ export class WirefanClient {
   }
 
   #onConnected(frame: ConnectedFrame): void {
+    this.#clearHandshakeTimer();
     this.#epoch += 1;
     this.#socketId = frame.socket_id;
     const reconnected = this.#attempt > 0;
@@ -606,6 +642,7 @@ export class WirefanClient {
 
   #onDrop(code?: number, reason?: string): void {
     if (this.#closed) return;
+    this.#clearHandshakeTimer();
     const ws = this.#ws;
     this.#ws = null;
     if (ws) ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;

@@ -145,6 +145,43 @@ describe("reconnect", () => {
     c.close();
   });
 
+  it("times out a handshake that never produces the connected frame and retries", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) => {
+      // First dial: the upgrade succeeds but the server goes silent (no
+      // `connected` frame, no close). Second dial behaves.
+      if (i === 0) ws.serverOpen();
+      else autoAccept(ws, `SID${i}`);
+    };
+    const c = makeClient(h, { handshakeTimeoutMs: 20 });
+    const events: string[] = [];
+    c.on("disconnected", () => events.push("disconnected"));
+    c.on("reconnecting", () => events.push("reconnecting"));
+    await c.connect(); // resolves via the second dial, not by hanging forever
+    expect(h.sockets.length).toBe(2);
+    expect(c.socketId).toBe("SID1");
+    expect(events).toContain("disconnected");
+    expect(events).toContain("reconnecting");
+    expect(h.sockets[0]!.closedWith?.reason).toBe("handshake-timeout");
+    c.close();
+  });
+
+  it("handshake timeout with reconnect disabled closes the client instead of wedging it", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => ws.serverOpen(); // silent server
+    const c = makeClient(h, { reconnect: false, handshakeTimeoutMs: 20 });
+    const closed = new Promise<string>((resolve) => {
+      c.on("closed", (ev) => resolve(ev.reason));
+    });
+    const err = await c.connect().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ConnectionClosedError);
+    expect(await closed).toBe("exhausted");
+    expect(c.state).toBe("closed");
+  });
+
   it("uses exponential backoff with a cap and deterministic jitter", async () => {
     const h = new FakeWSHarness();
     // Never accept: every dial is closed immediately.
