@@ -80,6 +80,16 @@ function refreshSubList() {
   }
 }
 
+// While a connect/reconnect is in progress the user must always be able to
+// abort: Disconnect stays enabled as soon as a client object exists.
+function setUiConnecting() {
+  els.btnConnect.disabled = true;
+  els.btnDisconnect.disabled = false;
+  els.btnSubscribe.disabled = true;
+  els.btnPublish.disabled = true;
+  els.btnStress.disabled = true;
+}
+
 function setUiConnected(connected) {
   els.btnConnect.disabled = connected;
   els.btnDisconnect.disabled = !connected;
@@ -193,13 +203,25 @@ async function connect() {
     logFrame('error', '', 'no api key. paste one or use ?key=...');
     return;
   }
-  if (client) return;
+  if (client) {
+    if (client.state === 'connected') return;
+    // A client exists but is still connecting/reconnecting: tear it down and
+    // start fresh instead of turning the button into a no-op.
+    disconnect();
+  }
 
-  const c = new WirefanClient({ url: location.origin, key });
+  // Bounded retries so the closed/"exhausted" handler below can actually
+  // fire when the server stays unreachable, instead of retrying forever.
+  const c = new WirefanClient({
+    url: location.origin,
+    key,
+    reconnect: { maxAttempts: 8 },
+  });
   client = c;
   els.wsEndpoint.textContent =
     `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/v1/connect`;
   setStatus('connecting', 'connecting');
+  setUiConnecting();
 
   c.on('connected', ({ socketId, reconnected }) => {
     setStatus('connected', 'connected');
@@ -214,6 +236,7 @@ async function connect() {
   });
   c.on('reconnecting', ({ attempt, delayMs }) => {
     setStatus('connecting', `reconnecting #${attempt}`);
+    setUiConnecting(); // publish/subscribe would throw mid-reconnect; keep Disconnect usable
     logFrame('system', '', `reconnecting: attempt ${attempt} in ${delayMs}ms`);
   });
   c.on('resubscribed', ({ channels }) => {
@@ -236,9 +259,14 @@ async function connect() {
   try {
     await c.connect();
   } catch (e) {
-    if (client === c) client = null;
-    setStatus('error', 'error');
-    logFrame('error', '', String(e.message || e));
+    // If the user already aborted via Disconnect (client was cleared), the
+    // closed handler has reset the UI; don't overwrite idle with an error.
+    if (client === c) {
+      client = null;
+      setStatus('error', 'error');
+      setUiConnected(false);
+      logFrame('error', '', String(e.message || e));
+    }
     return;
   }
 
