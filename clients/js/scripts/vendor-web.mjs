@@ -8,7 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const src = join(here, "..", "dist", "index.js");
 const dest = join(here, "..", "..", "..", "web", "wirefan-client.js");
 
-const header = `// VENDORED BUILD — do not edit by hand.
+const header = `// VENDORED BUILD, do not edit by hand.
 // Source: clients/js/src/index.ts. Regenerate with:
 //   cd clients/js && npm run vendor:web
 `;

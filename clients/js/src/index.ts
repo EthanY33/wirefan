@@ -1,5 +1,5 @@
 /**
- * @wirefan/client — JavaScript client for the wirefan WebSocket fan-out server.
+ * @wirefan/client: JavaScript client for the wirefan WebSocket fan-out server.
  *
  * Wire protocol: docs/PROTOCOL.md (protocol id "v1").
  *
