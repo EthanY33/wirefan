@@ -1,0 +1,79 @@
+# Release binaries for linux/amd64 and linux/arm64 on tag push.
+#
+# CGO note: the SQLite driver (mattn/go-sqlite3) requires cgo, so plain
+# GOOS/GOARCH cross-compilation does not work without a C cross toolchain.
+# Instead of cross toolchains, this workflow builds each arch NATIVELY on a
+# matching runner: ubuntu-24.04 (amd64) and ubuntu-24.04-arm (arm64; free
+# for public repos per GitHub's hosted-runner policy). Both runners are
+# Ubuntu 24.04, so the produced binaries link the runner's glibc and run on
+# Ubuntu 24.04 targets, which is what docs/DEPLOY.md targets. The smoke-test
+# step prints `ldd --version` so the exact glibc is in every build log.
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      # Same gate as CI: the binary we ship must come from a green tree.
+      - run: go build ./...
+      - run: go test -race ./...
+      - name: Build release binary
+        run: |
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o "wirefan_${GITHUB_REF_NAME}_linux_${{ matrix.goarch }}" \
+            ./cmd/wirefan
+      - name: Smoke-test the binary
+        # --help exits nonzero (flag.ErrHelp) by design; assert the usage
+        # text mentions the -listen flag so we know the binary executes.
+        # The ldd line puts the runner's actual glibc version in the build
+        # log, so the "matches an Ubuntu 24.04 target" claim in
+        # docs/DEPLOY.md is on record for every release.
+        run: |
+          ldd --version | head -n1
+          out="$("./wirefan_${GITHUB_REF_NAME}_linux_${{ matrix.goarch }}" --help 2>&1 || true)"
+          echo "$out" | grep -q -- '-listen'
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wirefan-linux-${{ matrix.goarch }}
+          path: wirefan_*_linux_${{ matrix.goarch }}
+          if-no-files-found: error
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          sha256sum wirefan_* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create release with binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/wirefan_* dist/SHA256SUMS

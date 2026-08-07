@@ -5,8 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# --allowed-origins is required and refuses '*' outside --dev: replace the
-# placeholder with the origin(s) your browser clients load from. The admin
+# --allowed-origins is required and refuses '*' outside --dev: the
+# wirefan.example.com placeholder is substituted by deploy/provision.sh
+# (--domain), or replace it by hand with the origin(s) your browser clients
+# load from. The admin
 # listener stays on loopback so /v1/keys, /metrics, and /debug/pprof are
 # never internet-reachable; mint keys from the host itself.
 ExecStart=/usr/local/bin/wirefan \
