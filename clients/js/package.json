@@ -23,10 +23,11 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "vendor:web": "npm run build && node scripts/vendor-web.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
