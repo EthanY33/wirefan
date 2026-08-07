@@ -449,8 +449,12 @@ The SQLite store versions its schema with `PRAGMA user_version` and an
 ordered, append-only migration list in `internal/store/migrate.go`.
 Each migration runs in a single transaction that also bumps
 `user_version`, so a crash mid-migration rolls back the schema change
-and the version bump together. The database is always at a version
-whose migrations have fully applied.
+and the version bump together: a crash never leaves the database
+between versions. The transaction is opened with `BEGIN IMMEDIATE` and
+re-reads `user_version` after taking the write lock, so two processes
+racing to open the same file (restart overlap, rolling deploy) apply
+each migration at most once; the loser sees the bumped version and
+skips.
 
 The upgrade contract:
 
@@ -459,15 +463,25 @@ The upgrade contract:
   table. Migration 1 (the baseline) adopts such a database in place
   without touching its rows; on a genuinely empty database it creates
   the table fresh. Both starting states converge on the same version-1
-  schema. If a version-0 database contains a `keys` table whose
-  columns do not match the v0.2.0 shape, wirefan refuses to open it
-  rather than migrate a file it did not create.
+  schema. A version-0 database that contains any other table, or a
+  `keys` table whose columns and constraints do not match the v0.2.0
+  shape, is refused: it is not a file wirefan created, and migrating
+  it would write wirefan's table into a foreign database and clobber
+  its `user_version`.
+- **Refusals are read-only.** An existing file is inspected over a
+  query-only preflight connection before the writable WAL handle is
+  opened, so a refused file is left byte-for-byte unmodified (the WAL
+  handle would otherwise rewrite the journal-mode header bytes as a
+  side effect of opening).
 - **Forward only.** A database whose `user_version` is newer than the
   binary understands is refused with an explicit error. Silently
   running an old binary against a future schema could misread or
   corrupt it; the fix is to upgrade wirefan, not downgrade the file.
 - **Migrations are append-only.** Shipped migrations are never edited
-  or reordered; new schema changes get the next version number.
+  or reordered; new schema changes get the next version number, and
+  the runner rejects a list whose versions are not contiguous from 1,
+  so a copied step with an unbumped version fails loudly instead of
+  silently never running.
 
 The list currently contains only the baseline migration, because no
 post-v0.2.0 schema change has been needed yet. The runner's multi-step
