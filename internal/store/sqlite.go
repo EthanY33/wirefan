@@ -13,16 +13,6 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-const sqliteSchema = `
-CREATE TABLE IF NOT EXISTS keys (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    secret_hash TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    revoked_at INTEGER
-);
-`
-
 type sqliteStore struct{ db *sql.DB }
 
 // validateDBPath rejects values that would let a misconfigured operator
@@ -46,13 +36,20 @@ func NewSQLite(path string) (Store, error) {
 	if err := validateDBPath(path); err != nil {
 		return nil, err
 	}
+	// Inspect an existing file over a read-only connection first: opening
+	// with the WAL DSN rewrites the journal-mode header bytes even when
+	// migrate then refuses, and refusal must leave a file wirefan does not
+	// own untouched.
+	if err := preflight(path, migrations); err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
 	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(sqliteSchema); err != nil {
+	if err := migrate(db, migrations); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	return &sqliteStore{db: db}, nil
 }
