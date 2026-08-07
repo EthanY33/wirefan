@@ -1,6 +1,6 @@
 # @wirefan/client
 
-JavaScript/TypeScript client for the [wirefan](https://github.com/EthanY33/wirefan) WebSocket fan-out server. Zero runtime dependencies. Works in browsers and Node 20+ out of the box; any platform works if you inject a WebSocket implementation.
+JavaScript/TypeScript client for the [wirefan](https://github.com/EthanY33/wirefan) WebSocket fan-out server. Zero runtime dependencies. Works in browsers and Node 22+ out of the box (Node 22 is the first line with a global `WebSocket` enabled by default); any other platform works if you inject a WebSocket implementation.
 
 Not yet published to npm. Install from the repo:
 
@@ -32,11 +32,13 @@ client.close();
 
 ## Reconnect semantics (read this)
 
-- On any unexpected disconnect the client retries with exponential backoff plus jitter: delays start at 300 ms, double each attempt, cap at 15 s, and each is scaled by a random factor in [0.75, 1.25]. All parameters are settable via the `reconnect` option; `reconnect: false` disables retries entirely.
+- On any unexpected disconnect the client retries with exponential backoff plus jitter: delays start at 300 ms, double each attempt, cap at 15 s, and each is scaled by a random factor in [0.75, 1.25]. All parameters are settable via the `reconnect` option.
+- `reconnect: false` makes the client single-use: the first unexpected disconnect emits `closed` with reason `"exhausted"` (no attempts are made) and permanently closes the client; any later `connect()` rejects with `client is closed; create a new WirefanClient`.
+- Each dial is bounded by `handshakeTimeoutMs` (default 10 s), covering the upgrade plus the wait for the server's `connected` frame. A connection that upgrades but never becomes ready is torn down and fed to the same backoff path.
 - After a reconnect the client automatically resubscribes every channel you were on and then emits `resubscribed`. Your handlers stay attached; you do nothing.
-- The server issues a fresh `socket_id` per connection and subscribe tokens are single-use and socket-bound, so the client re-invokes your `authorize` callback for every `private-`/`presence-` resubscribe. Never cache tokens.
+- The server issues a fresh `socket_id` per connection and subscribe tokens are single-use and socket-bound, so the client re-invokes your `authorize` callback for every `private-`/`presence-` resubscribe. Never cache tokens. This holds even when the drop lands while an `authorize()` call is still in flight: the stale attempt is abandoned (a connection-epoch check stops its token from ever reaching the new socket) and the resubscribe fetches a fresh token bound to the new `socket_id`.
 - An explicit `close()` never reconnects and is terminal: construct a new client to connect again.
-- If `reconnect.maxAttempts` consecutive attempts fail, the client emits `closed` with reason `"exhausted"` and stops.
+- If `reconnect.maxAttempts` consecutive attempts fail, the client emits `closed` with reason `"exhausted"` and stops. The client is then permanently closed, exactly as with `reconnect: false` above.
 - The server pings every 30 s and drops peers that stay silent past its 60 s read deadline. Browser and Node WebSockets answer pings automatically, so an idle but healthy connection stays up with no work on your part; if the connection does die (proxy timeout, network change), the close event triggers the reconnect path above.
 - Delivery is at-most-once and only per-subscriber FIFO is guaranteed. A reconnect window loses whatever was published while you were away; there is no replay.
 
@@ -84,7 +86,7 @@ One caveat inherited from the wire protocol: server `error` frames carry no chan
 
 ## Node / injection
 
-Node 20+ has a global `WebSocket`; nothing to configure. Elsewhere (older Node, custom transports, tests), inject one:
+Node 22+ enables the global `WebSocket` by default; nothing to configure there. On Node 21 and earlier (no usable global `WebSocket`), and for custom transports or tests, inject one:
 
 ```js
 import WebSocket from "ws";
