@@ -54,7 +54,7 @@ Full walk-through in [`ARCHITECTURE.md`](ARCHITECTURE.md#quickstart-for-contribu
 ## Client library
 
 [`clients/js`](clients/js) packages `@wirefan/client`, a zero-dependency
-TypeScript/JavaScript client for browsers and Node 20+: automatic reconnect
+TypeScript/JavaScript client for browsers and Node 22+: automatic reconnect
 with exponential backoff and jitter, automatic resubscription (tokens are
 re-fetched, since they are single-use and socket-bound), awaitable
 subscribe/unsubscribe, and typed errors carrying the server's error codes.
