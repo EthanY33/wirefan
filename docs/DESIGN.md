@@ -443,6 +443,37 @@ Channel state (subscribers, pending sends) is **deliberately not
 persisted**. A subscriber's lifetime is its WebSocket; a publisher's
 event is at-most-once by design.
 
+### Schema versioning and migrations
+
+The SQLite store versions its schema with `PRAGMA user_version` and an
+ordered, append-only migration list in `internal/store/migrate.go`.
+Each migration runs in a single transaction that also bumps
+`user_version`, so a crash mid-migration rolls back the schema change
+and the version bump together. The database is always at a version
+whose migrations have fully applied.
+
+The upgrade contract:
+
+- **Version 0 means "pre-versioning", not "empty".** Databases created
+  by v0.2.0 have `user_version = 0` and already contain the keys
+  table. Migration 1 (the baseline) adopts such a database in place
+  without touching its rows; on a genuinely empty database it creates
+  the table fresh. Both starting states converge on the same version-1
+  schema. If a version-0 database contains a `keys` table whose
+  columns do not match the v0.2.0 shape, wirefan refuses to open it
+  rather than migrate a file it did not create.
+- **Forward only.** A database whose `user_version` is newer than the
+  binary understands is refused with an explicit error. Silently
+  running an old binary against a future schema could misread or
+  corrupt it; the fix is to upgrade wirefan, not downgrade the file.
+- **Migrations are append-only.** Shipped migrations are never edited
+  or reordered; new schema changes get the next version number.
+
+The list currently contains only the baseline migration, because no
+post-v0.2.0 schema change has been needed yet. The runner's multi-step
+ordering, crash rollback, and resume behavior are covered by tests in
+`internal/store/migrate_test.go`.
+
 ---
 
 ## 7. Wire-format trade-offs
