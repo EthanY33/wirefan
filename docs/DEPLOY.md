@@ -25,8 +25,10 @@ configuration problems:
   the opposite of what serverless scaling does.
 
 You need a plain Linux box where a systemd service can run indefinitely.
-The cheapest tier of any VPS provider (1 vCPU, 1 GB RAM) is enough to
-start; see `docs/BENCHMARKS.md` for measured behavior under load.
+A single-vCPU VPS is enough to start: `docs/BENCHMARKS.md` records
+measured behavior with the server pinned to one CPU. Those runs did not
+constrain memory, so this runbook makes no memory-sizing claim; the
+smallest tier your provider sells is the natural starting point.
 
 Three facts the whole runbook leans on:
 
@@ -44,8 +46,9 @@ Three facts the whole runbook leans on:
 
 ## 1. What to buy
 
-- **A VPS**: Ubuntu 24.04 LTS image, 1 vCPU / 1 GB RAM minimum, amd64 or
-  arm64, public IPv4, SSH key auth. Examples that fit: Hetzner CX22,
+- **A VPS**: Ubuntu 24.04 LTS image, 1 vCPU or more (see the memory note
+  above), amd64 or arm64, public IPv4, SSH key auth. Examples that fit:
+  Hetzner CX22,
   DigitalOcean Basic Droplet, Oracle Always Free A1, Lightsail 1 GB,
   Vultr Cloud Compute.
 - **A domain** (or a subdomain on one you own). Caddy gets a free
@@ -118,11 +121,15 @@ sudo ufw status
 
 CGO note: wirefan's SQLite driver requires cgo, so binaries are
 platform-specific. Releases ship `linux/amd64` and `linux/arm64` binaries
-built on Ubuntu 24.04 runners (they link glibc 2.39, matching an Ubuntu
-24.04 target). Check your arch with `uname -m`: `x86_64` means amd64,
-`aarch64` means arm64.
+built natively on Ubuntu 24.04 runners, so they link the runner's glibc
+and match an Ubuntu 24.04 target; the release workflow's smoke-test step
+prints `ldd --version` so the exact glibc is on record in every build
+log. Check your arch with `uname -m`: `x86_64` means amd64, `aarch64`
+means arm64.
 
-**Option A: download from a GitHub release** (on the server):
+**Option A: download from a GitHub release** (on the server). Releases
+exist from the first `v1.x` tag onward; until that tag is pushed these
+URLs return 404 and Option B is the path:
 
 ```bash
 VER=v1.0.0            # pick the release you want
@@ -172,6 +179,11 @@ sudo ./provision.sh --domain wirefan.example.com --binary ../wirefan_v1.0.0_linu
 ```
 
 The script is idempotent (safe to re-run) and stops at the first error.
+Re-runs rewrite the derived files (systemd unit, Caddyfile), saving a
+`.bak` of any previous version they change, and restart wirefan so a
+changed unit or binary takes effect; `/etc/wirefan/env` is never
+overwritten. If the box hosts other Caddy sites, know that the Caddyfile
+is wholly owned by this script: merge other sites back from the `.bak`.
 It:
 
 1. creates the `wirefan` system user (no shell, no home)
@@ -187,11 +199,11 @@ It:
    with your domain substituted (public listener `:8080` loopback-proxied
    by Caddy; admin listener stays `127.0.0.1:6060`)
 6. installs the binary at `/usr/local/bin/wirefan`
-7. `systemctl enable --now wirefan` and reloads Caddy
+7. `systemctl enable wirefan`, then restarts it and reloads Caddy
 
 It generates and prints no secrets. Caddy fetches the Let's Encrypt
-certificate within a few seconds of the first HTTPS request, provided DNS
-(step 2) and the firewall (step 3) are done; check with
+certificate on the first HTTPS request, typically well under a minute,
+provided DNS (step 2) and the firewall (step 3) are done; check with
 `sudo journalctl -u caddy -n 50 --no-pager` and look for
 `obtained certificate`.
 
@@ -265,6 +277,11 @@ sudo ./deploy/deploy.sh /usr/local/bin/wirefan.prev \
     "$(sha256sum /usr/local/bin/wirefan.prev | awk '{print $1}')"
 ```
 
+This command both reads and rewrites `wirefan.prev` (the bad binary you
+are rolling away from becomes the new `.prev`). It is safe because
+`deploy.sh` copies the verified binary to a staging file before it
+touches `wirefan.prev`.
+
 ---
 
 ## 8. Backup and restore
@@ -295,11 +312,16 @@ Restore (also the full-host-loss story: provision a fresh box via steps
 ```bash
 sudo systemctl stop wirefan
 sudo cp ./backups/wirefan-20260801.db /var/lib/wirefan/wirefan.db
+sudo rm -f /var/lib/wirefan/wirefan.db-wal /var/lib/wirefan/wirefan.db-shm
 sudo chown wirefan:wirefan /var/lib/wirefan/wirefan.db
 sudo chmod 0600 /var/lib/wirefan/wirefan.db
 sudo systemctl start wirefan
 curl -fsS https://wirefan.example.com/v1/health
 ```
+
+The `rm -f` of the `-wal`/`-shm` sidecars matters: the database runs in
+WAL mode, and sidecars left over from the replaced database would be
+replayed on top of the restored file.
 
 Back up `admin.token` once (or set `WIREFAN_ADMIN_TOKEN` in
 `/etc/wirefan/env` and treat that file as the secret to manage). If you
@@ -317,11 +339,26 @@ Prometheus metrics are on the **admin listener**, never the public one:
 curl -s http://127.0.0.1:6060/metrics | grep '^wirefan_' | head -20
 ```
 
-Useful series to watch: connection counts, per-channel subscriber gauges,
-publish/deliver counters (their ratio is your fanout amplification), and
-dropped-message counters (nonzero means slow consumers are being dropped,
-which is the documented at-most-once behavior, not a bug). Histograms are
-documented in `docs/DESIGN.md`.
+The series the binary exports (source of truth:
+`internal/metrics/prom.go`):
+
+- `wirefan_connections_total` (gauge): open WebSocket connections right now.
+- `wirefan_messages_published_total` (counter): messages accepted for fanout.
+- `wirefan_messages_dropped_total{reason}` (counter): nonzero means slow
+  consumers are being dropped, which is the documented at-most-once
+  behavior, not a bug.
+- `wirefan_broadcast_latency_seconds` (histogram): time to fan a publish
+  out to its subscribers.
+- `wirefan_upgrade_rejected_total{reason}` (counter): refused WebSocket
+  upgrades (bad key, per-IP cap, origin).
+- `wirefan_auth_failures_total` (counter): failed subscribe-token checks
+  on `private-`/`presence-` channels.
+
+One caveat: `wirefan_channels_total` is registered but never incremented
+(the source comment in `internal/metrics/prom.go` says why), so it reads
+0 forever; do not graph or alert on it. For a live channel count,
+subscribe to the read-only `_wirefan-stats` channel, which publishes a
+`channels` figure taken directly from the registry every 5 seconds.
 
 For external scraping, do not open 6060 to the internet. Either run
 Prometheus/Grafana Agent on the VPS itself, or put the scraper and the VPS
