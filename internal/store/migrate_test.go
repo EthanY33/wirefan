@@ -1,13 +1,26 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// fileBytes snapshots the main database file so refusal tests can prove the
+// refused file was left byte-for-byte unmodified.
+func fileBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
+}
 
 // openRaw opens the database file directly, bypassing NewSQLite, so tests can
 // fabricate pre-versioning states and inspect PRAGMA user_version.
@@ -181,6 +194,7 @@ func TestMigrateRefusesNewerVersion(t *testing.T) {
 		t.Fatalf("close raw: %v", err)
 	}
 
+	before := fileBytes(t, path)
 	_, err = NewSQLite(path)
 	if err == nil {
 		t.Fatal("NewSQLite succeeded on a future-versioned database, want refusal")
@@ -189,7 +203,12 @@ func TestMigrateRefusesNewerVersion(t *testing.T) {
 		t.Fatalf("error = %q, want mention of newer version", err)
 	}
 
-	// Refusal must not have modified the database.
+	// Refusal must not have modified the database, byte for byte: the
+	// preflight inspection runs over a read-only connection, never the WAL
+	// handle that rewrites the journal-mode header.
+	if after := fileBytes(t, path); !bytes.Equal(before, after) {
+		t.Fatalf("refused open modified the database file (%d bytes before, %d after)", len(before), len(after))
+	}
 	if v := userVersion(t, path); v != 999 {
 		t.Fatalf("user_version after refusal = %d, want 999 untouched", v)
 	}
@@ -236,12 +255,12 @@ func TestMigrationRunnerMultiStep(t *testing.T) {
 
 	applied := []int{}
 	ms := []migration{
-		{version: 1, name: "baseline", apply: func(tx *sql.Tx) error {
+		{version: 1, name: "baseline", apply: func(tx execer) error {
 			applied = append(applied, 1)
 			_, err := tx.Exec(createKeysTableSQL)
 			return err
 		}},
-		{version: 2, name: "add note column", apply: func(tx *sql.Tx) error {
+		{version: 2, name: "add note column", apply: func(tx execer) error {
 			applied = append(applied, 2)
 			_, err := tx.Exec(`ALTER TABLE keys ADD COLUMN note TEXT`)
 			return err
@@ -286,11 +305,11 @@ func TestMigrationRunnerRollbackOnFailure(t *testing.T) {
 
 	boom := errors.New("boom")
 	ms := []migration{
-		{version: 1, name: "baseline", apply: func(tx *sql.Tx) error {
+		{version: 1, name: "baseline", apply: func(tx execer) error {
 			_, err := tx.Exec(createKeysTableSQL)
 			return err
 		}},
-		{version: 2, name: "fails after writing", apply: func(tx *sql.Tx) error {
+		{version: 2, name: "fails after writing", apply: func(tx execer) error {
 			if _, err := tx.Exec(`INSERT INTO keys(id,name,secret_hash,created_at) VALUES('x','y','z',0)`); err != nil {
 				return err
 			}
@@ -319,7 +338,7 @@ func TestMigrationRunnerRollbackOnFailure(t *testing.T) {
 	}
 
 	// Retrying with the failure fixed resumes from version 1.
-	ms[1].apply = func(tx *sql.Tx) error {
+	ms[1].apply = func(tx execer) error {
 		_, err := tx.Exec(`ALTER TABLE keys ADD COLUMN note TEXT`)
 		return err
 	}
@@ -331,5 +350,154 @@ func TestMigrationRunnerRollbackOnFailure(t *testing.T) {
 	}
 	if v != 2 {
 		t.Fatalf("user_version after retry = %d, want 2", v)
+	}
+}
+
+// TestMigrateConcurrentOpeners proves two processes racing to open the same
+// file each apply a non-idempotent migration at most once. Without BEGIN
+// IMMEDIATE and the in-transaction version re-read, every opener reads
+// user_version 0 and every opener runs the ALTER TABLE; the losers fail
+// with "duplicate column name: note".
+func TestMigrateConcurrentOpeners(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "race.db")
+	ms := []migration{
+		{version: 1, name: "baseline", apply: func(tx execer) error {
+			_, err := tx.Exec(createKeysTableSQL)
+			return err
+		}},
+		{version: 2, name: "add note", apply: func(tx execer) error {
+			_, err := tx.Exec(`ALTER TABLE keys ADD COLUMN note TEXT`)
+			return err
+		}},
+	}
+
+	// Create the file (already in WAL mode) before the race: a restart
+	// overlap or rolling deploy contends on an existing store, and racing
+	// the initial WAL conversion of a brand-new file is a different,
+	// test-only contention.
+	setup := openRaw(t, path)
+	if err := setup.Ping(); err != nil {
+		t.Fatalf("create database file: %v", err)
+	}
+	if err := setup.Close(); err != nil {
+		t.Fatalf("close setup handle: %v", err)
+	}
+
+	const openers = 4
+	start := make(chan struct{})
+	errs := make(chan error, openers)
+	for i := 0; i < openers; i++ {
+		go func() {
+			db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer func() { _ = db.Close() }()
+			<-start
+			errs <- migrate(db, ms)
+		}()
+	}
+	close(start)
+	for i := 0; i < openers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent opener returned error: %v", err)
+		}
+	}
+
+	if v := userVersion(t, path); v != 2 {
+		t.Fatalf("user_version = %d, want 2", v)
+	}
+	// The note column must exist exactly once.
+	db := openRaw(t, path)
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`INSERT INTO keys(id,name,secret_hash,created_at,note) VALUES('a','b','c',0,'d')`); err != nil {
+		t.Fatalf("insert using migrated column: %v", err)
+	}
+}
+
+// TestMigrateRefusesForeignDatabase proves that a version-0 SQLite file with
+// no keys table at all (some other application's database handed to
+// --db-path by mistake) is refused rather than adopted, and that the refusal
+// leaves the file byte-for-byte unmodified.
+func TestMigrateRefusesForeignDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "foreignapp.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE invoices (id INTEGER PRIMARY KEY, amount REAL)`); err != nil {
+		t.Fatalf("create foreign table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO invoices(amount) VALUES (12.5)`); err != nil {
+		t.Fatalf("insert foreign row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	before := fileBytes(t, path)
+	_, err = NewSQLite(path)
+	if err == nil {
+		t.Fatal("NewSQLite succeeded on a foreign database, want refusal")
+	}
+	if !strings.Contains(err.Error(), "tables wirefan did not create") {
+		t.Fatalf("error = %q, want foreign-table refusal", err)
+	}
+	if after := fileBytes(t, path); !bytes.Equal(before, after) {
+		t.Fatalf("refused open modified the foreign database file (%d bytes before, %d after)", len(before), len(after))
+	}
+}
+
+// TestMigrateRefusesConstraintlessKeysTable proves the v0.2.0 shape check
+// covers constraints, not just column names: a keys table without the
+// PRIMARY KEY on id would accept duplicate ids and make which row
+// authenticates unspecified, so it must be refused.
+func TestMigrateRefusesConstraintlessKeysTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "noconstraints.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE keys (id TEXT, name TEXT, secret_hash TEXT, created_at INTEGER, revoked_at INTEGER)`); err != nil {
+		t.Fatalf("create constraint-free table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	_, err = NewSQLite(path)
+	if err == nil {
+		t.Fatal("NewSQLite succeeded on a constraint-free keys table, want refusal")
+	}
+	if !strings.Contains(err.Error(), "do not match the wirefan v0.2.0 schema") {
+		t.Fatalf("error = %q, want schema-mismatch refusal", err)
+	}
+}
+
+// TestMigrateRejectsNonContiguousVersions proves the runner refuses a
+// migration list whose versions are not contiguous from 1, so a copied
+// step with an unbumped or skipped version fails loudly instead of
+// silently never running.
+func TestMigrateRejectsNonContiguousVersions(t *testing.T) {
+	noop := func(tx execer) error { return nil }
+	cases := map[string][]migration{
+		"gap":            {{version: 1, name: "a", apply: noop}, {version: 3, name: "b", apply: noop}},
+		"duplicate":      {{version: 1, name: "a", apply: noop}, {version: 2, name: "b", apply: noop}, {version: 2, name: "c", apply: noop}},
+		"starts at zero": {{version: 0, name: "a", apply: noop}},
+	}
+	for name, ms := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "contig.db")
+			db := openRaw(t, path)
+			defer func() { _ = db.Close() }()
+			err := migrate(db, ms)
+			if err == nil {
+				t.Fatal("migrate accepted a non-contiguous migration list")
+			}
+			if !strings.Contains(err.Error(), "contiguous from 1") {
+				t.Fatalf("error = %q, want contiguity refusal", err)
+			}
+		})
 	}
 }
