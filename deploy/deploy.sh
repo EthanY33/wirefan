@@ -14,13 +14,18 @@
 # What it does, in order:
 #   1. verifies the SHA-256 of <new-binary> against <sha256>; refuses to
 #      continue on mismatch
-#   2. stops wirefan
-#   3. saves the currently installed binary to /usr/local/bin/wirefan.prev
+#   2. stages a private copy of the verified binary, so the swap below
+#      operates on a snapshot; this makes it safe to pass
+#      /usr/local/bin/wirefan.prev itself as <new-binary>, which is
+#      exactly what the manual-rollback command in docs/DEPLOY.md does
+#   3. stops wirefan
+#   4. saves the currently installed binary to /usr/local/bin/wirefan.prev
 #      (exactly one previous version is kept, for rollback)
-#   4. installs the new binary at /usr/local/bin/wirefan
-#   5. starts wirefan and polls http://127.0.0.1:8080/v1/health for up to
-#      30s expecting HTTP 200
-#   6. on health-check failure: puts wirefan.prev back, restarts, re-checks,
+#   5. installs the staged binary at /usr/local/bin/wirefan
+#   6. starts wirefan (a failed start falls through to the health check
+#      rather than aborting) and polls http://127.0.0.1:8080/v1/health
+#      for up to 30s expecting HTTP 200
+#   7. on health-check failure: puts wirefan.prev back, restarts, re-checks,
 #      and exits non-zero either way
 #
 # The state dir (/var/lib/wirefan: admin token + SQLite db) is untouched, so
@@ -74,19 +79,31 @@ echo "deploy.sh: checksum OK ($ACTUAL)"
 
 [ -d /run/systemd/system ] || fail "systemd is not running; this script manages the wirefan systemd service"
 
+# --- 2. stage the verified binary -------------------------------------------
+# Copy the verified binary aside BEFORE anything touches $PREV_PATH. Without
+# this, running the documented manual rollback (which passes $PREV_PATH as
+# <new-binary>) would first overwrite the rollback copy with the currently
+# installed bad binary, then reinstall that same bad binary, while reporting
+# success. Staging on the same filesystem as $BIN_PATH keeps the later
+# install a local copy, not a cross-device move.
+STAGED="$(mktemp /usr/local/bin/.wirefan.staged.XXXXXX)" || fail "mktemp failed"
+trap 'rm -f "$STAGED"' EXIT
+cp -f "$NEW_BINARY" "$STAGED"
+
+# Wall-clock deadline: each probe can spend up to 2s in curl plus the 1s
+# sleep, so counting iterations would overshoot the advertised timeout.
 health_check() {
-    local waited=0
-    while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
+    local deadline=$((SECONDS + HEALTH_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         if curl -fsS --max-time 2 "$HEALTH_URL" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
-        waited=$((waited + 1))
     done
     return 1
 }
 
-# --- 2-4. stop, swap, start -------------------------------------------------
+# --- 3-5. stop, swap, start -------------------------------------------------
 
 echo "deploy.sh: stopping wirefan"
 systemctl stop wirefan
@@ -100,13 +117,17 @@ else
     echo "deploy.sh: NOTICE: no existing binary at $BIN_PATH (first deploy); rollback will not be possible"
 fi
 
-install -m 0755 -o root -g root "$NEW_BINARY" "$BIN_PATH"
+install -m 0755 -o root -g root "$STAGED" "$BIN_PATH"
 echo "deploy.sh: installed new binary at $BIN_PATH"
 
 echo "deploy.sh: starting wirefan"
-systemctl start wirefan
+# Not fatal on purpose: a start failure (e.g. exec format error from a
+# wrong-arch binary) must fall through to the health check so the rollback
+# block below runs, instead of set -e exiting with the bad binary installed.
+systemctl start wirefan \
+    || echo "deploy.sh: WARNING: systemctl start failed; falling through to health check + rollback" >&2
 
-# --- 5-6. health check, rollback on failure ---------------------------------
+# --- 6-7. health check, rollback on failure ---------------------------------
 
 if health_check; then
     echo "deploy.sh: health check OK ($HEALTH_URL responded 200 'ok')"
@@ -121,7 +142,9 @@ if [ "$HAD_PREVIOUS" -eq 1 ]; then
     echo "deploy.sh: ROLLING BACK to $PREV_PATH" >&2
     systemctl stop wirefan || true
     install -m 0755 -o root -g root "$PREV_PATH" "$BIN_PATH"
-    systemctl start wirefan
+    # || true so a failed start still reaches the explanatory fail below
+    # instead of exiting silently with systemd's status code.
+    systemctl start wirefan || true
     if health_check; then
         fail "new binary failed its health check; ROLLED BACK to previous binary, which is healthy again"
     else
