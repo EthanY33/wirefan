@@ -20,7 +20,7 @@ var __classPrivateFieldGet = (this && this.__classPrivateFieldGet) || function (
     if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
     return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
 };
-var _WirefanClient_instances, _WirefanClient_url, _WirefanClient_authorize, _WirefanClient_WS, _WirefanClient_reconnect, _WirefanClient_ackTimeoutMs, _WirefanClient_random, _WirefanClient_ws, _WirefanClient_state, _WirefanClient_socketId, _WirefanClient_closed, _WirefanClient_attempt, _WirefanClient_reconnectTimer, _WirefanClient_channels, _WirefanClient_pending, _WirefanClient_listeners, _WirefanClient_connectWaiters, _WirefanClient_emit, _WirefanClient_setState, _WirefanClient_dial, _WirefanClient_onMessage, _WirefanClient_onConnected, _WirefanClient_onEvent, _WirefanClient_onErrorFrame, _WirefanClient_settleOp, _WirefanClient_failPending, _WirefanClient_rejectConnectWaiters, _WirefanClient_onDrop, _WirefanClient_resubscribeAll, _WirefanClient_ensureSubscribed, _WirefanClient_sendSubscribe, _WirefanClient_sendOp;
+var _WirefanClient_instances, _WirefanClient_url, _WirefanClient_authorize, _WirefanClient_WS, _WirefanClient_reconnect, _WirefanClient_ackTimeoutMs, _WirefanClient_random, _WirefanClient_ws, _WirefanClient_state, _WirefanClient_socketId, _WirefanClient_closed, _WirefanClient_attempt, _WirefanClient_reconnectTimer, _WirefanClient_epoch, _WirefanClient_channels, _WirefanClient_pending, _WirefanClient_listeners, _WirefanClient_connectWaiters, _WirefanClient_emit, _WirefanClient_setState, _WirefanClient_dial, _WirefanClient_onMessage, _WirefanClient_onConnected, _WirefanClient_onEvent, _WirefanClient_onErrorFrame, _WirefanClient_settleOp, _WirefanClient_failPending, _WirefanClient_rejectConnectWaiters, _WirefanClient_onDrop, _WirefanClient_resubscribeAll, _WirefanClient_ensureSubscribed, _WirefanClient_sendSubscribe, _WirefanClient_sendOp;
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -112,6 +112,12 @@ export class WirefanClient {
         _WirefanClient_closed.set(this, false);
         _WirefanClient_attempt.set(this, 0);
         _WirefanClient_reconnectTimer.set(this, null);
+        /**
+         * Bumped on every `connected` frame. Async work that spans an await (the
+         * `authorize()` round trip) captures the epoch first and re-checks it after,
+         * so a token minted against one connection can never be sent on a later one.
+         */
+        _WirefanClient_epoch.set(this, 0);
         _WirefanClient_channels.set(this, new Map());
         _WirefanClient_pending.set(this, []);
         _WirefanClient_listeners.set(this, new Map());
@@ -289,7 +295,7 @@ export class WirefanClient {
         __classPrivateFieldGet(this, _WirefanClient_ws, "f").send(JSON.stringify({ type: "publish", channel, data }));
     }
 }
-_WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _WirefanClient_WS = new WeakMap(), _WirefanClient_reconnect = new WeakMap(), _WirefanClient_ackTimeoutMs = new WeakMap(), _WirefanClient_random = new WeakMap(), _WirefanClient_ws = new WeakMap(), _WirefanClient_state = new WeakMap(), _WirefanClient_socketId = new WeakMap(), _WirefanClient_closed = new WeakMap(), _WirefanClient_attempt = new WeakMap(), _WirefanClient_reconnectTimer = new WeakMap(), _WirefanClient_channels = new WeakMap(), _WirefanClient_pending = new WeakMap(), _WirefanClient_listeners = new WeakMap(), _WirefanClient_connectWaiters = new WeakMap(), _WirefanClient_instances = new WeakSet(), _WirefanClient_emit = function _WirefanClient_emit(event, payload) {
+_WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _WirefanClient_WS = new WeakMap(), _WirefanClient_reconnect = new WeakMap(), _WirefanClient_ackTimeoutMs = new WeakMap(), _WirefanClient_random = new WeakMap(), _WirefanClient_ws = new WeakMap(), _WirefanClient_state = new WeakMap(), _WirefanClient_socketId = new WeakMap(), _WirefanClient_closed = new WeakMap(), _WirefanClient_attempt = new WeakMap(), _WirefanClient_reconnectTimer = new WeakMap(), _WirefanClient_epoch = new WeakMap(), _WirefanClient_channels = new WeakMap(), _WirefanClient_pending = new WeakMap(), _WirefanClient_listeners = new WeakMap(), _WirefanClient_connectWaiters = new WeakMap(), _WirefanClient_instances = new WeakSet(), _WirefanClient_emit = function _WirefanClient_emit(event, payload) {
     const set = __classPrivateFieldGet(this, _WirefanClient_listeners, "f").get(event);
     if (!set)
         return;
@@ -371,6 +377,7 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
             return;
     }
 }, _WirefanClient_onConnected = function _WirefanClient_onConnected(frame) {
+    __classPrivateFieldSet(this, _WirefanClient_epoch, __classPrivateFieldGet(this, _WirefanClient_epoch, "f") + 1, "f");
     __classPrivateFieldSet(this, _WirefanClient_socketId, frame.socket_id, "f");
     const reconnected = __classPrivateFieldGet(this, _WirefanClient_attempt, "f") > 0;
     __classPrivateFieldSet(this, _WirefanClient_attempt, 0, "f");
@@ -455,8 +462,14 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
         ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
     __classPrivateFieldSet(this, _WirefanClient_socketId, null, "f");
     __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_failPending).call(this, new ConnectionClosedError("connection dropped", code, reason));
-    for (const rec of __classPrivateFieldGet(this, _WirefanClient_channels, "f").values())
+    // Reset per-connection subscription state. Clearing `inflight` matters:
+    // a subscribe attempt stuck awaiting authorize() when the drop hit is now
+    // stale (its token targets the dead socket), and the post-reconnect
+    // resubscribe must start a fresh attempt, not adopt the old one.
+    for (const rec of __classPrivateFieldGet(this, _WirefanClient_channels, "f").values()) {
         rec.confirmed = false;
+        rec.inflight = null;
+    }
     const canRetry = __classPrivateFieldGet(this, _WirefanClient_reconnect, "f") !== false && __classPrivateFieldGet(this, _WirefanClient_attempt, "f") + 1 <= __classPrivateFieldGet(this, _WirefanClient_reconnect, "f").maxAttempts;
     __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "disconnected", { willReconnect: canRetry, ...(code !== undefined ? { code } : {}), ...(reason ? { reason } : {}) });
     if (!canRetry) {
@@ -517,11 +530,14 @@ async function _WirefanClient_resubscribeAll() {
     if (rec.confirmed)
         return Promise.resolve();
     if (!rec.inflight) {
-        rec.inflight = __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_sendSubscribe).call(this, channel).finally(() => {
+        const attempt = __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_sendSubscribe).call(this, channel).finally(() => {
+            // Only clear our own attempt: #onDrop may already have nulled the
+            // slot and a post-reconnect resubscribe may have installed a new one.
             const cur = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel);
-            if (cur)
+            if (cur && cur.inflight === attempt)
                 cur.inflight = null;
         });
+        rec.inflight = attempt;
     }
     return rec.inflight;
 }, _WirefanClient_sendSubscribe = async function _WirefanClient_sendSubscribe(channel) {
@@ -533,9 +549,14 @@ async function _WirefanClient_resubscribeAll() {
         const socketId = __classPrivateFieldGet(this, _WirefanClient_socketId, "f");
         if (!socketId)
             throw new ConnectionClosedError("not connected");
+        const epoch = __classPrivateFieldGet(this, _WirefanClient_epoch, "f");
         // Re-fetched every time: tokens are single-use and socket-bound.
         frame.token = await __classPrivateFieldGet(this, _WirefanClient_authorize, "f")({ socketId, channel });
-        if (__classPrivateFieldGet(this, _WirefanClient_state, "f") !== "connected") {
+        // The authorize() round trip can span a drop, or a drop AND a
+        // reconnect. Checking #state alone is not enough (after a reconnect
+        // the state is "connected" again on a different socket), so require
+        // the same connection epoch, or the token targets a dead socket_id.
+        if (__classPrivateFieldGet(this, _WirefanClient_state, "f") !== "connected" || __classPrivateFieldGet(this, _WirefanClient_epoch, "f") !== epoch) {
             throw new ConnectionClosedError("connection dropped while authorizing");
         }
     }
