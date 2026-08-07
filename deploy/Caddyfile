@@ -1,8 +1,9 @@
 # deploy/Caddyfile
 # Caddy reverse proxy fronting wirefan with auto-Let's Encrypt TLS.
-# Replace wirefan.ethanyucetepe.dev with your actual hostname.
+# wirefan.example.com is a placeholder: deploy/provision.sh substitutes the
+# real hostname (--domain) when it installs this to /etc/caddy/Caddyfile.
 
-wirefan.ethanyucetepe.dev {
+wirefan.example.com {
     encode gzip
 
     # Forward the client IP for wirefan's per-IP connection cap. wirefan only
