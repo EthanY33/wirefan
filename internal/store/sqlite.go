@@ -13,16 +13,6 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-const sqliteSchema = `
-CREATE TABLE IF NOT EXISTS keys (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    secret_hash TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    revoked_at INTEGER
-);
-`
-
 type sqliteStore struct{ db *sql.DB }
 
 // validateDBPath rejects values that would let a misconfigured operator
@@ -50,9 +40,9 @@ func NewSQLite(path string) (Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(sqliteSchema); err != nil {
+	if err := migrate(db, migrations); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	return &sqliteStore{db: db}, nil
 }
