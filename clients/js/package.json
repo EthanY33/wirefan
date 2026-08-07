@@ -1,0 +1,44 @@
+{
+  "name": "@wirefan/client",
+  "version": "0.1.0",
+  "description": "JavaScript/TypeScript client for the wirefan WebSocket fan-out server. Zero runtime dependencies, automatic reconnect with resubscription.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EthanY33/wirefan.git",
+    "directory": "clients/js"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "vendor:web": "npm run build && node scripts/vendor-web.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "websocket",
+    "pubsub",
+    "fanout",
+    "wirefan"
+  ]
+}
