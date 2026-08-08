@@ -354,11 +354,15 @@ The series the binary exports (source of truth:
 - `wirefan_auth_failures_total` (counter): failed subscribe-token checks
   on `private-`/`presence-` channels.
 
-One caveat: `wirefan_channels_total` is registered but never incremented
-(the source comment in `internal/metrics/prom.go` says why), so it reads
-0 forever; do not graph or alert on it. For a live channel count,
-subscribe to the read-only `_wirefan-stats` channel, which publishes a
-`channels` figure taken directly from the registry every 5 seconds.
+`wirefan_channels_total` (gauge) is evaluated at scrape time from the live
+registry rather than incremented on subscribe, so it cannot drift as
+channels are created lazily and reaped by the sweep loop. It counts the
+`_wirefan-stats` system channel too, so a server with no client channels
+open reads 1 once anything has subscribed to stats.
+
+The read-only `_wirefan-stats` channel publishes the same figures over
+WebSocket every 5 seconds, drawn from these same collectors, so the stats
+channel and this endpoint cannot disagree.
 
 For external scraping, do not open 6060 to the internet. Either run
 Prometheus/Grafana Agent on the VPS itself, or put the scraper and the VPS
