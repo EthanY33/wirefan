@@ -77,9 +77,16 @@ VPS:
 wirefan.example.com  A  <public-ip>
 ```
 
-If your DNS provider is Cloudflare: set the record to **DNS only (gray
-cloud)**. Orange-cloud proxying intercepts the TLS handshake Caddy needs
-for its ACME challenge and complicates WebSockets.
+If your DNS provider is Cloudflare, you have a choice here:
+
+- **DNS only (gray cloud)** keeps the direct-to-origin setup this runbook
+  documents. Caddy does its ACME challenge and clients connect straight to
+  the VPS. This is the simpler default; the rest of the runbook assumes it.
+- **Proxied (orange cloud)** puts Cloudflare's network in front of the
+  origin: DDoS absorption, WAF, and the origin IP hidden from the public
+  DNS answer. This changes TLS, the firewall, and one wirefan setting that
+  causes an outage if missed. Do NOT just flip the cloud orange; follow
+  **Appendix C** instead.
 
 Verify before proceeding (Caddy cannot get a certificate until this
 resolves):
@@ -114,6 +121,10 @@ sudo ufw allow 443/tcp
 sudo ufw enable
 sudo ufw status
 ```
+
+(If you are going Cloudflare-proxied per Appendix C, these open-world 80
+and 443 rules get replaced in C.3; set them up as above first so the
+initial provisioning in step 5 works, then tighten.)
 
 ---
 
@@ -414,6 +425,153 @@ Cloudflare Tunnel works: run `cloudflared` pointing
 `--allowed-origins=https://wirefan.example.com`, and skip Caddy entirely
 (Cloudflare terminates TLS at its edge). Tradeoffs: availability tracks
 the home machine, and Cloudflare sees decrypted traffic.
+
+## Appendix C: Cloudflare proxy in front (orange cloud)
+
+The runbook's default is direct-to-origin: gray-cloud DNS, Caddy fetching
+its own Let's Encrypt certificate, clients connecting straight to the VPS.
+That stays the recommended simple path. This appendix is the alternative:
+the DNS record set to **Proxied (orange cloud)**, so every client
+connection passes through Cloudflare's network first. What you gain: DDoS
+absorption at Cloudflare's edge, the WAF, and an origin IP that no longer
+appears in public DNS. What changes: three things below, in order of how
+badly they hurt when missed. Cloudflare sees decrypted traffic in this
+topology (it terminates TLS at its edge before re-encrypting to the
+origin); if that is unacceptable, stay on the direct path.
+
+### C.1 Trusted proxies (skip this and you get an outage)
+
+With the orange cloud on, **every** TCP connection reaching the origin
+comes from a Cloudflare edge address, not from the client. wirefan caps
+concurrent connections per client IP (`WIREFAN_IP_CAP`, default 200), and
+it attributes a connection to the `X-Forwarded-For` client IP **only**
+when the directly connected peer is listed in `WIREFAN_TRUSTED_PROXIES`.
+The provision script sets that variable to `127.0.0.1` because Caddy
+proxies from loopback; Caddy in turn forwards the address of whoever
+connected to it, which is now a Cloudflare edge, and Caddy is not
+configured to trust Cloudflare's forwarding. The net effect: all of your
+users collapse into a handful of Cloudflare IPs, the per-IP cap fills up,
+and connection 201 is refused no matter who it is. Traffic ramps, then
+legitimate users start getting rejected, and nothing in the wirefan logs
+says "Cloudflare" anywhere.
+
+The fix is to trust the Cloudflare ranges in **both** layers:
+
+1. In `/etc/wirefan/env`, extend `WIREFAN_TRUSTED_PROXIES` to include
+   Cloudflare's published IPv4 and IPv6 ranges alongside `127.0.0.1`
+   (comma-separated CIDRs).
+2. In the Caddyfile, add the same ranges as `trusted_proxies` so Caddy
+   preserves the client IP Cloudflare puts in `X-Forwarded-For` instead
+   of replacing it with the edge address.
+
+The ranges themselves are published at <https://www.cloudflare.com/ips/>
+(machine-readable at `https://www.cloudflare.com/ips-v4/` and
+`https://www.cloudflare.com/ips-v6/`). They are deliberately not
+reproduced here: a hardcoded copy in a runbook rots, and a stale list
+silently reintroduces the exact failure described above for whatever
+slice of traffic arrives via a newer range. Fetch them at setup time:
+
+```bash
+CF_V4=$(curl -fsS https://www.cloudflare.com/ips-v4/ | paste -sd, -)
+CF_V6=$(curl -fsS https://www.cloudflare.com/ips-v6/ | paste -sd, -)
+echo "WIREFAN_TRUSTED_PROXIES=127.0.0.1,${CF_V4},${CF_V6}"
+# paste the output line into /etc/wirefan/env, then:
+sudo systemctl restart wirefan
+```
+
+**The list must be refreshed.** Cloudflare changes it rarely but does
+change it. Re-run the fetch on a schedule (a monthly cron that regenerates
+the line and restarts wirefan is enough) or whenever Cloudflare announces
+a range change. Note the footgun in `.env.example`: malformed entries are
+silently dropped, so smoke-test after every edit by connecting and
+checking that `wirefan_upgrade_rejected_total{reason=...}` is not climbing
+with real traffic.
+
+### C.2 TLS: origin certificate, Full (Strict), no ACME
+
+Once the proxy is on, HTTP-01 ACME on the origin gets awkward: the
+challenge traffic arrives through Cloudflare, and certificate renewal now
+depends on the proxy behaving. The clean answer is to stop doing ACME on
+the origin entirely and use a **Cloudflare Origin Certificate**: free,
+issued in the dashboard (SSL/TLS, then Origin Server), valid for up to 15
+years, and trusted by Cloudflare's edge (only by Cloudflare, which is fine
+because Cloudflare is now the only thing connecting to 443).
+
+Set the zone's SSL/TLS mode to **Full (Strict)**: Cloudflare connects to
+the origin over TLS and validates the certificate.
+
+**Do not use Flexible mode.** Flexible makes Cloudflare talk plain HTTP
+to the origin: the browser sees HTTPS but the Cloudflare-to-origin leg is
+cleartext across the public internet, which defeats the point, and the
+origin receives `http://` traffic on a listener expecting TLS, which
+breaks `wss://` upgrades. If clients can reach the site over HTTPS but
+WebSocket connections fail or the origin sees plaintext on 443, check the
+SSL/TLS mode first.
+
+Install the origin certificate and key on the server, then switch Caddy
+from ACME to serving the provided pair. Replace the site block that
+`provision.sh` wrote in `/etc/caddy/Caddyfile` with:
+
+```caddyfile
+wirefan.example.com {
+    tls /etc/caddy/cf-origin.pem /etc/caddy/cf-origin.key
+    reverse_proxy 127.0.0.1:8080 {
+        trusted_proxies <cloudflare-ranges>   # the CIDRs fetched in C.1, space-separated
+    }
+}
+```
+
+The `tls <cert> <key>` line is the whole change from the ACME setup: with
+it present, Caddy serves that certificate instead of requesting one. Keep
+the key file root-owned and tight (`chmod 0600`), and reload with
+`sudo systemctl reload caddy`. Remember that re-running `provision.sh`
+rewrites the Caddyfile, so re-apply this block (the previous version is
+saved as a `.bak`).
+
+### C.3 Firewall: 443 accepts only Cloudflare
+
+Hiding the origin IP from DNS is cosmetic on its own: the IP leaks through
+old DNS history, certificate transparency logs, or plain scanning, and an
+attacker who finds it can bypass Cloudflare entirely and hit the origin
+direct. Origin hiding becomes real when the host firewall refuses 443 from
+anywhere that is not Cloudflare:
+
+```bash
+# remove the open-to-the-world rules from step 3
+sudo ufw delete allow 80/tcp
+sudo ufw delete allow 443/tcp
+
+# allow 443 only from Cloudflare's published ranges
+for r in $(curl -fsS https://www.cloudflare.com/ips-v4/) \
+         $(curl -fsS https://www.cloudflare.com/ips-v6/); do
+    sudo ufw allow proto tcp from "$r" to any port 443
+done
+sudo ufw status numbered
+```
+
+Port 80 can stay closed: it existed for the HTTP-01 challenge, and C.2
+removed ACME. Port 22 stays open as before (or restrict it to your own
+IP, which is unrelated to Cloudflare). Mirror the same restriction in the
+provider firewall if it supports source ranges.
+
+The maintenance cost is the same as C.1, doubled: the ufw rules pin
+today's Cloudflare ranges, and when Cloudflare adds a range, traffic from
+it is dropped at the firewall before wirefan ever sees it. Refresh the
+rules on the same schedule as the env variable, and treat "some users
+suddenly cannot connect at all" as a prompt to diff the live list at
+<https://www.cloudflare.com/ips/> against `ufw status`.
+
+### C.4 Why WebSockets survive the proxy
+
+Cloudflare proxies WebSocket connections but reaps ones that sit idle at
+its edge; Cloudflare documents the proxy idle timeout as being on the
+order of 100 seconds. wirefan never lets a connection go idle that long:
+`internal/conn/conn.go` sets `pingInterval` to 30 seconds, so the server
+pings every open connection well inside any such window and the proxy
+always sees recent traffic. No Cloudflare timeout tuning, keepalive
+configuration, or client-side heartbeat is needed. If you ever change
+`pingInterval`, keep it comfortably under Cloudflare's idle timeout or
+proxied connections will start dying quietly during quiet periods.
 
 ---
 
