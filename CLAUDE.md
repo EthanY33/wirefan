@@ -55,17 +55,15 @@ See `ARCHITECTURE.md` for the full tour. Quick pointers:
 - **Per-subscriber FIFO only** — `hub.Broadcast` snapshots subscribers under `RLock` then sends concurrently; ordering is preserved per-conn by the buffered send chan. Per-channel total ordering is **not** a protocol guarantee (the per-channel broadcast mutex was removed in 22fd26d to kill head-of-line blocking on slow subscribers — see `internal/hub/channel.go: Broadcast`).
 - **Goroutine-leak invariant** is proven by `internal/server/leak_test.go`. Do not regress; if a new feature spawns goroutines, add to that test.
 
-## Active hardening backlog
+## Hardening backlog (closed, kept as a record)
 
-Deferred follow-ups from per-task code reviews are tracked in the ethan-memory Obsidian vault at:
+Plan-faithful follow-ups from the Task 1-7 code reviews were tracked in the ethan-memory Obsidian vault at:
 
 ```
 <vault>/projects/wirefan/project_hardening_backlog.md
 ```
 
-Junctioned from `~/.claude/projects/C--Users-ethan-Desktop-Projects-wirefan/memory/` so it auto-loads when a session starts in this repo.
-
-Consult the file for the current list before starting new work to avoid duplicating fixes. (Earlier examples named here, `SecretHash` exposure in `GET /v1/keys` and `X-Forwarded-For` handling for the per-IP cap, are both fixed; do not re-fix them.)
+Junctioned from `~/.claude/projects/C--Users-ethan-Desktop-Projects-wirefan/memory/` so it auto-loads when a session starts in this repo. **Status: closed 2026-05-11 in commit `b8137fd`** — every item landed. Consult it before touching REST/HTTP/conn code so you don't re-litigate a decision already made (e.g. `SecretHash` omitted from `GET /v1/keys`, `X-Forwarded-For` trust boundary, the slow-consumer close-ordering tradeoff) rather than treating it as an open list.
 
 ## Deferred (do not implement without reopening design)
 
@@ -87,9 +85,9 @@ Consult the file for the current list before starting new work to avoid duplicat
 
 ## Commit conventions
 
-- Conventional Commit prefixes: `feat`, `fix`, `docs`, `test`, `chore`, `refactor`
-- One commit per task per the implementation plan
-- **No `Co-Authored-By` trailers** — none of the existing commits have them; preserve the pattern.
+- Conventional Commits, no AI attribution — per global instructions (`~/.claude/CLAUDE.md`).
+- One commit per task per the implementation plan.
+- No existing commit has a `Co-Authored-By` trailer; preserve that pattern.
 
 ## Doc map
 
