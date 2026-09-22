@@ -30,6 +30,9 @@ Thumbs.db
 *.db-shm
 .env
 .env.local
+# Admin tokens copied out of a state dir (deploy/README.md's docker cp
+# smoke test writes ./admin.token)
+*.token
 # Runtime state directory (admin token, sqlite db, etc, written at boot).
 # The default is ./var relative to the working directory, so running from
 # the repo root creates /var and running from cmd/wirefan creates its own.
