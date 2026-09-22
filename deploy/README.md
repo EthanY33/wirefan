@@ -20,7 +20,7 @@ sudo ./provision.sh --domain wirefan.example.com --binary ./wirefan_linux_amd64
 | `provision.sh` | Idempotent fresh-box setup: service user, state dir (0700), env file, Caddy install, unit + Caddyfile with your domain substituted, enable + start |
 | `deploy.sh` | Upgrade: SHA-256-verify a new binary, stop, swap, start, health-check `/v1/health`, auto-rollback to the kept previous binary on failure |
 | `wirefan.service` | systemd unit with hardening flags; runs `/usr/local/bin/wirefan` as the `wirefan` user |
-| `Caddyfile` | Reverse proxy with auto-Let's Encrypt TLS, WS-friendly buffering, X-Forwarded-For passthrough |
+| `Caddyfile` | Reverse proxy to `127.0.0.1:8080` with auto-Let's Encrypt TLS and WS-friendly flushing. Leaves `X-Forwarded-For` to Caddy's defaults: a client-sent value is discarded and replaced with the client address, which wirefan reads because `WIREFAN_TRUSTED_PROXIES=127.0.0.1`. Behind Cloudflare, see `docs/DEPLOY.md` Appendix C |
 | `.env.example` | Template for `/etc/wirefan/env` (sourced by systemd); documents `WIREFAN_TRUSTED_PROXIES` and friends |
 | `Dockerfile` | Optional container path: multi-stage build, Debian Bookworm builder + distroless runtime, cgo-enabled for sqlite3. Also used by the benchmark harness (`make bench-image`) |
 
