@@ -610,6 +610,37 @@ describe("resubscribe failures", () => {
     c.close();
   });
 
+  it("a handle whose channel was refused stays inactive and cannot tear down a later subscription", async () => {
+    const h = new FakeWSHarness();
+    let seen = 0;
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        // Only the resubscribe on the second connection is refused.
+        respond: (f) =>
+          i === 1 && f.type === "subscribe" && ++seen === 1
+            ? { type: "error", code: "LIMIT_CHANNELS", message: "no", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const c = makeClient(h);
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    await c.connect();
+    const refused = await c.subscribe("demo", () => {});
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => errors.length === 1, "resubscribe refusal");
+    expect(refused.active).toBe(false);
+
+    // The channel is subscribed again by a later call without a handler.
+    const later = await c.subscribe("demo");
+    expect(later.active).toBe(true);
+    expect(refused.active).toBe(false);
+
+    await refused.unsubscribe();
+    expect(later.active).toBe(true);
+    expect(h.sockets[1]!.sentFrames().filter((f) => f.type === "unsubscribe")).toEqual([]);
+    c.close();
+  });
+
   it("neither re-sends an unsubscribe nor reports the channel restored when the caller unsubscribes mid-resubscribe", async () => {
     const h = new FakeWSHarness();
     // The second connection answers nothing on its own; the test does.
