@@ -139,8 +139,7 @@ func (c *Conn) handleSubscribe(msg incoming) {
 		c.sendOpError(msg, "RESERVED_CHANNEL", "channel name reserved for server use")
 		return
 	}
-	if !c.rateLimit.Allow(c.apiKeyID) {
-		c.sendOpError(msg, "RATE_LIMITED", "too many control ops")
+	if !c.allowControl(msg) {
 		return
 	}
 	// A channel this conn already holds is acked before the token check: a
@@ -211,12 +210,14 @@ func (c *Conn) handlePublish(ctx context.Context, msg incoming) {
 		c.sendOpError(msg, "NOT_SUBSCRIBED", "must subscribe before publish")
 		return
 	}
-	if !c.rateLimit.Allow(c.apiKeyID) {
-		c.sendOpError(msg, "RATE_LIMITED", "too many publishes for this API key")
-		return
-	}
+	// Per-conn bucket first: a publish this socket's own limit rejects must
+	// not also spend the per-key budget every other conn on the key shares.
 	if !c.connRate.Allow() {
 		c.sendOpError(msg, "RATE_LIMITED_CONN", "too many publishes on this connection")
+		return
+	}
+	if !c.rateLimit.Allow(c.apiKeyID) {
+		c.sendOpError(msg, "RATE_LIMITED", "too many publishes for this API key")
 		return
 	}
 	id := ulid.Make().String()
@@ -232,9 +233,24 @@ func (c *Conn) handlePublish(ctx context.Context, msg incoming) {
 	metrics.Latency.Observe(time.Since(start).Seconds())
 }
 
-func (c *Conn) handleUnsubscribe(msg incoming) {
+// allowControl charges a subscribe or unsubscribe to the per-conn control
+// bucket and then the shared per-key bucket, answering msg with the matching
+// error when either is empty. The per-conn check comes first so one socket
+// spamming control frames exhausts only its own budget, never the key's.
+func (c *Conn) allowControl(msg incoming) bool {
+	if !c.controlRate.Allow() {
+		c.sendOpError(msg, "RATE_LIMITED_CONN", "too many control ops on this connection")
+		return false
+	}
 	if !c.rateLimit.Allow(c.apiKeyID) {
 		c.sendOpError(msg, "RATE_LIMITED", "too many control ops")
+		return false
+	}
+	return true
+}
+
+func (c *Conn) handleUnsubscribe(msg incoming) {
+	if !c.allowControl(msg) {
 		return
 	}
 	c.subsMu.Lock()
