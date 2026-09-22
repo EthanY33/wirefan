@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -28,8 +31,9 @@ import (
 // rolls back the schema change and the version bump together.
 //
 // Refusals are read-only: NewSQLite inspects an existing file over a
-// query-only preflight connection before the writable WAL handle is opened,
-// so a refused file is left byte-for-byte unmodified.
+// read-only (mode=ro) preflight connection before the writable WAL handle
+// is opened, so a refused file, and its -wal if it has one, is left
+// byte-for-byte unmodified, and a cleanly closed one gains no -wal or -shm.
 
 // execer is the statement surface a migration step gets: the
 // transaction-scoped connection that applyMigration drives with
@@ -110,11 +114,31 @@ func validateMigrations(ms []migration) error {
 	return nil
 }
 
-// preflight inspects an existing database file over a query-only connection
+// preflight inspects an existing database file over a read-only connection
 // before the writable handle is opened. The writable DSN converts the file
 // to WAL journaling as a side effect of merely opening it, which would
 // rewrite header bytes even when migrate then refuses; the refusal paths
 // must leave a file wirefan does not own untouched.
+//
+// The connection is opened with mode=ro rather than _query_only.
+// query_only only blocks SQL writes: the handle is still read-write at the
+// file level, so when it closes as the last connection to a WAL database it
+// checkpoints the -wal into the main file and deletes the -wal. A read-only
+// handle reads the WAL (so tables committed only there are still seen) but
+// cannot checkpoint it.
+//
+// A read-only handle to a WAL database still creates a missing -wal and
+// -shm, and cannot delete them on close. A WAL database closed cleanly has
+// no -wal on disk (the usual state), so for that case the connection also
+// sets immutable=1, which reads the main file directly with no WAL, no -shm
+// and no locks. That is sound because a WAL-mode file changes only through
+// a checkpoint, which needs a -wal; a writer would have to open, commit
+// and checkpoint within preflight's few reads to race it. When a -wal
+// exists, plain mode=ro is kept so commits that live only in it are still
+// seen; SQLite may then create a -shm, which holds no database content. A
+// rollback-journal file never gets immutable=1: a committing writer
+// rewrites it in place and it can carry a hot journal, both of which
+// immutable=1 would ignore, and mode=ro creates no files for it anyway.
 func preflight(path string, ms []migration) error {
 	fi, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -126,13 +150,65 @@ func preflight(path string, ms []migration) error {
 	if fi.Size() == 0 {
 		return nil // zero-byte file; SQLite treats it as an empty database
 	}
-	db, err := sql.Open("sqlite3", path+"?_query_only=true&_busy_timeout=5000")
+	immutable, err := isCleanWALDatabase(path)
+	if err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite3", readOnlyDSN(path, immutable))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 	_, err = checkDatabase(db, ms)
 	return err
+}
+
+// isCleanWALDatabase reports whether path is in WAL mode (header bytes 18
+// and 19, the file format write and read versions, are both 2) and has no
+// -wal beside it, the state its last connection leaves on a clean close.
+// A file too short to hold the header is reported as not WAL, leaving the
+// verdict to SQLite.
+func isCleanWALDatabase(path string) (bool, error) {
+	if _, err := os.Stat(path + "-wal"); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return false, err
+	}
+	return hdr[18] == 2 && hdr[19] == 2, nil
+}
+
+// readOnlyDSN builds the preflight DSN for path, adding immutable=1 when
+// immutable is set. mode=ro is a SQLite URI parameter, and go-sqlite3
+// passes a DSN through as a URI only when it starts with "file:" (for any
+// other DSN it strips the query before SQLite sees it), so the path has to
+// travel as a file: URI. It is percent-escaped so characters with URI
+// meaning (%, plus the ? and # that validateDBPath already rejects) stay
+// part of the filename instead of being decoded or starting a query. A
+// Windows drive path gets a leading slash (file:///C:/...), the form
+// SQLite's Windows VFS expects. The NUL/CR/LF guards stay in
+// validateDBPath, which NewSQLite runs first.
+func readOnlyDSN(path string, immutable bool) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	q := "?mode=ro&_busy_timeout=5000"
+	if immutable {
+		q = "?mode=ro&immutable=1&_busy_timeout=5000"
+	}
+	return "file://" + (&url.URL{Path: p}).EscapedPath() + q
 }
 
 // migrate brings db up to the newest version in ms, refusing databases from
@@ -160,10 +236,22 @@ func migrate(db *sql.DB, ms []migration) error {
 // checkDatabase reads the schema version and refuses databases wirefan
 // cannot own: future versions, and version-0 files that are neither empty
 // nor a v0.2.0 key store. It only reads, so preflight can run it over a
-// query-only connection.
+// read-only connection.
+//
+// Every read runs on one connection inside one read transaction, so the
+// version and the table list come from the same snapshot. As separate
+// statements on the pool they could straddle a concurrent opener's
+// migration and pair a stale version 0 with the migrated tables, refusing
+// a database wirefan itself just migrated.
 func checkDatabase(db *sql.DB, ms []migration) (int, error) {
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var current int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&current); err != nil {
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&current); err != nil {
 		return 0, fmt.Errorf("read schema version: %w", err)
 	}
 	latest := 0
@@ -174,7 +262,7 @@ func checkDatabase(db *sql.DB, ms []migration) (int, error) {
 		return 0, fmt.Errorf("database schema version %d is newer than this binary supports (max %d); refusing to open; upgrade wirefan instead of downgrading the database", current, latest)
 	}
 	if current == 0 {
-		if err := checkPreVersioningDatabase(db); err != nil {
+		if err := checkPreVersioningDatabase(tx); err != nil {
 			return 0, err
 		}
 	}
@@ -249,9 +337,10 @@ func (c connTx) Exec(query string, args ...any) (sql.Result, error) {
 // "keys" is validated against the v0.2.0 shape. Any other table means the
 // file belongs to some other application: running migrations over it would
 // write wirefan's table into a foreign database and clobber its
-// user_version, so refuse.
-func checkPreVersioningDatabase(db *sql.DB) error {
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+// user_version, so refuse. It reads through checkDatabase's transaction so
+// the table list comes from the same snapshot as the version.
+func checkPreVersioningDatabase(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
 		return fmt.Errorf("inspect pre-versioning database: %w", err)
 	}
@@ -273,7 +362,7 @@ func checkPreVersioningDatabase(db *sql.DB) error {
 	case len(tables) == 0:
 		return nil // genuinely empty database
 	case len(tables) == 1 && tables[0] == "keys":
-		return checkV020KeysTable(db)
+		return checkV020KeysTable(tx)
 	default:
 		return fmt.Errorf("database has schema version 0 but contains tables wirefan did not create (%s); refusing to migrate a database that belongs to another application", strings.Join(tables, ", "))
 	}
@@ -281,8 +370,8 @@ func checkPreVersioningDatabase(db *sql.DB) error {
 
 // checkV020KeysTable compares the keys table's columns, NOT NULL flags, and
 // primary key against the exact v0.2.0 shape; anything else is refused.
-func checkV020KeysTable(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(keys)`)
+func checkV020KeysTable(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA table_info(keys)`)
 	if err != nil {
 		return fmt.Errorf("inspect keys table: %w", err)
 	}

@@ -1,4 +1,4 @@
-// Package metrics defines wirefan's Prometheus collectors and the OTel hook.
+// Package metrics defines wirefan's Prometheus collectors.
 //
 // All collectors are package-level singletons so call sites can emit values
 // without plumbing a registry through every constructor. Register() must be
@@ -23,7 +23,7 @@ import (
 // source, which is the honest answer for a process that has no registry yet.
 var channelSource atomic.Pointer[func() int]
 
-// SetChannelSource installs the callback backing wirefan_channels_total and
+// SetChannelSource installs the callback backing wirefan_channels and
 // the "channels" key in SnapshotBasic. Safe to call before or after
 // Register: the gauge reads it at scrape time, not at registration.
 func SetChannelSource(fn func() int) {
@@ -42,16 +42,37 @@ func channelCount() float64 {
 	return 0
 }
 
+// Exposition names are frozen at 1.0. Only counters carry the _total
+// suffix: the two gauges were named wirefan_connections_total and
+// wirefan_channels_total before 1.0, which reads as a counter to PromQL and
+// makes rate() over them look meaningful. The Go identifiers and the
+// _wirefan-stats keys did not change with the rename.
 var (
-	Connections = prometheus.NewGauge(prometheus.GaugeOpts{Name: "wirefan_connections_total"})
-	Published   = prometheus.NewCounter(prometheus.CounterOpts{Name: "wirefan_messages_published_total"})
-	Dropped   = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "wirefan_messages_dropped_total"}, []string{"reason"})
-	Latency   = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Connections = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "wirefan_connections",
+		Help: "Open WebSocket connections.",
+	})
+	Published = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "wirefan_messages_published_total",
+		Help: "Client publishes accepted for fanout.",
+	})
+	Dropped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "wirefan_messages_dropped_total",
+		Help: "Messages not delivered to a subscriber, by reason (slow_consumer: its send buffer was full).",
+	}, []string{"reason"})
+	Latency = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "wirefan_broadcast_latency_seconds",
+		Help:    "Seconds spent handing one publish to the fanout; with --fanout=sharded this covers enqueueing only, not delivery.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 2, 16),
 	})
-	UpgradeRej = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "wirefan_upgrade_rejected_total"}, []string{"reason"})
-	AuthFails  = prometheus.NewCounter(prometheus.CounterOpts{Name: "wirefan_auth_failures_total"})
+	UpgradeRej = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "wirefan_upgrade_rejected_total",
+		Help: "WebSocket upgrade requests refused before the handshake, by reason (bad_key, phantom_cap).",
+	}, []string{"reason"})
+	AuthFails = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "wirefan_auth_failures_total",
+		Help: "Failed subscribe-token checks on private- and presence- channels.",
+	})
 )
 
 // readValue extracts the current value from a gauge or counter collector by
@@ -116,7 +137,10 @@ func Register() {
 func realRegister() {
 	prometheus.MustRegister(
 		prometheus.NewGaugeFunc(
-			prometheus.GaugeOpts{Name: "wirefan_channels_total"},
+			prometheus.GaugeOpts{
+				Name: "wirefan_channels",
+				Help: "Channels in the registry, read at scrape time; includes the _wirefan-stats system channel.",
+			},
 			channelCount,
 		),
 	)

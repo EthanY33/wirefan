@@ -61,16 +61,35 @@ func (r *shardedReg) Delete(name string) {
 	delete(s.chans, name)
 }
 
+func (r *shardedReg) CompareAndDelete(name string, c *Channel) bool {
+	s := r.shardFor(name)
+	s.Lock()
+	defer s.Unlock()
+	if cur, ok := s.chans[name]; !ok || cur != c {
+		return false
+	}
+	delete(s.chans, name)
+	return true
+}
+
+// Range copies each shard's channels out under its read lock and calls fn
+// after releasing it, so fn can take the shard's write lock (Sweep calls
+// CompareAndDelete from inside fn). Like sync.Map's Range, the visit is not
+// a consistent snapshot of the whole registry.
 func (r *shardedReg) Range(fn func(*Channel) bool) {
+	var buf []*Channel
 	for _, s := range r.shards {
 		s.RLock()
+		buf = buf[:0]
 		for _, c := range s.chans {
+			buf = append(buf, c)
+		}
+		s.RUnlock()
+		for _, c := range buf {
 			if !fn(c) {
-				s.RUnlock()
 				return
 			}
 		}
-		s.RUnlock()
 	}
 }
 
