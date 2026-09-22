@@ -315,13 +315,14 @@ func (c *Conn) sendErrorFrame(f errorFrame) {
 // backpressure Policy. On ErrSlowConsumer, signals Run to close the conn with
 // 1008 (PolicyViolation).
 //
-// sendMu is required: PolicyDropOldest performs a non-atomic (default-send /
-// drain / send) sequence on c.send. Two concurrent Send calls without this
-// lock can both hit the drain branch, drain one message each, then both block
-// on the unbuffered second send — head-of-line stalls under multi-channel
-// fanout. PolicyDisconnect tolerates concurrency on its own (the send /
-// default pair is atomic per goroutine), but the lock also costs nothing
-// in the common path so we hold it unconditionally.
+// sendMu serializes PolicyDropOldest's non-atomic (try-send / evict /
+// try-send) sequence on c.send, so concurrent multi-channel broadcasts each
+// evict at most the one message their own insert needs. Every step of that
+// sequence is non-blocking, so holding the lock can never stall a
+// broadcaster behind a stuck or exited writePump. PolicyDisconnect tolerates
+// concurrency on its own (the send / default pair is atomic per goroutine),
+// but the lock also costs nothing in the common path so we hold it
+// unconditionally.
 func (c *Conn) Send(b []byte) error {
 	if c.closed.Load() {
 		return ErrSlowConsumer

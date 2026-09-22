@@ -24,18 +24,28 @@ func (PolicyDisconnect) Apply(send chan []byte, msg []byte, onSent func()) error
 }
 
 // PolicyDropOldest evicts the oldest queued message and enqueues the new one
-// when the send buffer is full. Never returns an error.
+// when the send buffer is full. The buffer can still be full after the
+// eviction, because sendAck and sendError write to it without taking
+// Conn.sendMu and may take the freed slot; the new message is then dropped.
+// Never blocks, never returns an error.
 type PolicyDropOldest struct{}
 
 func (PolicyDropOldest) Apply(send chan []byte, msg []byte, onSent func()) error {
 	select {
 	case send <- msg:
+		return nil
 	default:
-		select {
-		case <-send:
-		default:
-		}
-		send <- msg
+	}
+	select {
+	case <-send:
+	default:
+	}
+	// Non-blocking retry: Conn.Send holds sendMu here, and a blocking send
+	// would stall every broadcast to this conn behind a stuck writePump, or
+	// forever once writePump has exited.
+	select {
+	case send <- msg:
+	default:
 	}
 	return nil
 }
