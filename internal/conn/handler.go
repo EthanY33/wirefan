@@ -143,6 +143,18 @@ func (c *Conn) handleSubscribe(msg incoming) {
 		c.sendOpError(msg, "RATE_LIMITED", "too many control ops")
 		return
 	}
+	// A channel this conn already holds is acked before the token check: a
+	// re-subscribe grants nothing new, so demanding a token (and burning it
+	// in the replay cache) would only break clients that repeat a subscribe.
+	// handle runs solely on readPump, so the channel cannot be added to
+	// c.subs between this check and the insert below.
+	c.subsMu.Lock()
+	_, already := c.subs[msg.Channel]
+	c.subsMu.Unlock()
+	if already {
+		c.sendAck("subscribed", msg.Channel)
+		return
+	}
 	if ChannelRequiresAuth(msg.Channel) {
 		if err := auth.VerifyTokenAgainst(c.signingSecret, c.socketID, msg.Channel, msg.Token, c.replayCache); err != nil {
 			metrics.AuthFails.Inc()
@@ -155,11 +167,6 @@ func (c *Conn) handleSubscribe(msg incoming) {
 		}
 	}
 	c.subsMu.Lock()
-	if _, already := c.subs[msg.Channel]; already {
-		c.subsMu.Unlock()
-		c.sendAck("subscribed", msg.Channel)
-		return
-	}
 	if len(c.subs) >= c.maxChannels {
 		c.subsMu.Unlock()
 		c.sendOpError(msg, "LIMIT_CHANNELS", "max channels per conn")
