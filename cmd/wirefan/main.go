@@ -122,12 +122,6 @@ func run(ctx context.Context, cfg appConfig) error {
 	if err != nil {
 		return err
 	}
-	// OTel is dormant when endpoint is empty — returns a no-op shutdown.
-	otelShutdown, err := metrics.InitOTel(ctx, "")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = otelShutdown(context.Background()) }()
 	reg, err := newRegistry(cfg.registry)
 	if err != nil {
 		return err
