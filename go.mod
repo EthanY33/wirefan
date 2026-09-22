@@ -5,7 +5,7 @@ module github.com/EthanY33/wirefan
 // release avoids forcing every downstream past each patch bump.
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.8
 
 require (
 	github.com/mattn/go-sqlite3 v1.14.44
