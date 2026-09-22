@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  AckTimeoutError,
   ConnectionClosedError,
   WirefanClient,
+  WirefanError,
   type WirefanState,
 } from "../src/index.js";
 import { FakeWSHarness, autoAccept, until } from "./fake-ws.js";
@@ -290,5 +292,174 @@ describe("reconnect", () => {
     await until(() => c.state === "closed", "closed state");
     expect(events).toEqual([false]);
     expect(h.sockets.length).toBe(1);
+  });
+});
+
+describe("resubscribe failures", () => {
+  function subscribesOn(h: FakeWSHarness, i: number): Record<string, unknown>[] {
+    return h.sockets[i]!.sentFrames().filter((f) => f.type === "subscribe");
+  }
+
+  it("keeps a channel whose resubscribe was cut by a second drop and restores it on the next connection", async () => {
+    const h = new FakeWSHarness();
+    // The second connection never acks, so its resubscribe is still in
+    // flight when that connection drops too.
+    h.onDial = (ws, i) => autoAccept(ws, `SID${i}`, { ackSubscribes: i !== 1 });
+    const c = makeClient(h);
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    const got: unknown[] = [];
+    await c.subscribe("demo", (ev) => got.push(ev.data));
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(
+      () => h.sockets.length === 2 && subscribesOn(h, 1).length === 1,
+      "resubscribe frame on the second connection",
+    );
+    h.sockets[1]!.serverClose(1006, "blip again");
+    await until(() => h.sockets.length === 3 && c.state === "connected", "third connection");
+    await until(() => resub.length === 1, "resubscribed event");
+
+    expect(resub[0]).toEqual(["demo"]);
+    expect(subscribesOn(h, 2)).toEqual([{ type: "subscribe", channel: "demo" }]);
+    h.sockets[2]!.serverSend({ type: "event", channel: "demo", data: "still here", id: "e" });
+    expect(got).toEqual(["still here"]);
+    // A drop is not a channel failure: the disconnected event covers it.
+    expect(errors).toEqual([]);
+    c.close();
+  });
+
+  it("retries a resubscribe whose ack timed out", async () => {
+    const h = new FakeWSHarness();
+    let seen = 0;
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        // The first resubscribe on the second connection goes unanswered.
+        respond: (f) => (i === 1 && f.type === "subscribe" && ++seen === 1 ? null : undefined),
+      });
+    const c = makeClient(h, { ackTimeoutMs: 30 });
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    const got: unknown[] = [];
+    await c.subscribe("demo", (ev) => got.push(ev.data));
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => resub.length === 1, "resubscribed after the retry");
+
+    expect(resub[0]).toEqual(["demo"]);
+    expect(subscribesOn(h, 1)).toHaveLength(2);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(AckTimeoutError);
+    h.sockets[1]!.serverSend({ type: "event", channel: "demo", data: 1, id: "e" });
+    expect(got).toEqual([1]);
+    c.close();
+  });
+
+  it.each([
+    // Older server: the error frame names no op, so it is attributed FIFO.
+    ["RATE_LIMITED", false],
+    // Newer server: op and channel route it exactly.
+    ["RATE_LIMITED", true],
+    ["RATE_LIMITED_CONN", true],
+  ])(
+    "retries a resubscribe refused with %s (op named: %s) after a backoff",
+    async (code, named) => {
+      const h = new FakeWSHarness();
+      let seen = 0;
+      h.onDial = (ws, i) =>
+        autoAccept(ws, `SID${i}`, {
+          // A reconnect herd: the first two resubscribes are rate limited.
+          respond: (f) => {
+            if (i !== 1 || f.type !== "subscribe" || ++seen > 2) return undefined;
+            return {
+              type: "error",
+              code,
+              message: "slow down",
+              ...(named ? { op: "subscribe", channel: f.channel } : {}),
+            };
+          },
+        });
+      // The default 10 s ack timeout rules out a retry driven by the timer.
+      const c = makeClient(h);
+      const errors: Error[] = [];
+      c.on("error", (e) => errors.push(e));
+      const resub: string[][] = [];
+      c.on("resubscribed", (r) => resub.push(r.channels));
+      await c.connect();
+      const got: unknown[] = [];
+      await c.subscribe("demo", (ev) => got.push(ev.data));
+
+      h.sockets[0]!.serverClose(1006, "blip");
+      await until(() => resub.length === 1, "resubscribed after the retries");
+
+      expect(resub[0]).toEqual(["demo"]);
+      expect(subscribesOn(h, 1)).toHaveLength(3);
+      expect(errors.map((e) => (e as WirefanError).code)).toEqual([code, code]);
+      h.sockets[1]!.serverSend({ type: "event", channel: "demo", data: 1, id: "e" });
+      expect(got).toEqual([1]);
+      c.close();
+    },
+  );
+
+  it.each([
+    "AUTH_FAILED",
+    "AUTH_REPLAYED",
+    "RESERVED_CHANNEL",
+    "BAD_CHANNEL",
+    "LIMIT_CHANNELS",
+    "LIMIT_SUBSCRIBERS",
+    "SUBSCRIBE_FAILED",
+  ])("drops a channel whose resubscribe is definitively refused with %s", async (code) => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        respond: (f) =>
+          i === 1 && f.type === "subscribe"
+            ? { type: "error", code, message: "no", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const c = makeClient(h);
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    await c.connect();
+    const sub = await c.subscribe("demo", () => {});
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => errors.length === 1, "resubscribe error");
+    expect(errors[0]).toBeInstanceOf(WirefanError);
+    expect((errors[0] as WirefanError).code).toBe(code);
+
+    await new Promise((r) => setTimeout(r, 40)); // well past any FAST backoff
+    expect(subscribesOn(h, 1)).toHaveLength(1);
+    expect(sub.active).toBe(false);
+    c.close();
+  });
+
+  it("stops retrying a rate-limited resubscribe once the caller unsubscribes", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        respond: (f) =>
+          i === 1 && f.type === "subscribe"
+            ? { type: "error", code: "RATE_LIMITED", message: "slow down", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const c = makeClient(h);
+    await c.connect();
+    const sub = await c.subscribe("demo", () => {});
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => h.sockets.length === 2 && subscribesOn(h, 1).length >= 2, "a retry");
+    await sub.unsubscribe();
+    const sent = subscribesOn(h, 1).length;
+    await new Promise((r) => setTimeout(r, 40)); // several FAST backoff periods
+    expect(subscribesOn(h, 1)).toHaveLength(sent);
+    c.close();
   });
 });
