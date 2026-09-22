@@ -291,6 +291,12 @@ interface ChannelRecord {
   inflight: Promise<void> | null;
   /** Pending backoff retry of a transiently failed resubscribe. */
   retryTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The definitive refusal that dropped this record, kept for a subscribe()
+   * whose own attempt a drop cut short: the refusal, not the drop, is what
+   * that call must report.
+   */
+  refusal: WirefanError | null;
 }
 
 /**
@@ -673,6 +679,7 @@ export class WirefanClient {
       if (rec && !rec.confirmed) {
         this.#cancelRetry(rec);
         this.#channels.delete(op.channel);
+        rec.refusal = err;
       }
     }
     op.reject(err);
@@ -923,7 +930,13 @@ export class WirefanClient {
     let rec = this.#channels.get(channel);
     const alreadyConfirmed = rec?.confirmed === true;
     if (!rec) {
-      rec = { handlers: new Set(), confirmed: false, inflight: null, retryTimer: null };
+      rec = {
+        handlers: new Set(),
+        confirmed: false,
+        inflight: null,
+        retryTimer: null,
+        refusal: null,
+      };
       this.#channels.set(channel, rec);
     }
     if (handler) rec.handlers.add(handler);
@@ -957,6 +970,10 @@ export class WirefanClient {
             this.#cancelRetry(cur);
             this.#channels.delete(channel);
           }
+          // The server refused the channel on a newer connection before this
+          // cut-short attempt failed, so there was nothing left to adopt.
+          // That refusal is the real outcome; the drop is incidental.
+          if (e instanceof ConnectionClosedError && rec.refusal) throw rec.refusal;
           throw e;
         }
       }
