@@ -259,6 +259,26 @@ describe("reconnect", () => {
     c.close();
   });
 
+  it("reports reconnected=false on the first connection even when the first dial failed", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) => {
+      if (i === 0) ws.serverClose(1006, "refused");
+      else autoAccept(ws, `SID${i}`);
+    };
+    const c = makeClient(h);
+    const seen: boolean[] = [];
+    c.on("connected", (ev) => seen.push(ev.reconnected));
+    await c.connect(); // resolves on the second dial
+    expect(h.sockets.length).toBe(2);
+    expect(seen).toEqual([false]);
+
+    // A later drop and recovery is a genuine reconnect.
+    h.sockets[1]!.serverClose(1006, "blip");
+    await until(() => seen.length === 2, "second connected event");
+    expect(seen).toEqual([false, true]);
+    c.close();
+  });
+
   it("emits disconnected with willReconnect=false when reconnect is disabled", async () => {
     const h = new FakeWSHarness();
     h.onDial = (ws) => autoAccept(ws, "S");
