@@ -1,6 +1,7 @@
 package conn
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -221,7 +222,7 @@ func (c *Conn) handlePublish(ctx context.Context, msg incoming) {
 		return
 	}
 	id := ulid.Make().String()
-	out, _ := json.Marshal(map[string]any{
+	out := marshalFrame(map[string]any{
 		"type":    "event",
 		"channel": msg.Channel,
 		"data":    msg.Data,
@@ -269,8 +270,21 @@ func (c *Conn) handleUnsubscribe(msg incoming) {
 	c.sendAck("unsubscribed", msg.Channel)
 }
 
+// marshalFrame encodes an outbound frame without HTML escaping. By default
+// encoding/json rewrites '<', '>' and '&' as six-byte \u00XX sequences, and it
+// does so inside json.RawMessage too, so a relayed publish payload could grow
+// up to 6x before being copied to every subscriber. Frames go to WebSocket
+// clients, never into an HTML document, so the escaping buys nothing.
+func marshalFrame(v any) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+}
+
 func (c *Conn) sendAck(typ, channel string) {
-	b, _ := json.Marshal(map[string]string{"type": typ, "channel": channel})
+	b := marshalFrame(map[string]string{"type": typ, "channel": channel})
 	select {
 	case c.send <- b:
 	default:
@@ -301,9 +315,9 @@ func (c *Conn) sendError(code, message string) {
 // sendOpError sends an error answering msg, a subscribe, unsubscribe or
 // publish frame. A channel longer than maxChannelNameLen is not echoed. Such
 // a name cannot be a real channel, and echoing it let one 64 KiB frame queue
-// an error of up to 384 KiB (json.Marshal writes '<' as \u003c): six
-// times the input, in memory and in egress, with no rate limit, 64 deep per
-// conn. With the cap an error frame stays under 1 KiB.
+// a 64 KiB error with no rate limit, 64 deep per conn (up to 384 KiB before
+// marshalFrame stopped HTML-escaping). With the cap an error frame stays
+// under 1 KiB.
 func (c *Conn) sendOpError(msg incoming, code, message string) {
 	f := errorFrame{Type: "error", Code: code, Message: message, Op: msg.Type}
 	if len(msg.Channel) <= maxChannelNameLen {
@@ -313,7 +327,7 @@ func (c *Conn) sendOpError(msg incoming, code, message string) {
 }
 
 func (c *Conn) sendErrorFrame(f errorFrame) {
-	b, _ := json.Marshal(f)
+	b := marshalFrame(f)
 	select {
 	case c.send <- b:
 	default:

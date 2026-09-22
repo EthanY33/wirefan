@@ -619,3 +619,47 @@ func TestOverlongChannelNotEchoed(t *testing.T) {
 	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": atLimit, "token": "garbage"})
 	wantError(t, readJSON(t, c), "AUTH_FAILED", "subscribe", atLimit)
 }
+
+// TestPublishDoesNotInflatePayload pins the event envelope to the size of
+// what was published. json.Marshal HTML-escapes '<', '>' and '&' inside a
+// json.RawMessage (each becomes a six-byte \u00XX), so a 60 KB publish of
+// '<' used to reach every subscriber as a ~360 KB event: a 6x amplifier on
+// top of the fanout itself.
+func TestPublishDoesNotInflatePayload(t *testing.T) {
+	conns := newSharedEnvConns(t, PolicyDisconnect{}, 2)
+	pub, sub := conns[0], conns[1]
+	sub.SetReadLimit(1 << 20) // room to observe an inflated event
+	for _, c := range []*websocket.Conn{sub, pub} {
+		sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "inflate"})
+		if got := readJSON(t, c); got["type"] != "subscribed" {
+			t.Fatalf("ack: %+v", got)
+		}
+	}
+
+	payload := strings.Repeat("<&>", 20000) // 60,000 bytes of HTML-special chars
+	wctx, wcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer wcancel()
+	frame := `{"type":"publish","channel":"inflate","data":"` + payload + `"}`
+	if err := pub.Write(wctx, websocket.MessageText, []byte(frame)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	rctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, raw, err := sub.Read(rctx)
+	if err != nil {
+		t.Fatalf("sub read: %v", err)
+	}
+	if limit := len(payload) + 200; len(raw) > limit {
+		t.Fatalf("event is %d bytes for a %d-byte payload (limit %d): payload was re-escaped", len(raw), len(payload), limit)
+	}
+	var ev struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ev.Data != payload {
+		t.Fatalf("data changed in transit (%d bytes in, %d out)", len(payload), len(ev.Data))
+	}
+}
