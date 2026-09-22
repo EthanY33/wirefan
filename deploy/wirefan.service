@@ -8,11 +8,14 @@ Type=simple
 # --allowed-origins is required and refuses '*' outside --dev: the
 # wirefan.example.com placeholder is substituted by deploy/provision.sh
 # (--domain), or replace it by hand with the origin(s) your browser clients
-# load from. The admin
-# listener stays on loopback so /v1/keys, /metrics, and /debug/pprof are
-# never internet-reachable; mint keys from the host itself.
+# load from. Both listeners bind IPv4 loopback. The public one is reached
+# only through Caddy, which dials 127.0.0.1:8080, so every proxied
+# connection arrives from 127.0.0.1, the address WIREFAN_TRUSTED_PROXIES
+# trusts; nothing on the network can bypass the proxy and spoof
+# X-Forwarded-For. The admin listener keeps /v1/keys, /metrics, and
+# /debug/pprof off the internet; mint keys from the host itself.
 ExecStart=/usr/local/bin/wirefan \
-    --listen=:8080 \
+    --listen=127.0.0.1:8080 \
     --admin-addr=127.0.0.1:6060 \
     --allowed-origins=https://wirefan.example.com \
     --db-path=/var/lib/wirefan/wirefan.db
