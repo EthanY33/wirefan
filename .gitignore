@@ -25,9 +25,15 @@ Thumbs.db
 # Local
 *.db
 *.db-journal
+# SQLite WAL sidecars (the store runs in WAL mode)
+*.db-wal
+*.db-shm
 .env
 .env.local
-# Runtime state directory (admin token, sqlite db, etc — written at boot)
+# Runtime state directory (admin token, sqlite db, etc, written at boot).
+# The default is ./var relative to the working directory, so running from
+# the repo root creates /var and running from cmd/wirefan creates its own.
+/var/
 cmd/wirefan/var/
 
 # Profiles
@@ -35,9 +41,10 @@ cmd/wirefan/var/
 docs/profiles/*.png
 !docs/profiles/.gitkeep
 
-# Build
+# Build (`go build ./cmd/<name>` from the repo root drops the binary here)
 /relay
 /loadtest
+/wirefan
 
 # Benchmark outputs
 /results/
