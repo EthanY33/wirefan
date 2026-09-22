@@ -24,16 +24,31 @@ type trackedConn interface {
 type Hub struct {
 	mu    sync.RWMutex
 	conns map[trackedConn]struct{}
+	// closedKeys maps each key passed to CloseKey to the close it sent. It
+	// gains one entry per revoked key and is never pruned: a revoked key
+	// cannot be restored, and key ids are small.
+	closedKeys map[string]websocket.CloseError
 }
 
 // New returns a Hub with an empty conn set.
-func New() *Hub { return &Hub{conns: map[trackedConn]struct{}{}} }
+func New() *Hub {
+	return &Hub{conns: map[trackedConn]struct{}{}, closedKeys: map[string]websocket.CloseError{}}
+}
 
-// Add registers c with the Hub.
-func (h *Hub) Add(c trackedConn) {
+// Add registers c with the Hub and reports true, unless CloseKey has already
+// run for c's key. Then c is not tracked, and Add reports false along with
+// the close CloseKey sent, which the caller must send to c itself. Checking
+// under the same lock CloseKey sweeps under means every conn either is in
+// that sweep or is refused here: an upgrade that looked its key up just
+// before a revoke and got here just after would otherwise stay open.
+func (h *Hub) Add(c trackedConn) (websocket.CloseError, bool) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ce, closed := h.closedKeys[c.APIKeyID()]; closed {
+		return ce, false
+	}
 	h.conns[c] = struct{}{}
-	h.mu.Unlock()
+	return websocket.CloseError{}, true
 }
 
 // Remove deregisters c from the Hub.
@@ -63,20 +78,25 @@ func (h *Hub) snapshot() []trackedConn {
 }
 
 // CloseKey closes every tracked conn opened with API key keyID, using code
-// and reason, and returns how many it closed. The handshakes run in their
-// own goroutines so the caller (a revoke request) never waits on a slow
-// peer; a conn that ignores the handshake is still torn down once
-// coder/websocket's handshake wait expires.
+// and reason, and returns how many it closed. From then on Add refuses conns
+// on keyID for the life of the Hub. The handshakes run in their own
+// goroutines so the caller (a revoke request) never waits on a slow peer; a
+// conn that ignores the handshake is still torn down once coder/websocket's
+// handshake wait expires.
 func (h *Hub) CloseKey(keyID string, code websocket.StatusCode, reason string) int {
-	n := 0
-	for _, c := range h.snapshot() {
-		if c.APIKeyID() != keyID {
-			continue
+	h.mu.Lock()
+	h.closedKeys[keyID] = websocket.CloseError{Code: code, Reason: reason}
+	var matched []trackedConn
+	for c := range h.conns {
+		if c.APIKeyID() == keyID {
+			matched = append(matched, c)
 		}
-		go c.CloseFrame(code, reason)
-		n++
 	}
-	return n
+	h.mu.Unlock()
+	for _, c := range matched {
+		go c.CloseFrame(code, reason)
+	}
+	return len(matched)
 }
 
 // Drain sends a GoingAway close to every tracked conn and waits up to grace,

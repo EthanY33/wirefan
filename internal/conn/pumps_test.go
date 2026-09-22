@@ -29,6 +29,13 @@ func setKeepalive(t *testing.T, interval, wait time.Duration) {
 // each Run returned on the returned channel.
 func serveRun(t *testing.T) (string, <-chan time.Time) {
 	t.Helper()
+	return serveRunOn(t, hub.New())
+}
+
+// serveRunOn is serveRun with every Run tracked by h, under API key
+// "test-key".
+func serveRunOn(t *testing.T, h *hub.Hub) (string, <-chan time.Time) {
+	t.Helper()
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
 	ended := make(chan time.Time, 8)
@@ -39,7 +46,7 @@ func serveRun(t *testing.T) (string, <-chan time.Time) {
 			Fanout:        fanout.NewPerConn(),
 			RateLimit:     rl,
 			Policy:        PolicyDisconnect{},
-			Hub:           hub.New(),
+			Hub:           h,
 		})
 		ended <- time.Now()
 	}))

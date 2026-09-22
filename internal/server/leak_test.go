@@ -114,11 +114,13 @@ func testNoGoroutineLeakAfterChurn(t *testing.T, fan fanout.Fanout) {
 // TestNoGoroutineLeakAfterHubCloses extends the leak invariant to the hub's
 // goroutine-spawning close paths: Hub.CloseKey (key revoke) and Hub.Drain
 // (shutdown) each run one close handshake per conn in its own goroutine.
-// Both must leave nothing behind once the conns are gone.
+// Both must leave nothing behind once the conns are gone, and so must the
+// conns Run refuses because their key was closed before Hub.Add.
 func TestNoGoroutineLeakAfterHubCloses(t *testing.T) {
 	s := store.NewMemory()
 	secret, _ := auth.GenerateSecret()
 	k, _ := s.CreateKey(context.Background(), "t", auth.HashSecret(secret))
+	k2, _ := s.CreateKey(context.Background(), "t2", auth.HashSecret(secret))
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
 	h := hub.New()
@@ -133,21 +135,21 @@ func TestNoGoroutineLeakAfterHubCloses(t *testing.T) {
 		Hub:            h,
 	}))
 	defer srv.Close()
-	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key=" + k.ID
+	wsBase := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key="
 
 	// Warm up so httptest's own goroutines are part of the baseline.
-	if c, _, err := websocket.Dial(context.Background(), wsURL, nil); err == nil {
+	if c, _, err := websocket.Dial(context.Background(), wsBase+k.ID, nil); err == nil {
 		_ = c.Close(websocket.StatusNormalClosure, "")
 	}
 	time.Sleep(100 * time.Millisecond)
 	base := runtime.NumGoroutine()
 
-	// open dials n clients that keep reading (so they answer the close
-	// handshake) and returns once the hub tracks all of them.
+	// dial opens n clients on keyID that keep reading (so they answer the
+	// close handshake) until their conn ends.
 	var readers sync.WaitGroup
-	open := func(n int) {
+	dial := func(keyID string, n int) {
 		for i := 0; i < n; i++ {
-			c, _, err := websocket.Dial(context.Background(), wsURL, nil)
+			c, _, err := websocket.Dial(context.Background(), wsBase+keyID, nil)
 			if err != nil {
 				t.Fatalf("dial: %v", err)
 			}
@@ -162,17 +164,26 @@ func TestNoGoroutineLeakAfterHubCloses(t *testing.T) {
 				}
 			}()
 		}
-		waitForLen(t, h, n)
 	}
 
 	const n = 100
-	open(n)
+	dial(k.ID, n)
+	waitForLen(t, h, n)
 	if got := h.CloseKey(k.ID, websocket.StatusPolicyViolation, "key revoked"); got != n {
 		t.Fatalf("CloseKey closed %d conns, want %d", got, n)
 	}
 	waitForLen(t, h, 0)
 
-	open(n)
+	// The key is still valid in the store, so these upgrades reach Run,
+	// where Hub.Add refuses them.
+	dial(k.ID, n)
+	readers.Wait()
+	if l := h.Len(); l != 0 {
+		t.Fatalf("hub tracks %d conns on a closed key", l)
+	}
+
+	dial(k2.ID, n)
+	waitForLen(t, h, n)
 	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	h.Drain(drainCtx, 5*time.Second)

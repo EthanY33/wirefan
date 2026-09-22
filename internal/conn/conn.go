@@ -88,7 +88,8 @@ const (
 )
 
 // APIKeyID implements the hub tracked-conn interface: Hub.CloseKey matches
-// conns to a revoked key by it.
+// conns to a revoked key by it, and Hub.Add refuses a conn by it once its key
+// has been revoked.
 func (c *Conn) APIKeyID() string { return c.apiKeyID }
 
 // CloseFrame implements the hub tracked-conn interface: Hub.Drain uses it to
@@ -152,7 +153,13 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 	metrics.Connections.Inc()
 	defer metrics.Connections.Dec()
 
-	d.Hub.Add(c)
+	if ce, ok := d.Hub.Add(c); !ok {
+		// Hub.CloseKey ran for this conn's key after the upgrade looked the
+		// key up, too late for its sweep to see this conn. Close it the way
+		// the sweep would have, before it can do anything.
+		c.CloseFrame(ce.Code, ce.Reason)
+		return ce
+	}
 	defer d.Hub.Remove(c)
 
 	hello, _ := json.Marshal(map[string]string{
