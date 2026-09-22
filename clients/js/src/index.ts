@@ -990,21 +990,24 @@ export class WirefanClient {
       }
     }
 
+    // The handle is bound to this record, not to the channel name: once the
+    // record is dropped (a definitive refusal, say), a later subscribe() to
+    // the same channel creates a new record that this handle must not claim.
+    const held = rec;
     let active = true;
     const client = this;
     return {
       channel,
       get active() {
-        return active && client.#channels.has(channel);
+        return active && client.#channels.get(channel) === held;
       },
       async unsubscribe(): Promise<void> {
         if (!active) return;
         active = false;
-        const cur = client.#channels.get(channel);
-        if (!cur) return;
-        if (handler) cur.handlers.delete(handler);
-        if (cur.handlers.size > 0) return; // other handles still want it
-        client.#cancelRetry(cur);
+        if (client.#channels.get(channel) !== held) return;
+        if (handler) held.handlers.delete(handler);
+        if (held.handlers.size > 0) return; // other handles still want it
+        client.#cancelRetry(held);
         client.#channels.delete(channel);
         if (client.#state !== "connected") return; // nothing to tell the server
         await client.#sendOp("unsubscribe", channel, { type: "unsubscribe", channel });
