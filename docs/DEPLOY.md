@@ -102,8 +102,9 @@ dig +short wirefan.example.com
 
 Three inbound TCP ports: **22** (SSH), **80** (ACME challenge + redirect),
 **443** (TLS, where WebSockets live). Everything else stays closed. The
-admin listener (6060) and the plaintext app listener (8080) bind loopback
-and must NOT be opened.
+admin listener (`127.0.0.1:6060`) and the plaintext app listener
+(`127.0.0.1:8080`, reached only through Caddy) bind IPv4 loopback and
+need no firewall rule.
 
 Two layers to check:
 
@@ -207,8 +208,8 @@ It:
    silently become a global 200-connection ceiling.
 4. installs Caddy from its official apt repo
 5. writes `/etc/caddy/Caddyfile` and `/etc/systemd/system/wirefan.service`
-   with your domain substituted (public listener `:8080` loopback-proxied
-   by Caddy; admin listener stays `127.0.0.1:6060`)
+   with your domain substituted (public listener `127.0.0.1:8080`, which
+   Caddy proxies to; admin listener `127.0.0.1:6060`)
 6. installs the binary at `/usr/local/bin/wirefan`
 7. `systemctl enable wirefan`, restarts it if a binary is installed, and
    reloads Caddy either way so the new Caddyfile replaces Caddy's stock
@@ -470,7 +471,8 @@ publish, and a volume over `/var/lib/wirefan` owned by uid 65532).
 
 If you are running on a home machine behind NAT instead of a VPS,
 Cloudflare Tunnel works: run `cloudflared` pointing
-`wirefan.example.com` at `http://localhost:8080`, run wirefan with
+`wirefan.example.com` at `http://127.0.0.1:8080` (not `localhost`, which
+may resolve to `::1` and then not match the trusted proxy), run wirefan with
 `WIREFAN_TRUSTED_PROXIES=127.0.0.1` and
 `--allowed-origins=https://wirefan.example.com`, and skip Caddy entirely
 (Cloudflare terminates TLS at its edge). Tradeoffs: availability tracks

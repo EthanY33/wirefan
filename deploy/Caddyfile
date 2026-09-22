@@ -11,13 +11,19 @@ wirefan.example.com {
     # env var (see deploy/.env.example); set it to this proxy's address, or
     # every connection is attributed to the proxy IP and the per-IP cap
     # becomes a global ceiling.
-    reverse_proxy localhost:8080 {
+    #
+    # The upstream is 127.0.0.1, not localhost: localhost may resolve to ::1,
+    # a connection from ::1 does not match the 127.0.0.1 that provision.sh
+    # puts in WIREFAN_TRUSTED_PROXIES, and wirefan would then ignore
+    # X-Forwarded-For. wirefan.service binds this exact address.
+    reverse_proxy 127.0.0.1:8080 {
         header_up X-Forwarded-For {remote_host}
         header_up X-Real-IP {remote_host}
         flush_interval -1
     }
 
-    # Block direct localhost access to internal endpoints from the public domain.
+    # /debug/pprof is served only on the loopback admin listener (6060),
+    # never on 8080; refusing the path here as well is belt and braces.
     @internal path /debug/pprof*
     respond @internal "Not Found" 404
 }
