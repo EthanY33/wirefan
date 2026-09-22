@@ -92,8 +92,11 @@ func New(cfg Config, deps Deps) *Server {
 	}))
 	s.mux.Handle("/", http.FileServerFS(web.Files))
 
-	// Admin listener: metrics, pprof, key management. All gated by
-	// requireAdmin AND bound to a separate (typically loopback) listener.
+	// Admin listener: metrics, pprof, key management. Only the /v1/keys
+	// routes check the admin bearer token (requireAdmin). /metrics and
+	// /debug/pprof/* have no auth of their own: the only thing protecting
+	// them is that this listener is separate from the public one and bound
+	// to loopback or an internal network, so AdminAddr must never be public.
 	metrics.Register()
 	s.adminMux.Handle("/metrics", promhttp.Handler())
 	s.adminMux.HandleFunc("/debug/pprof/", pprof.Index)
