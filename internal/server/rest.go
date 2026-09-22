@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/EthanY33/wirefan/internal/auth"
+	"github.com/EthanY33/wirefan/internal/conn"
 	"github.com/EthanY33/wirefan/internal/store"
+	"github.com/oklog/ulid/v2"
 )
 
 // maxAdminBodyBytes caps inbound JSON for admin POST handlers. The admin
@@ -173,6 +175,19 @@ func (h *RestHandler) sign(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	// Only mint tokens that a real subscribe could use. socket_id must be a
+	// ULID, the only shape /v1/connect issues, which also keeps '|' and ':'
+	// out of the MAC input (see auth.macPayload for the field-shift forgery
+	// that closed). channel must pass the same rules the WS handler applies
+	// and must actually require a token.
+	if _, err := ulid.ParseStrict(body.SocketID); err != nil {
+		http.Error(w, "bad request: socket_id is not a valid socket id", http.StatusBadRequest)
+		return
+	}
+	if conn.ValidateChannelName(body.Channel) != nil || !conn.ChannelRequiresAuth(body.Channel) {
+		http.Error(w, "bad request: channel must be a valid private- or presence- channel name", http.StatusBadRequest)
 		return
 	}
 	tok, err := auth.SignToken(h.signingSecret, body.SocketID, body.Channel, time.Now().Add(5*time.Minute))
