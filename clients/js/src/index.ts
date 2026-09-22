@@ -708,8 +708,17 @@ export class WirefanClient {
     const idx = this.#pending.findIndex(
       (op) => op.kind === kind && op.channel === channel,
     );
+    let undoneLater = false;
     if (idx !== -1) {
       const op = this.#pending.splice(idx, 1)[0]!;
+      // #pending is in send order and the server answers frames in that
+      // order, so an unsubscribe for this channel still pending behind this
+      // subscribe has not reached the server yet and will undo it there.
+      undoneLater =
+        kind === "subscribe" &&
+        this.#pending
+          .slice(idx)
+          .some((p) => p.kind === "unsubscribe" && p.channel === channel);
       clearTimeout(op.timer);
       op.resolve();
     }
@@ -717,7 +726,7 @@ export class WirefanClient {
       const rec = this.#channels.get(channel);
       if (rec) {
         rec.confirmed = true;
-      } else {
+      } else if (!undoneLater) {
         // Nobody wants this channel any more (the subscribe timed out or was
         // abandoned before its ack landed), but the server now holds it and
         // would keep fanning events to a record that no longer exists. Undo
@@ -846,7 +855,9 @@ export class WirefanClient {
 
   /**
    * One resubscribe attempt for a channel the caller still holds; true once
-   * it is confirmed. A failure decides the record's fate by class:
+   * it is confirmed and the caller still holds it (an unsubscribe while the
+   * attempt was in flight means nothing was restored for the caller). A
+   * failure decides the record's fate by class:
    * - ConnectionClosedError: the connection dropped again. Keep the record
    *   without an error event; the next #onConnected restores it.
    * - A definitive refusal (isDefinitiveRefusal): surface it. #onErrorFrame
@@ -862,7 +873,7 @@ export class WirefanClient {
   ): Promise<boolean> {
     try {
       await this.#ensureSubscribed(channel, rec);
-      return true;
+      return this.#channels.get(channel) === rec;
     } catch (e) {
       if (e instanceof ConnectionClosedError) return false;
       const err =

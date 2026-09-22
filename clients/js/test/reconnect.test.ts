@@ -610,6 +610,37 @@ describe("resubscribe failures", () => {
     c.close();
   });
 
+  it("neither re-sends an unsubscribe nor reports the channel restored when the caller unsubscribes mid-resubscribe", async () => {
+    const h = new FakeWSHarness();
+    // The second connection answers nothing on its own; the test does.
+    h.onDial = (ws, i) => autoAccept(ws, `SID${i}`, { ackSubscribes: i !== 1 });
+    const c = makeClient(h);
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    const sub = await c.subscribe("demo", () => {});
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(
+      () => h.sockets.length === 2 && subscribesOn(h, 1).length === 1,
+      "resubscribe frame on the second connection",
+    );
+    const unsub = sub.unsubscribe();
+    // The server answers both frames in the order they were sent.
+    h.sockets[1]!.serverSend({ type: "subscribed", channel: "demo" });
+    h.sockets[1]!.serverSend({ type: "unsubscribed", channel: "demo" });
+    await unsub;
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The caller's unsubscribe already undoes the late ack on the server.
+    expect(h.sockets[1]!.sentFrames()).toEqual([
+      { type: "subscribe", channel: "demo" },
+      { type: "unsubscribe", channel: "demo" },
+    ]);
+    expect(resub).toEqual([]);
+    c.close();
+  });
+
   it("stops retrying a rate-limited resubscribe once the caller unsubscribes", async () => {
     const h = new FakeWSHarness();
     h.onDial = (ws, i) =>
