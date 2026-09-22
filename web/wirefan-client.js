@@ -20,16 +20,18 @@ var __classPrivateFieldGet = (this && this.__classPrivateFieldGet) || function (
     if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
     return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
 };
-var _WirefanClient_instances, _WirefanClient_url, _WirefanClient_authorize, _WirefanClient_WS, _WirefanClient_reconnect, _WirefanClient_ackTimeoutMs, _WirefanClient_handshakeTimeoutMs, _WirefanClient_random, _WirefanClient_ws, _WirefanClient_state, _WirefanClient_socketId, _WirefanClient_closed, _WirefanClient_attempt, _WirefanClient_reconnectTimer, _WirefanClient_handshakeTimer, _WirefanClient_epoch, _WirefanClient_channels, _WirefanClient_pending, _WirefanClient_listeners, _WirefanClient_connectWaiters, _WirefanClient_emit, _WirefanClient_setState, _WirefanClient_dial, _WirefanClient_clearHandshakeTimer, _WirefanClient_onMessage, _WirefanClient_onConnected, _WirefanClient_onEvent, _WirefanClient_onErrorFrame, _WirefanClient_settleOp, _WirefanClient_failPending, _WirefanClient_rejectConnectWaiters, _WirefanClient_onDrop, _WirefanClient_resubscribeAll, _WirefanClient_ensureSubscribed, _WirefanClient_sendSubscribe, _WirefanClient_sendOp;
+var _WirefanClient_instances, _WirefanClient_url, _WirefanClient_authorize, _WirefanClient_WS, _WirefanClient_reconnect, _WirefanClient_ackTimeoutMs, _WirefanClient_handshakeTimeoutMs, _WirefanClient_random, _WirefanClient_ws, _WirefanClient_state, _WirefanClient_socketId, _WirefanClient_closed, _WirefanClient_everConnected, _WirefanClient_attempt, _WirefanClient_reconnectTimer, _WirefanClient_handshakeTimer, _WirefanClient_epoch, _WirefanClient_channels, _WirefanClient_pending, _WirefanClient_listeners, _WirefanClient_connectWaiters, _WirefanClient_emit, _WirefanClient_setState, _WirefanClient_dial, _WirefanClient_clearHandshakeTimer, _WirefanClient_onMessage, _WirefanClient_onConnected, _WirefanClient_onEvent, _WirefanClient_onErrorFrame, _WirefanClient_pendingIndexFor, _WirefanClient_settleOp, _WirefanClient_sendRaw, _WirefanClient_failPending, _WirefanClient_rejectConnectWaiters, _WirefanClient_onDrop, _WirefanClient_backoffDelay, _WirefanClient_cancelRetry, _WirefanClient_resubscribeAll, _WirefanClient_resubscribe, _WirefanClient_scheduleResubscribe, _WirefanClient_ensureSubscribed, _WirefanClient_sendSubscribe, _WirefanClient_sendOp;
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 /** A server `error` frame surfaced as a typed exception. */
 export class WirefanError extends Error {
-    constructor(code, message) {
+    constructor(code, message, detail = {}) {
         super(`${code}: ${message}`);
         this.name = "WirefanError";
         this.code = code;
+        this.op = detail.op;
+        this.channel = detail.channel;
     }
 }
 /** The operation could not complete because the connection dropped or closed. */
@@ -57,10 +59,13 @@ export class ConfigurationError extends Error {
 }
 const WS_OPEN = 1;
 /**
- * Error codes that answer a `subscribe` request. The server's error frames
- * carry no channel field (§5.9), so attribution is by code class + FIFO order:
- * the server processes one inbound frame at a time, so replies to control ops
- * arrive in the order the ops were sent.
+ * Error codes that answer a `subscribe` request on servers that predate the
+ * error frame's `op` / `channel` fields. Those frames name no operation, so
+ * attribution falls back to code class + FIFO order: the server processes
+ * one inbound frame at a time, so replies to control ops arrive in the order
+ * the ops were sent. The heuristic can still blame a subscribe for a publish
+ * or unsubscribe rejection that shares a code; servers that send `op` and
+ * `channel` are routed exactly and never reach this set.
  */
 const SUBSCRIBE_ERROR_CODES = new Set([
     "AUTH_FAILED",
@@ -72,6 +77,25 @@ const SUBSCRIBE_ERROR_CODES = new Set([
     "SUBSCRIBE_FAILED",
     "RATE_LIMITED",
 ]);
+/**
+ * Refusals that retrying cannot fix (plus every LIMIT_* code): a resubscribe
+ * that ends in one of these drops the channel. Every other failure (ack
+ * timeout, RATE_LIMITED, RATE_LIMITED_CONN, an authorize() callback that
+ * throws, a code this client does not know) is treated as transient and
+ * retried with backoff, so a reconnect herd cannot silently strip channels.
+ */
+const DEFINITIVE_SUBSCRIBE_CODES = new Set([
+    "AUTH_FAILED",
+    "AUTH_REPLAYED",
+    "RESERVED_CHANNEL",
+    "BAD_CHANNEL",
+    "SUBSCRIBE_FAILED",
+]);
+function isDefinitiveRefusal(err) {
+    if (!(err instanceof WirefanError))
+        return false;
+    return DEFINITIVE_SUBSCRIBE_CODES.has(err.code) || err.code.startsWith("LIMIT_");
+}
 const DEFAULT_RECONNECT = {
     initialDelayMs: 300,
     maxDelayMs: 15000,
@@ -111,6 +135,12 @@ export class WirefanClient {
         _WirefanClient_state.set(this, "idle");
         _WirefanClient_socketId.set(this, null);
         _WirefanClient_closed.set(this, false);
+        /**
+         * Set by the first `connected` frame. The retry counter cannot answer
+         * "is this a reconnect?": it is also non-zero when the very first dial
+         * failed and a later attempt is the first to succeed.
+         */
+        _WirefanClient_everConnected.set(this, false);
         _WirefanClient_attempt.set(this, 0);
         _WirefanClient_reconnectTimer.set(this, null);
         _WirefanClient_handshakeTimer.set(this, null);
@@ -214,8 +244,10 @@ export class WirefanClient {
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_failPending).call(this, new ConnectionClosedError("client closed"));
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_rejectConnectWaiters).call(this, new ConnectionClosedError("client closed"));
         __classPrivateFieldSet(this, _WirefanClient_socketId, null, "f");
-        for (const rec of __classPrivateFieldGet(this, _WirefanClient_channels, "f").values())
+        for (const rec of __classPrivateFieldGet(this, _WirefanClient_channels, "f").values()) {
+            __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, rec);
             rec.handlers.clear();
+        }
         __classPrivateFieldGet(this, _WirefanClient_channels, "f").clear();
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_setState).call(this, "closed");
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "closed", { reason: "explicit" });
@@ -241,23 +273,42 @@ export class WirefanClient {
         let rec = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel);
         const alreadyConfirmed = rec?.confirmed === true;
         if (!rec) {
-            rec = { handlers: new Set(), confirmed: false, inflight: null };
+            rec = { handlers: new Set(), confirmed: false, inflight: null, retryTimer: null };
             __classPrivateFieldGet(this, _WirefanClient_channels, "f").set(channel, rec);
         }
         if (handler)
             rec.handlers.add(handler);
         if (!alreadyConfirmed) {
-            try {
-                await __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_ensureSubscribed).call(this, channel, rec);
-            }
-            catch (e) {
-                if (handler)
-                    rec.handlers.delete(handler);
-                const cur = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel);
-                if (cur && !cur.confirmed && cur.handlers.size === 0) {
-                    __classPrivateFieldGet(this, _WirefanClient_channels, "f").delete(channel);
+            let epoch = __classPrivateFieldGet(this, _WirefanClient_epoch, "f");
+            for (;;) {
+                try {
+                    await __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_ensureSubscribed).call(this, channel, rec);
+                    break;
                 }
-                throw e;
+                catch (e) {
+                    // A drop can cut this attempt short (typically mid-authorize()),
+                    // and by the time it fails the client may have reconnected and its
+                    // resubscribe taken the channel over, since the record still holds
+                    // this handler. Adopt that attempt (already confirmed, still in
+                    // flight, or a fresh one) rather than reject while the channel
+                    // lives on without the caller's handler. Each pass needs a newer
+                    // connection, which bounds the loop.
+                    if (e instanceof ConnectionClosedError &&
+                        __classPrivateFieldGet(this, _WirefanClient_state, "f") === "connected" &&
+                        __classPrivateFieldGet(this, _WirefanClient_epoch, "f") !== epoch &&
+                        __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel) === rec) {
+                        epoch = __classPrivateFieldGet(this, _WirefanClient_epoch, "f");
+                        continue;
+                    }
+                    if (handler)
+                        rec.handlers.delete(handler);
+                    const cur = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel);
+                    if (cur && !cur.confirmed && cur.handlers.size === 0) {
+                        __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, cur);
+                        __classPrivateFieldGet(this, _WirefanClient_channels, "f").delete(channel);
+                    }
+                    throw e;
+                }
             }
         }
         let active = true;
@@ -278,6 +329,7 @@ export class WirefanClient {
                     cur.handlers.delete(handler);
                 if (cur.handlers.size > 0)
                     return; // other handles still want it
+                __classPrivateFieldGet(client, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(client, cur);
                 __classPrivateFieldGet(client, _WirefanClient_channels, "f").delete(channel);
                 if (__classPrivateFieldGet(client, _WirefanClient_state, "f") !== "connected")
                     return; // nothing to tell the server
@@ -299,7 +351,7 @@ export class WirefanClient {
         __classPrivateFieldGet(this, _WirefanClient_ws, "f").send(JSON.stringify({ type: "publish", channel, data }));
     }
 }
-_WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _WirefanClient_WS = new WeakMap(), _WirefanClient_reconnect = new WeakMap(), _WirefanClient_ackTimeoutMs = new WeakMap(), _WirefanClient_handshakeTimeoutMs = new WeakMap(), _WirefanClient_random = new WeakMap(), _WirefanClient_ws = new WeakMap(), _WirefanClient_state = new WeakMap(), _WirefanClient_socketId = new WeakMap(), _WirefanClient_closed = new WeakMap(), _WirefanClient_attempt = new WeakMap(), _WirefanClient_reconnectTimer = new WeakMap(), _WirefanClient_handshakeTimer = new WeakMap(), _WirefanClient_epoch = new WeakMap(), _WirefanClient_channels = new WeakMap(), _WirefanClient_pending = new WeakMap(), _WirefanClient_listeners = new WeakMap(), _WirefanClient_connectWaiters = new WeakMap(), _WirefanClient_instances = new WeakSet(), _WirefanClient_emit = function _WirefanClient_emit(event, payload) {
+_WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _WirefanClient_WS = new WeakMap(), _WirefanClient_reconnect = new WeakMap(), _WirefanClient_ackTimeoutMs = new WeakMap(), _WirefanClient_handshakeTimeoutMs = new WeakMap(), _WirefanClient_random = new WeakMap(), _WirefanClient_ws = new WeakMap(), _WirefanClient_state = new WeakMap(), _WirefanClient_socketId = new WeakMap(), _WirefanClient_closed = new WeakMap(), _WirefanClient_everConnected = new WeakMap(), _WirefanClient_attempt = new WeakMap(), _WirefanClient_reconnectTimer = new WeakMap(), _WirefanClient_handshakeTimer = new WeakMap(), _WirefanClient_epoch = new WeakMap(), _WirefanClient_channels = new WeakMap(), _WirefanClient_pending = new WeakMap(), _WirefanClient_listeners = new WeakMap(), _WirefanClient_connectWaiters = new WeakMap(), _WirefanClient_instances = new WeakSet(), _WirefanClient_emit = function _WirefanClient_emit(event, payload) {
     const set = __classPrivateFieldGet(this, _WirefanClient_listeners, "f").get(event);
     if (!set)
         return;
@@ -407,7 +459,8 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
     __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_clearHandshakeTimer).call(this);
     __classPrivateFieldSet(this, _WirefanClient_epoch, __classPrivateFieldGet(this, _WirefanClient_epoch, "f") + 1, "f");
     __classPrivateFieldSet(this, _WirefanClient_socketId, frame.socket_id, "f");
-    const reconnected = __classPrivateFieldGet(this, _WirefanClient_attempt, "f") > 0;
+    const reconnected = __classPrivateFieldGet(this, _WirefanClient_everConnected, "f");
+    __classPrivateFieldSet(this, _WirefanClient_everConnected, true, "f");
     __classPrivateFieldSet(this, _WirefanClient_attempt, 0, "f");
     __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_setState).call(this, "connected");
     if (frame.version !== "v1") {
@@ -438,25 +491,49 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
         }
     }
 }, _WirefanClient_onErrorFrame = function _WirefanClient_onErrorFrame(frame) {
-    const err = new WirefanError(frame.code, frame.message);
-    // Error frames carry no channel (§5.9). The server handles inbound frames
-    // sequentially, so an error answering a control op arrives before any
-    // later op's ack: attribute by code class to the oldest matching pending op.
-    if (SUBSCRIBE_ERROR_CODES.has(frame.code)) {
-        const idx = __classPrivateFieldGet(this, _WirefanClient_pending, "f").findIndex((op) => op.kind === "subscribe");
-        if (idx !== -1) {
-            const op = __classPrivateFieldGet(this, _WirefanClient_pending, "f").splice(idx, 1)[0];
-            clearTimeout(op.timer);
-            // The subscribe failed: forget the channel unless it was already
-            // confirmed on this connection (idempotent re-subscribes).
-            const rec = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(op.channel);
-            if (rec && !rec.confirmed)
-                __classPrivateFieldGet(this, _WirefanClient_channels, "f").delete(op.channel);
-            op.reject(err);
-            return;
+    const detail = {};
+    if (typeof frame.op === "string")
+        detail.op = frame.op;
+    if (typeof frame.channel === "string")
+        detail.channel = frame.channel;
+    const err = new WirefanError(frame.code, frame.message, detail);
+    const idx = __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_pendingIndexFor).call(this, frame);
+    if (idx === -1) {
+        __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "error", err);
+        return;
+    }
+    const op = __classPrivateFieldGet(this, _WirefanClient_pending, "f").splice(idx, 1)[0];
+    clearTimeout(op.timer);
+    if (op.kind === "subscribe" && isDefinitiveRefusal(err)) {
+        // Drop a refused channel before anyone awaiting it resumes. Otherwise
+        // an interrupted subscribe() could see the record between this attempt
+        // settling and its owner reacting, and adopt it with a fresh attempt.
+        // Transient refusals leave the record to the awaiting caller:
+        // subscribe() forgets a channel nobody else holds, while a resubscribe
+        // keeps it and retries (#resubscribe).
+        const rec = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(op.channel);
+        if (rec && !rec.confirmed) {
+            __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, rec);
+            __classPrivateFieldGet(this, _WirefanClient_channels, "f").delete(op.channel);
         }
     }
-    __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "error", err);
+    op.reject(err);
+}, _WirefanClient_pendingIndexFor = function _WirefanClient_pendingIndexFor(frame) {
+    if (frame.op !== undefined || frame.channel !== undefined) {
+        // The server named the frame it answers: route exactly, never guess.
+        // Publish has no pending op, so its errors go to the error event.
+        if (frame.op !== "subscribe" && frame.op !== "unsubscribe")
+            return -1;
+        // A missing channel means the client sent none (only "" can do that).
+        const channel = frame.channel ?? "";
+        return __classPrivateFieldGet(this, _WirefanClient_pending, "f").findIndex((op) => op.kind === frame.op && op.channel === channel);
+    }
+    // Older server: the frame names no operation. It handles inbound frames
+    // sequentially, so an error answering a control op arrives before any
+    // later op's ack: attribute by code class to the oldest pending subscribe.
+    if (!SUBSCRIBE_ERROR_CODES.has(frame.code))
+        return -1;
+    return __classPrivateFieldGet(this, _WirefanClient_pending, "f").findIndex((op) => op.kind === "subscribe");
 }, _WirefanClient_settleOp = function _WirefanClient_settleOp(kind, channel) {
     const idx = __classPrivateFieldGet(this, _WirefanClient_pending, "f").findIndex((op) => op.kind === kind && op.channel === channel);
     if (idx !== -1) {
@@ -466,8 +543,26 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
     }
     if (kind === "subscribe") {
         const rec = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel);
-        if (rec)
+        if (rec) {
             rec.confirmed = true;
+        }
+        else {
+            // Nobody wants this channel any more (the subscribe timed out or was
+            // abandoned before its ack landed), but the server now holds it and
+            // would keep fanning events to a record that no longer exists. Undo
+            // it. Fire-and-forget: the unsubscribed ack matches no pending op.
+            __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_sendRaw).call(this, { type: "unsubscribe", channel });
+        }
+    }
+}, _WirefanClient_sendRaw = function _WirefanClient_sendRaw(frame) {
+    const ws = __classPrivateFieldGet(this, _WirefanClient_ws, "f");
+    if (!ws || ws.readyState !== WS_OPEN)
+        return;
+    try {
+        ws.send(JSON.stringify(frame));
+    }
+    catch {
+        // The socket is failing; its close event drives the drop path.
     }
 }, _WirefanClient_failPending = function _WirefanClient_failPending(err) {
     const pending = __classPrivateFieldGet(this, _WirefanClient_pending, "f");
@@ -494,10 +589,13 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
     // Reset per-connection subscription state. Clearing `inflight` matters:
     // a subscribe attempt stuck awaiting authorize() when the drop hit is now
     // stale (its token targets the dead socket), and the post-reconnect
-    // resubscribe must start a fresh attempt, not adopt the old one.
+    // resubscribe must start a fresh attempt, not adopt the old one. A
+    // pending resubscribe retry is moot too: the next #onConnected restores
+    // every record from scratch.
     for (const rec of __classPrivateFieldGet(this, _WirefanClient_channels, "f").values()) {
         rec.confirmed = false;
         rec.inflight = null;
+        __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, rec);
     }
     const canRetry = __classPrivateFieldGet(this, _WirefanClient_reconnect, "f") !== false && __classPrivateFieldGet(this, _WirefanClient_attempt, "f") + 1 <= __classPrivateFieldGet(this, _WirefanClient_reconnect, "f").maxAttempts;
     __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "disconnected", { willReconnect: canRetry, ...(code !== undefined ? { code } : {}), ...(reason ? { reason } : {}) });
@@ -511,11 +609,8 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "closed", { reason: "exhausted" });
         return;
     }
-    const r = __classPrivateFieldGet(this, _WirefanClient_reconnect, "f");
     __classPrivateFieldSet(this, _WirefanClient_attempt, __classPrivateFieldGet(this, _WirefanClient_attempt, "f") + 1, "f");
-    const base = Math.min(r.maxDelayMs, r.initialDelayMs * Math.pow(r.multiplier, __classPrivateFieldGet(this, _WirefanClient_attempt, "f") - 1));
-    const jittered = Math.round(base * (1 + r.jitter * (2 * __classPrivateFieldGet(this, _WirefanClient_random, "f").call(this) - 1)));
-    const delayMs = Math.max(0, jittered);
+    const delayMs = __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_backoffDelay).call(this, __classPrivateFieldGet(this, _WirefanClient_attempt, "f"));
     __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_setState).call(this, "reconnecting");
     __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "reconnecting", { attempt: __classPrivateFieldGet(this, _WirefanClient_attempt, "f"), delayMs });
     __classPrivateFieldSet(this, _WirefanClient_reconnectTimer, setTimeout(() => {
@@ -524,6 +619,16 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
             return;
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_dial).call(this);
     }, delayMs), "f");
+}, _WirefanClient_backoffDelay = function _WirefanClient_backoffDelay(attempt) {
+    const r = __classPrivateFieldGet(this, _WirefanClient_reconnect, "f") === false ? DEFAULT_RECONNECT : __classPrivateFieldGet(this, _WirefanClient_reconnect, "f");
+    const base = Math.min(r.maxDelayMs, r.initialDelayMs * Math.pow(r.multiplier, attempt - 1));
+    const jittered = Math.round(base * (1 + r.jitter * (2 * __classPrivateFieldGet(this, _WirefanClient_random, "f").call(this) - 1)));
+    return Math.max(0, jittered);
+}, _WirefanClient_cancelRetry = function _WirefanClient_cancelRetry(rec) {
+    if (rec.retryTimer !== null) {
+        clearTimeout(rec.retryTimer);
+        rec.retryTimer = null;
+    }
 }, _WirefanClient_resubscribeAll = 
 /**
  * After a reconnect, restore every channel the caller had. Tokens for
@@ -531,30 +636,67 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
  * the previous socket_id and are single-use besides.
  */
 async function _WirefanClient_resubscribeAll() {
+    const epoch = __classPrivateFieldGet(this, _WirefanClient_epoch, "f");
     const channels = [...__classPrivateFieldGet(this, _WirefanClient_channels, "f").keys()];
     const restored = [];
     for (const channel of channels) {
-        if (__classPrivateFieldGet(this, _WirefanClient_state, "f") !== "connected")
-            return; // dropped again mid-restore
+        // Dropped again mid-restore; after a reconnect, that connection's own
+        // #resubscribeAll takes over.
+        if (__classPrivateFieldGet(this, _WirefanClient_epoch, "f") !== epoch || __classPrivateFieldGet(this, _WirefanClient_state, "f") !== "connected")
+            return;
         const rec = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel);
         if (!rec)
             continue; // unsubscribed meanwhile
-        try {
-            await __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_ensureSubscribed).call(this, channel, rec);
+        if (await __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_resubscribe).call(this, channel, rec, epoch, 0))
             restored.push(channel);
-        }
-        catch (e) {
-            // Surface the failure and drop the dead subscription rather than
-            // silently pretending it is alive.
-            __classPrivateFieldGet(this, _WirefanClient_channels, "f").delete(channel);
-            __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "error", e instanceof Error
-                ? e
-                : new Error(`resubscribe ${channel} failed: ${String(e)}`));
-        }
     }
-    if (__classPrivateFieldGet(this, _WirefanClient_state, "f") === "connected" && restored.length > 0) {
+    if (__classPrivateFieldGet(this, _WirefanClient_epoch, "f") === epoch && __classPrivateFieldGet(this, _WirefanClient_state, "f") === "connected" && restored.length > 0) {
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "resubscribed", { channels: restored });
     }
+}, _WirefanClient_resubscribe = 
+/**
+ * One resubscribe attempt for a channel the caller still holds; true once
+ * it is confirmed. A failure decides the record's fate by class:
+ * - ConnectionClosedError: the connection dropped again. Keep the record
+ *   without an error event; the next #onConnected restores it.
+ * - A definitive refusal (isDefinitiveRefusal): surface it. #onErrorFrame
+ *   has already dropped the channel rather than pretend it is alive.
+ * - Anything else is transient: surface it, keep the record, and retry
+ *   on this connection with the reconnect backoff curve.
+ */
+async function _WirefanClient_resubscribe(channel, rec, epoch, retries) {
+    try {
+        await __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_ensureSubscribed).call(this, channel, rec);
+        return true;
+    }
+    catch (e) {
+        if (e instanceof ConnectionClosedError)
+            return false;
+        const err = e instanceof Error ? e : new Error(`resubscribe ${channel} failed: ${String(e)}`);
+        __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "error", err);
+        if (isDefinitiveRefusal(err))
+            return false;
+        if (__classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel) !== rec)
+            return false; // unsubscribed meanwhile
+        if (__classPrivateFieldGet(this, _WirefanClient_epoch, "f") === epoch && __classPrivateFieldGet(this, _WirefanClient_state, "f") === "connected") {
+            __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_scheduleResubscribe).call(this, channel, rec, epoch, retries + 1);
+        }
+        return false;
+    }
+}, _WirefanClient_scheduleResubscribe = function _WirefanClient_scheduleResubscribe(channel, rec, epoch, retries) {
+    __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, rec);
+    rec.retryTimer = setTimeout(() => {
+        rec.retryTimer = null;
+        if (__classPrivateFieldGet(this, _WirefanClient_epoch, "f") !== epoch || __classPrivateFieldGet(this, _WirefanClient_state, "f") !== "connected")
+            return;
+        if (__classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel) !== rec)
+            return;
+        void __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_resubscribe).call(this, channel, rec, epoch, retries).then((ok) => {
+            if (ok && __classPrivateFieldGet(this, _WirefanClient_epoch, "f") === epoch && __classPrivateFieldGet(this, _WirefanClient_state, "f") === "connected") {
+                __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "resubscribed", { channels: [channel] });
+            }
+        });
+    }, __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_backoffDelay).call(this, retries));
 }, _WirefanClient_ensureSubscribed = function _WirefanClient_ensureSubscribed(channel, rec) {
     if (rec.confirmed)
         return Promise.resolve();
