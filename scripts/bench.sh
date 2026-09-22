@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # wirefan benchmark runner: matrix over {fanout} x {registry} in Docker.
 #
-# Each cell boots the server in its own container pinned to 1 CPU and 6 GB
-# memory (docker run --cpus=1 --memory=6g), self-mints a pool of API keys
-# against that cell's own admin endpoint, then drives it with cmd/loadtest
-# from the host. Raw output lands in results/, one file per repetition.
+# Each cell boots the server in its own container capped at 1 CPU of quota
+# and 6 GB memory (docker run --cpus=1 --memory=6g; a CFS quota, not CPU
+# pinning), self-mints a pool of API keys against that cell's own admin
+# endpoint, then drives it with cmd/loadtest from the host. Raw output lands
+# in results/, one file per repetition.
 #
 # Key pool: the server rate-limits publishes per API key (100 msg/s, burst
 # 200, see internal/ratelimit wiring in cmd/wirefan). The pool is sized at
