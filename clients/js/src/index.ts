@@ -262,11 +262,21 @@ type Handler<T> = (payload: T) => void;
 /** A live channel subscription handle returned by `subscribe()`. */
 export interface Subscription {
   readonly channel: string;
-  /** True until `unsubscribe()` is called or the client closes. */
+  /**
+   * True until `unsubscribe()` is called, the client closes (explicitly or
+   * with reconnect attempts exhausted), or a resubscribe after a reconnect
+   * is definitively refused and the channel dropped. Once false it stays
+   * false, even if the channel is subscribed again later.
+   */
   readonly active: boolean;
   /**
    * Remove this handle's handler and, when it is the channel's last handle,
-   * send an `unsubscribe` frame and await the ack.
+   * forget the channel locally (its events stop at once), then send an
+   * `unsubscribe` frame and await the ack. Rejects with the server's
+   * WirefanError when the server refuses it (e.g. RATE_LIMITED): the server
+   * then keeps the subscription until the connection ends, and this handle
+   * cannot retry, since it is already inactive and a second call does
+   * nothing. It can also reject with AckTimeoutError or ConnectionClosedError.
    */
   unsubscribe(): Promise<void>;
 }
