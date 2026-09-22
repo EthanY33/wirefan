@@ -24,6 +24,15 @@ func setKeepalive(t *testing.T, interval, wait time.Duration) {
 	t.Cleanup(func() { pingInterval, pongWait = oldInterval, oldWait })
 }
 
+// setCloseHandshakeTimeout shortens closeHandshakeTimeout for one test. Call
+// it before dialing: Run reads it once, when it starts.
+func setCloseHandshakeTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := closeHandshakeTimeout
+	closeHandshakeTimeout = d
+	t.Cleanup(func() { closeHandshakeTimeout = old })
+}
+
 // serveRun serves every dialed WebSocket with its own Run (no parent
 // deadline, so only the conn's own logic can end it) and reports the time
 // each Run returned on the returned channel.
@@ -33,14 +42,15 @@ func serveRun(t *testing.T) (string, <-chan time.Time) {
 }
 
 // serveRunOn is serveRun with every Run tracked by h, under API key
-// "test-key".
+// "test-key". Like server.New it installs WithNetConn, so Run can reach the
+// TCP connection.
 func serveRunOn(t *testing.T, h *hub.Hub) (string, <-chan time.Time) {
 	t.Helper()
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
 	ended := make(chan time.Time, 8)
-	srv := httptest.NewServer(websocketHandler(func(c *websocket.Conn) {
-		_ = Run(context.Background(), c, "01HTEST", "test-key", Deps{
+	srv := httptest.NewUnstartedServer(websocketHandlerCtx(func(ctx context.Context, c *websocket.Conn) {
+		_ = Run(ctx, c, "01HTEST", "test-key", Deps{
 			Registry:      registry.NewSyncMap(),
 			SigningSecret: "test-signing-secret",
 			Fanout:        fanout.NewPerConn(),
@@ -50,6 +60,8 @@ func serveRunOn(t *testing.T, h *hub.Hub) (string, <-chan time.Time) {
 		})
 		ended <- time.Now()
 	}))
+	srv.Config.ConnContext = WithNetConn
+	srv.Start()
 	t.Cleanup(srv.Close)
 	return strings.Replace(srv.URL, "http", "ws", 1), ended
 }
