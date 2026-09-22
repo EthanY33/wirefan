@@ -35,15 +35,21 @@ GitHub release. `make release-local` produces the same file names in
 
 ## Verifying the Docker image locally
 
-`--allowed-origins` is required, so a bare `docker run` exits immediately
-with a usage error. The admin listener must bind `0.0.0.0` inside the
-container to be reachable through the port mapping.
+`--allowed-origins` is required, so a bare `docker run` exits at once
+with status 1 after logging
+`ERROR fatal err="--allowed-origins is required (...)"`. The admin
+listener must bind `0.0.0.0` inside the container to be reachable through
+the port mapping. The named volume keeps the admin token and key
+database across container replacements; the image runs as uid 65532, so
+a bind mount instead needs a host directory chowned to `65532:65532`
+(see `docs/DEPLOY.md` Appendix A).
 
 ```bash
 docker build -t wirefan:latest -f deploy/Dockerfile .
 
 docker run --rm --name wirefan \
     -p 8080:8080 -p 127.0.0.1:6060:6060 \
+    -v wirefan-state:/var/lib/wirefan \
     wirefan:latest \
     --listen=:8080 --admin-addr=0.0.0.0:6060 --dev --allowed-origins='*'
 
