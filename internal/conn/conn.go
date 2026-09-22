@@ -51,7 +51,8 @@ type Conn struct {
 	replayCache   *auth.ReplayCache
 	fanout        fanout.Fanout
 	rateLimit     *ratelimit.Limiter // per-API-key bucket; shared across all conns owned by the key
-	connRate      *rate.Limiter      // per-conn bucket; bounds a single socket's throughput
+	connRate      *rate.Limiter      // per-conn publish bucket; charged before rateLimit
+	controlRate   *rate.Limiter      // per-conn subscribe/unsubscribe bucket; charged before rateLimit
 	policy        Policy
 	closeReq      chan struct{}
 	subs          map[string]*registry.Channel
@@ -73,6 +74,16 @@ const (
 	// a meaningful broadcast DoS at 10k subscribers.
 	defaultConnPublishRate  = 50
 	defaultConnPublishBurst = 100
+
+	// Per-conn subscribe/unsubscribe rate. Control ops also draw from the
+	// shared per-API-key bucket, so without this layer one socket spamming
+	// junk unsubscribes could drain the key's budget and lock every other
+	// client on the key out. The burst equals the per-conn channel cap so a
+	// client re-joining a full channel set after a reconnect never trips
+	// it; 20/s sustained is far above what a UI changes its subscriptions
+	// at and well below the per-key refill, so one socket cannot empty it.
+	defaultConnControlRate  = 20
+	defaultConnControlBurst = defaultMaxChannelsPerConn
 )
 
 // CloseFrame implements the hub.closer interface — used by Hub.Drain to broadcast
@@ -109,6 +120,7 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 		fanout:        d.Fanout,
 		rateLimit:     d.RateLimit,
 		connRate:      rate.NewLimiter(rate.Limit(defaultConnPublishRate), defaultConnPublishBurst),
+		controlRate:   rate.NewLimiter(rate.Limit(defaultConnControlRate), defaultConnControlBurst),
 		policy:        d.Policy,
 		closeReq:      make(chan struct{}, 1),
 		subs:          map[string]*registry.Channel{},

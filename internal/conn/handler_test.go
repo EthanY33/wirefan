@@ -200,7 +200,10 @@ func TestLimitChannelsPerConn(t *testing.T) {
 			t.Fatalf("subscribe %d: %+v", i, got)
 		}
 	}
-	// 65th — expect LIMIT_CHANNELS error
+	// 65th: expect a LIMIT_CHANNELS error. The 64 subscribes spent the whole
+	// per-conn control burst; wait for a refill so the channel cap, not the
+	// rate limit, is what answers.
+	time.Sleep(2 * time.Second / defaultConnControlRate)
 	sendJSON(t, ws, map[string]any{"type": "subscribe", "channel": "public-overflow"})
 	got := readJSON(t, ws)
 	if got["type"] != "error" || got["code"] != "LIMIT_CHANNELS" {
@@ -465,6 +468,54 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 		// disconnect successful. CloseStatus may return 1008 (clean) or -1
 		// (abnormal); both indicate the server severed the conn.
 		return
+	}
+}
+
+// TestSpammingConnCannotStarveKey is the G4 regression. Every conn on an API
+// key shares one per-key bucket, and the per-conn publish limit used to be
+// charged only after it (control ops had no per-conn limit at all). One
+// socket could therefore burn the whole key budget with junk unsubscribes,
+// or with publishes its own per-conn limit then rejected, and lock every
+// other client on the key out. Per-conn limits now come first, so a
+// spammer hits RATE_LIMITED_CONN and the key keeps budget for others.
+func TestSpammingConnCannotStarveKey(t *testing.T) {
+	for _, op := range []string{"unsubscribe", "publish"} {
+		t.Run(op, func(t *testing.T) {
+			conns := newSharedEnvConns(t, PolicyDisconnect{}, 2)
+			spam, victim := conns[0], conns[1]
+			if op == "publish" {
+				sendJSON(t, spam, map[string]any{"type": "subscribe", "channel": "public-spam"})
+				if got := readJSON(t, spam); got["type"] != "subscribed" {
+					t.Fatalf("spam subscribe: %+v", got)
+				}
+			}
+
+			// Well past the per-key burst (200). One reply per frame: an
+			// ack, the spammer's own event, or an error.
+			codes := map[string]int{}
+			for i := 0; i < 400; i++ {
+				switch op {
+				case "unsubscribe":
+					sendJSON(t, spam, map[string]any{"type": "unsubscribe", "channel": "public-never-held"})
+				case "publish":
+					sendJSON(t, spam, map[string]any{"type": "publish", "channel": "public-spam", "data": i})
+				}
+				if got := readJSON(t, spam); got["type"] == "error" {
+					codes[got["code"].(string)]++
+				}
+			}
+			if codes["RATE_LIMITED_CONN"] == 0 {
+				t.Fatalf("spammer never hit its per-conn limit: %v", codes)
+			}
+			if codes["RATE_LIMITED"] != 0 {
+				t.Fatalf("spammer drained the shared per-key bucket: %v", codes)
+			}
+
+			sendJSON(t, victim, map[string]any{"type": "subscribe", "channel": "public-victim"})
+			if got := readJSON(t, victim); got["type"] != "subscribed" {
+				t.Fatalf("second conn on the key was starved: %+v", got)
+			}
+		})
 	}
 }
 
