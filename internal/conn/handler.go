@@ -22,7 +22,10 @@ import (
 // monotonically with attacker effort.
 const maxChannelNameLen = 128
 
-func validateChannelName(name string) error {
+// ValidateChannelName enforces the channel-name rules shared by the WS
+// protocol and POST /v1/auth/sign: non-empty, at most maxChannelNameLen
+// bytes, no control characters.
+func ValidateChannelName(name string) error {
 	if name == "" {
 		return errors.New("channel name is empty")
 	}
@@ -88,7 +91,10 @@ func channelReserved(name string) bool {
 	return strings.HasPrefix(name, reservedChannelPrefix)
 }
 
-func channelRequiresAuth(name string) bool {
+// ChannelRequiresAuth reports whether subscribing to name needs a signed
+// token (a private- or presence- channel). POST /v1/auth/sign refuses to
+// mint tokens for any other channel.
+func ChannelRequiresAuth(name string) bool {
 	for _, p := range authRequiredPrefixes {
 		if strings.HasPrefix(name, p) {
 			return true
@@ -105,7 +111,7 @@ func (c *Conn) handle(ctx context.Context, raw []byte) {
 	}
 	switch msg.Type {
 	case "subscribe", "unsubscribe", "publish":
-		if err := validateChannelName(msg.Channel); err != nil {
+		if err := ValidateChannelName(msg.Channel); err != nil {
 			c.sendError("BAD_CHANNEL", err.Error())
 			return
 		}
@@ -137,7 +143,7 @@ func (c *Conn) handleSubscribe(msg incoming) {
 		c.sendError("RATE_LIMITED", "too many control ops")
 		return
 	}
-	if channelRequiresAuth(msg.Channel) {
+	if ChannelRequiresAuth(msg.Channel) {
 		if err := auth.VerifyTokenAgainst(c.signingSecret, c.socketID, msg.Channel, msg.Token, c.replayCache); err != nil {
 			metrics.AuthFails.Inc()
 			if errors.Is(err, auth.ErrTokenReplayed) {
