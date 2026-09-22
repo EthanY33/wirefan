@@ -188,9 +188,21 @@ func migrate(db *sql.DB, ms []migration) error {
 // cannot own: future versions, and version-0 files that are neither empty
 // nor a v0.2.0 key store. It only reads, so preflight can run it over a
 // read-only connection.
+//
+// Every read runs on one connection inside one read transaction, so the
+// version and the table list come from the same snapshot. As separate
+// statements on the pool they could straddle a concurrent opener's
+// migration and pair a stale version 0 with the migrated tables, refusing
+// a database wirefan itself just migrated.
 func checkDatabase(db *sql.DB, ms []migration) (int, error) {
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var current int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&current); err != nil {
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&current); err != nil {
 		return 0, fmt.Errorf("read schema version: %w", err)
 	}
 	latest := 0
@@ -201,7 +213,7 @@ func checkDatabase(db *sql.DB, ms []migration) (int, error) {
 		return 0, fmt.Errorf("database schema version %d is newer than this binary supports (max %d); refusing to open; upgrade wirefan instead of downgrading the database", current, latest)
 	}
 	if current == 0 {
-		if err := checkPreVersioningDatabase(db); err != nil {
+		if err := checkPreVersioningDatabase(tx); err != nil {
 			return 0, err
 		}
 	}
@@ -276,9 +288,10 @@ func (c connTx) Exec(query string, args ...any) (sql.Result, error) {
 // "keys" is validated against the v0.2.0 shape. Any other table means the
 // file belongs to some other application: running migrations over it would
 // write wirefan's table into a foreign database and clobber its
-// user_version, so refuse.
-func checkPreVersioningDatabase(db *sql.DB) error {
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+// user_version, so refuse. It reads through checkDatabase's transaction so
+// the table list comes from the same snapshot as the version.
+func checkPreVersioningDatabase(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
 		return fmt.Errorf("inspect pre-versioning database: %w", err)
 	}
@@ -300,7 +313,7 @@ func checkPreVersioningDatabase(db *sql.DB) error {
 	case len(tables) == 0:
 		return nil // genuinely empty database
 	case len(tables) == 1 && tables[0] == "keys":
-		return checkV020KeysTable(db)
+		return checkV020KeysTable(tx)
 	default:
 		return fmt.Errorf("database has schema version 0 but contains tables wirefan did not create (%s); refusing to migrate a database that belongs to another application", strings.Join(tables, ", "))
 	}
@@ -308,8 +321,8 @@ func checkPreVersioningDatabase(db *sql.DB) error {
 
 // checkV020KeysTable compares the keys table's columns, NOT NULL flags, and
 // primary key against the exact v0.2.0 shape; anything else is refused.
-func checkV020KeysTable(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(keys)`)
+func checkV020KeysTable(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA table_info(keys)`)
 	if err != nil {
 		return fmt.Errorf("inspect keys table: %w", err)
 	}
