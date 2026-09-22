@@ -26,7 +26,9 @@ func newStuckConn(h *Hub) *stuckConn { return newKeyedStuckConn(h, "key") }
 
 func newKeyedStuckConn(h *Hub, key string) *stuckConn {
 	c := &stuckConn{h: h, key: key, forced: make(chan struct{})}
-	h.Add(c)
+	if _, ok := h.Add(c); !ok {
+		panic("stuckConn: Add refused key " + key)
+	}
 	return c
 }
 
@@ -115,6 +117,33 @@ func TestCloseKeyClosesOnlyThatKey(t *testing.T) {
 	}
 	if n := b.frames.Load(); n != 0 {
 		t.Errorf("conn on another key got %d close frames", n)
+	}
+}
+
+// TestAddRefusesClosedKey: once CloseKey has run for a key, Add must refuse a
+// conn on that key and hand back the close CloseKey sent, so the caller can
+// send it. This is what closes the window between an upgrade's key lookup
+// and its Add. Conns on other keys are unaffected.
+func TestAddRefusesClosedKey(t *testing.T) {
+	h := New()
+	h.CloseKey("a", websocket.StatusPolicyViolation, "key revoked")
+
+	late := &stuckConn{h: h, key: "a", forced: make(chan struct{})}
+	ce, ok := h.Add(late)
+	if ok {
+		t.Fatal("Add tracked a conn on a key CloseKey already closed")
+	}
+	if ce.Code != websocket.StatusPolicyViolation || ce.Reason != "key revoked" {
+		t.Fatalf("want 1008 %q, got %d %q", "key revoked", ce.Code, ce.Reason)
+	}
+	if n := late.frames.Load(); n != 0 {
+		t.Fatalf("Add sent %d close frames itself; closing is the caller's job", n)
+	}
+
+	other := newKeyedStuckConn(h, "b")
+	t.Cleanup(other.CloseNow)
+	if n := h.Len(); n != 1 {
+		t.Fatalf("hub tracks %d conns, want only the conn on the other key", n)
 	}
 }
 

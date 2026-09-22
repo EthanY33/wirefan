@@ -206,3 +206,36 @@ func TestOversizeMessageClosesSocket(t *testing.T) {
 		t.Fatal("Run did not return after the socket closed")
 	}
 }
+
+// TestRunRefusesKeyClosedBeforeAdd is the G6 residual-race regression. An
+// upgrade can look its key up just before a revoke and reach Hub.Add just
+// after Hub.CloseKey took its snapshot, so the revoke never closed it and the
+// conn lived on. Run must close such a conn with the close CloseKey sent,
+// before the hello, and never leave it tracked.
+func TestRunRefusesKeyClosedBeforeAdd(t *testing.T) {
+	h := hub.New()
+	if n := h.CloseKey("test-key", websocket.StatusPolicyViolation, "key revoked"); n != 0 {
+		t.Fatalf("CloseKey closed %d conns before any dial", n)
+	}
+	wsURL, ended := serveRunOn(t, h)
+	c := dialWS(t, wsURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, raw, err := c.Read(ctx)
+	var ce websocket.CloseError
+	if !errors.As(err, &ce) {
+		t.Fatalf("conn on a closed key: want a close frame, got err %v, frame %s", err, raw)
+	}
+	if ce.Code != websocket.StatusPolicyViolation || ce.Reason != "key revoked" {
+		t.Fatalf("want 1008 %q, got %d %q", "key revoked", ce.Code, ce.Reason)
+	}
+	select {
+	case <-ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after refusing the conn")
+	}
+	if n := h.Len(); n != 0 {
+		t.Fatalf("hub still tracks %d conns", n)
+	}
+}
