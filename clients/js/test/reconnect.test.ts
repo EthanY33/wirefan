@@ -266,11 +266,53 @@ describe("reconnect", () => {
     release[0]!("tok-for-SID0");
     release[1]!("tok-for-SID1");
     const err = await outcome;
-    // Rejected either way (the refusal if it joined in time, the drop if the
-    // channel was already gone), and no third attempt for a refused channel.
-    expect(err).toBeInstanceOf(Error);
+    // The refusal either way (joined in time, or remembered on the dropped
+    // record), and no third attempt for a refused channel.
+    expect(err).toBeInstanceOf(WirefanError);
+    expect((err as WirefanError).code).toBe("AUTH_FAILED");
     await new Promise((r) => setTimeout(r, 20));
     expect(calls).toEqual(["SID0", "SID1"]);
+    c.close();
+  });
+
+  it("rejects the interrupted subscribe with the refusal when it lands before the stale authorize() returns", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        respond: (f) =>
+          i === 1 && f.type === "subscribe"
+            ? { type: "error", code: "AUTH_FAILED", message: "invalid token", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const calls: string[] = [];
+    const release: ((token: string) => void)[] = [];
+    const c = makeClient(h, {
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        return new Promise<string>((resolve) => release.push(resolve));
+      },
+    });
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    await c.connect();
+    const outcome = c.subscribe("private-room", () => {}).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await until(() => calls.length === 1, "first authorize");
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => calls.length === 2, "authorize re-invoked after reconnect");
+
+    // The resubscribe is refused and the channel dropped while the stale
+    // call is still pending; only then does the stale call return.
+    release[1]!("tok-for-SID1");
+    await until(() => errors.length === 1, "refusal on the error event");
+    release[0]!("tok-for-SID0");
+    const err = await outcome;
+    expect(c.state).toBe("connected");
+    expect(err).toBeInstanceOf(WirefanError);
+    expect(err).toBe(errors[0]);
+    expect((err as WirefanError).code).toBe("AUTH_FAILED");
     c.close();
   });
 
