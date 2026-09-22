@@ -449,6 +449,74 @@ func TestMigrateRefusesForeignDatabase(t *testing.T) {
 	}
 }
 
+// TestMigrateRefusesForeignWALDatabase extends the byte-for-byte refusal
+// guarantee to a foreign database in WAL mode whose latest commits still
+// live in its -wal file, which is what an application that crashed or was
+// killed leaves behind. query_only only blocks SQL writes: a preflight
+// connection opened that way still checkpoints the WAL into the main file
+// when it closes as the last connection and then deletes the -wal. Both
+// files must survive the refusal untouched.
+func TestMigrateRefusesForeignWALDatabase(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "live.db")
+	w, err := sql.Open("sqlite3", live+"?_journal_mode=WAL")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	// One connection so the pragma below applies to every statement.
+	w.SetMaxOpenConns(1)
+	if _, err := w.Exec(`PRAGMA wal_autocheckpoint=0`); err != nil {
+		t.Fatalf("disable autocheckpoint: %v", err)
+	}
+	if _, err := w.Exec(`CREATE TABLE invoices (id INTEGER PRIMARY KEY, amount REAL)`); err != nil {
+		t.Fatalf("create foreign table: %v", err)
+	}
+	if _, err := w.Exec(`INSERT INTO invoices(amount) VALUES (12.5)`); err != nil {
+		t.Fatalf("insert foreign row: %v", err)
+	}
+
+	// Snapshot the pair while the foreign writer still has it open, so the
+	// copy is the uncheckpointed state a crash would leave on disk. Closing
+	// the writer normally would checkpoint and delete the -wal first.
+	path := filepath.Join(dir, "foreignapp.db")
+	for _, suffix := range []string{"", "-wal"} {
+		if err := os.WriteFile(path+suffix, fileBytes(t, live+suffix), 0o600); err != nil {
+			t.Fatalf("copy %s: %v", suffix, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close foreign writer: %v", err)
+	}
+
+	mainBefore := fileBytes(t, path)
+	walBefore := fileBytes(t, path+"-wal")
+	if len(walBefore) == 0 {
+		t.Fatal("fixture has an empty -wal; the foreign commits must still be in it")
+	}
+
+	_, err = NewSQLite(path)
+	if err == nil {
+		t.Fatal("NewSQLite succeeded on a foreign WAL database, want refusal")
+	}
+	// The refusal must come from seeing the invoices table, which exists
+	// only in the -wal: a preflight that ignored the WAL would find no
+	// tables and adopt the file as empty.
+	if !strings.Contains(err.Error(), "tables wirefan did not create") {
+		t.Fatalf("error = %q, want foreign-table refusal", err)
+	}
+	if after := fileBytes(t, path); !bytes.Equal(mainBefore, after) {
+		t.Fatalf("refused open modified the foreign main file (%d bytes before, %d after)", len(mainBefore), len(after))
+	}
+	walAfter, err := os.ReadFile(path + "-wal")
+	if err != nil {
+		t.Fatalf("refused open removed the foreign -wal: %v", err)
+	}
+	if !bytes.Equal(walBefore, walAfter) {
+		t.Fatalf("refused open modified the foreign -wal (%d bytes before, %d after)", len(walBefore), len(walAfter))
+	}
+}
+
 // TestMigrateRefusesConstraintlessKeysTable proves the v0.2.0 shape check
 // covers constraints, not just column names: a keys table without the
 // PRIMARY KEY on id would accept duplicate ids and make which row
