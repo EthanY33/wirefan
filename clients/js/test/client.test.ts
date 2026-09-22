@@ -6,6 +6,7 @@ import {
   WirefanClient,
   WirefanError,
   type ChannelEvent,
+  type Subscription,
 } from "../src/index.js";
 import { FakeWSHarness, autoAccept, until } from "./fake-ws.js";
 
@@ -433,6 +434,35 @@ describe("error routing", () => {
     await expect(c.subscribe("late")).rejects.toBeInstanceOf(AckTimeoutError);
     h.current.serverSend({ type: "subscribed", channel: "late" });
     expect(sentOf(h, "unsubscribe")).toEqual([{ type: "unsubscribe", channel: "late" }]);
+    c.close();
+  });
+
+  it("still undoes a late ack when the only pending unsubscribe was sent before that subscribe", async () => {
+    // Older server: it refuses the unsubscribe without naming the op, the
+    // FIFO fallback pins that refusal on the subscribe sent after it, and
+    // the unsubscribe stays pending. The server has already processed that
+    // unsubscribe, so it cannot undo the subscribe behind it: the client must.
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
+    const c = makeClient(h, { ackTimeoutMs: 1000 });
+    await c.connect();
+    const first = track(c.subscribe("demo"));
+    await until(() => sentOf(h, "subscribe").length === 1, "first subscribe");
+    h.current.serverSend({ type: "subscribed", channel: "demo" });
+    await until(() => first.state === "resolved", "first subscribe settles");
+
+    const unsub = track((first.value as Subscription).unsubscribe());
+    const second = track(c.subscribe("demo"));
+    await until(() => sentOf(h, "subscribe").length === 2, "second subscribe");
+    h.current.serverSend({ type: "error", code: "RATE_LIMITED", message: "too many control ops" });
+    await until(() => second.state === "rejected", "second subscribe takes the refusal");
+
+    h.current.serverSend({ type: "subscribed", channel: "demo" });
+    expect(sentOf(h, "unsubscribe")).toEqual([
+      { type: "unsubscribe", channel: "demo" },
+      { type: "unsubscribe", channel: "demo" },
+    ]);
+    expect(unsub.state).toBe("pending");
     c.close();
   });
 
