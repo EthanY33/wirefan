@@ -26,7 +26,8 @@ configuration problems:
 
 You need a plain Linux box where a systemd service can run indefinitely.
 A single-vCPU VPS is enough to start: `docs/BENCHMARKS.md` records
-measured behavior with the server pinned to one CPU. Those runs did not
+measured behavior with the server capped at one CPU of quota
+(`docker run --cpus=1`). Those runs did not
 constrain memory, so this runbook makes no memory-sizing claim; the
 smallest tier your provider sells is the natural starting point.
 
@@ -178,16 +179,33 @@ scp -i ~/.ssh/wirefan_vps dist/wirefan_${VER}_linux_${ARCH} dist/SHA256SUMS ubun
 # then on the server, in ~: sha256sum -c --ignore-missing SHA256SUMS
 ```
 
-**Option C: build on the server** (needs ~1 GB RAM free; the Go toolchain
-plus gcc):
+**Option C: build on the server** (needs ~1 GB RAM free, gcc, and Go
+1.26 or newer). Ubuntu 24.04's `golang-go` package is Go 1.22, too old
+for this module, so install the official build from
+<https://go.dev/dl/> (any 1.26.x; 1.26.8 below). Alternatively keep a
+distro Go of 1.21 or later and put `GOTOOLCHAIN=auto` in front of the
+`go build` line: Go then downloads the toolchain `go.mod` asks for.
 
 ```bash
-sudo apt-get install -y golang-go gcc git
+sudo apt-get install -y gcc git
+sudo rm -rf /usr/local/go    # the official install replaces any previous one
+curl -fL https://go.dev/dl/go1.26.8.linux-${ARCH}.tar.gz | sudo tar -C /usr/local -xz
+export PATH=/usr/local/go/bin:$PATH
+go version                   # expect: go version go1.26.8 linux/<arch>
 cd ~ && git clone https://github.com/EthanY33/wirefan.git && cd wirefan
 git checkout ${VER}
 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${VER}" \
     -o ~/wirefan_${VER}_linux_${ARCH} ./cmd/wirefan
 cd ~
+```
+
+Whichever option you used, confirm the binary runs on this server and is
+the version you meant. `--version` works without any other flag:
+
+```bash
+chmod +x ~/wirefan_${VER}_linux_${ARCH}
+~/wirefan_${VER}_linux_${ARCH} --version
+# expect: wirefan v1.0.0 (go1.26.x, linux/amd64)
 ```
 
 ---
@@ -233,11 +251,12 @@ It:
    reloads Caddy either way so the new Caddyfile replaces Caddy's stock
    config
 
-It generates and prints no secrets. Caddy fetches the Let's Encrypt
-certificate on the first HTTPS request, typically well under a minute,
-provided DNS (step 2) and the firewall (step 3) are done; check with
+It generates and prints no secrets. Caddy requests the Let's Encrypt
+certificate as soon as it loads the new Caddyfile (the reload at the end
+of the script), typically done well under a minute later, provided DNS
+(step 2) and the firewall (step 3) are done; check with
 `sudo journalctl -u caddy -n 50 --no-pager` and look for
-`obtained certificate`.
+`certificate obtained successfully`.
 
 ---
 
@@ -271,6 +290,20 @@ The `secret` is shown **once**; store it in your app's config. It is only
 needed for `private-`/`presence-` channel auth via `POST /v1/auth/sign`;
 plain channels need only the key `id`. Keys persist in SQLite at
 `/var/lib/wirefan/wirefan.db` and survive restarts and upgrades.
+`GET /v1/keys` (same header) lists them, without secrets.
+
+To revoke a key, on the server:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE \
+    -H "Authorization: Bearer $(sudo cat /var/lib/wirefan/admin.token)" \
+    http://127.0.0.1:6060/v1/keys/<key-id>
+# expect: 204 (404 if no key has that id)
+```
+
+Revocation takes effect at once: new connections with that key are
+refused with `401`, and sockets already open under it are closed with
+WebSocket close code `1008`, reason `key revoked`.
 
 End-to-end pub/sub check from your laptop:
 
@@ -313,6 +346,10 @@ One behavior to know: subscribe tokens for `private-`/`presence-`
 channels are signed with a per-process secret, so any restart invalidates
 already-issued tokens; clients must fetch a fresh one from
 `POST /v1/auth/sign` and reconnect.
+
+To see which version is installed, run `/usr/local/bin/wirefan --version`.
+Every start also logs it: `sudo journalctl -u wirefan | grep 'wirefan starting'`
+shows lines ending in `version=v1.0.0 go=go1.26.x`.
 
 ### Manual rollback
 
@@ -424,34 +461,51 @@ Prometheus metrics are on the **admin listener**, never the public one:
 curl -s http://127.0.0.1:6060/metrics | grep '^wirefan_' | head -20
 ```
 
-The series the binary exports (source of truth:
-`internal/metrics/prom.go`):
+The series wirefan defines (source of truth: `internal/metrics/prom.go`),
+next to the standard `go_*` and `process_*` series of the Prometheus Go
+client:
 
-- `wirefan_connections_total` (gauge): open WebSocket connections right now.
-- `wirefan_messages_published_total` (counter): messages accepted for fanout.
-- `wirefan_messages_dropped_total{reason}` (counter): nonzero means slow
-  consumers are being dropped, which is the documented at-most-once
-  behavior, not a bug.
-- `wirefan_broadcast_latency_seconds` (histogram): time to fan a publish
-  out to its subscribers.
+- `wirefan_connections` (gauge): open WebSocket connections right now.
+- `wirefan_channels` (gauge): channels in the registry, read from the
+  live registry at scrape time, so it cannot drift as channels are
+  created lazily and reaped by the once-a-minute sweep. It includes the
+  `_wirefan-stats` system channel, which the stats publisher creates on
+  every 5-second tick if it is missing, whether or not anyone
+  subscribes. An idle server therefore reads 1, except for up to 5
+  seconds after each sweep has removed the unsubscribed stats channel.
+- `wirefan_messages_published_total` (counter): messages accepted for
+  fanout.
+- `wirefan_messages_dropped_total{reason="slow_consumer"}` (counter):
+  events not delivered because a subscriber's send buffer was full; that
+  subscriber is then disconnected. Nonzero is the documented at-most-once
+  behavior, not a bug. The series is absent until the first drop.
+- `wirefan_broadcast_latency_seconds` (histogram): how long a publish
+  spends in the fanout call. With the default `--fanout=per-conn` that is
+  queueing the event on every subscriber's send buffer (not the network
+  write). With `--fanout=sharded` it is only the handoff to a worker
+  queue, so the per-subscriber work is not included.
 - `wirefan_upgrade_rejected_total{reason}` (counter): refused WebSocket
-  upgrades (bad key, per-IP cap, origin).
+  upgrades. Two reasons exist: `bad_key` (missing, unknown, or revoked
+  key; the client gets `401`) and `phantom_cap` (the per-IP connection
+  cap; `429`). Origin mismatches are not counted here: they get `403`
+  and a `ws upgrade failed` warning in the log.
 - `wirefan_auth_failures_total` (counter): failed subscribe-token checks
   on `private-`/`presence-` channels.
 
-`wirefan_channels_total` (gauge) is evaluated at scrape time from the live
-registry rather than incremented on subscribe, so it cannot drift as
-channels are created lazily and reaped by the sweep loop. It counts the
-`_wirefan-stats` system channel too, so a server with no client channels
-open reads 1 once anything has subscribed to stats.
-
-The read-only `_wirefan-stats` channel publishes the same figures over
-WebSocket every 5 seconds, drawn from these same collectors, so the stats
-channel and this endpoint cannot disagree.
+The read-only `_wirefan-stats` channel publishes a subset of these over
+WebSocket every 5 seconds: `connections`, `channels`, `published`
+(also sent as `messages_published_total`), and `dropped` (summed across
+reasons). They are read from the same collectors, so they match a scrape
+taken at the same moment.
 
 For external scraping, do not open 6060 to the internet. Either run
-Prometheus/Grafana Agent on the VPS itself, or put the scraper and the VPS
-on a WireGuard/Tailscale network and scrape `127.0.0.1:6060` over that.
+Prometheus/Grafana Agent on the VPS itself, or reach the admin listener
+over a private network: change `--admin-addr` in the unit from
+`127.0.0.1:6060` to the VPS's WireGuard/Tailscale address and scrape
+that. Only peers on that network can then connect, but they reach
+`/v1/keys` (admin-token protected) and `/debug/pprof` as well, so treat
+the network as trusted. A `provision.sh` re-run rewrites the unit, so
+re-apply the change afterwards.
 
 Ad-hoc profiling uses the same listener:
 
@@ -474,10 +528,20 @@ top -p "$(pgrep -x wirefan)"             # resource usage
 ```
 
 The most common first-boot failure is a missing or invalid
-`--allowed-origins`: wirefan exits immediately with a usage error rather
-than starting insecurely. During graceful shutdown `/v1/health` flips to
-`503` with body `draining` so load balancers can drain; steady state is
-`200` `ok`.
+`--allowed-origins`. wirefan refuses to start insecurely: it logs a
+single line and exits with status 1, and systemd (`Restart=on-failure`)
+retries every 5 seconds, so the journal repeats that line and
+`systemctl status` shows `activating (auto-restart)`. The line names the
+problem in `err`:
+
+```
+ERROR fatal err="--allowed-origins is required (use --allowed-origins=https://your.host or pass --dev with --allowed-origins=*)"
+```
+
+Every other startup error (an unreadable state dir, a database from a
+newer wirefan) produces the same `ERROR fatal err=...` shape. During
+graceful shutdown `/v1/health` flips to `503` with body `draining` so
+load balancers can drain; steady state is `200` `ok`.
 
 ---
 
@@ -486,9 +550,23 @@ than starting insecurely. During graceful shutdown `/v1/health` flips to
 The systemd-plus-binary path above is the recommended one (smallest moving
 parts, full unit hardening). A container path exists too:
 `deploy/Dockerfile` builds a distroless image; `deploy/README.md` shows
-how to run and smoke-test it, including the two container-specific
-requirements (`--admin-addr=0.0.0.0:6060` plus a `127.0.0.1`-bound port
-publish, and a volume over `/var/lib/wirefan` owned by uid 65532).
+how to run and smoke-test it. Two container-specific requirements:
+
+- **Admin listener.** Pass `--admin-addr=0.0.0.0:6060` (loopback inside
+  the container is unreachable through a port mapping) and publish it
+  bound to the host's loopback only: `-p 127.0.0.1:6060:6060`.
+- **State volume.** The admin token and key database live in
+  `/var/lib/wirefan`. The image declares it a volume, but unless you name
+  one, Docker gives each new container a fresh anonymous volume, so the
+  token and keys are lost when the container is replaced. The image runs
+  as distroless's `nonroot` user (uid 65532) and ships that directory
+  owned by it. A named volume (`-v wirefan-state:/var/lib/wirefan`)
+  copies that ownership when Docker creates it, so it works as is. A bind
+  mount of a host directory keeps the host's ownership instead: create
+  it and `sudo chown 65532:65532` it first. Otherwise wirefan exits at
+  startup with SQLite's unhelpful wording for a directory it cannot
+  write:
+  `ERROR fatal err="open /var/lib/wirefan/wirefan.db: read schema version: unable to open database file: no such file or directory"`.
 
 ## Appendix B: no public IP? Cloudflare Tunnel
 
@@ -671,13 +749,17 @@ suddenly cannot connect at all" as a prompt to diff the live list at
 
 Cloudflare proxies WebSocket connections but reaps ones that sit idle at
 its edge; Cloudflare documents the proxy idle timeout as being on the
-order of 100 seconds. wirefan never lets a connection go idle that long:
-`internal/conn/conn.go` sets `pingInterval` to 30 seconds, so the server
-pings every open connection well inside any such window and the proxy
-always sees recent traffic. No Cloudflare timeout tuning, keepalive
-configuration, or client-side heartbeat is needed. If you ever change
-`pingInterval`, keep it comfortably under Cloudflare's idle timeout or
-proxied connections will start dying quietly during quiet periods.
+order of 100 seconds. wirefan never lets a healthy connection go idle
+that long: the server sends a WebSocket ping on every open connection
+every 30 seconds (`pingInterval` in `internal/conn/conn.go`) and drops a
+peer that does not answer within 10 seconds. Browsers and WebSocket
+libraries answer pings on their own, so a healthy client that is only
+listening stays connected, the proxy sees traffic in both directions
+every 30 seconds, and a dead peer is cleaned up within about 40 seconds.
+No Cloudflare timeout tuning, keepalive configuration, or client-side
+heartbeat is needed. If you ever change `pingInterval`, keep it
+comfortably under Cloudflare's idle timeout or proxied connections will
+start dying quietly during quiet periods.
 
 ---
 
