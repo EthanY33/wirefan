@@ -224,7 +224,8 @@ Proven by the test suite rather than by a benchmark, and run under the race
 detector in CI:
 
 - **No goroutine leaks.** After 1,000 connections churn, the server returns
-  to its goroutine baseline, under both fanout strategies
+  to its goroutine baseline under both fanout strategies, and again after
+  key revocation and shutdown close every connection
   ([`internal/server/leak_test.go`](internal/server/leak_test.go)).
 - **FIFO per subscriber.** Each connection's buffered send channel keeps
   its order. Broadcast snapshots the subscriber set and releases the lock
@@ -235,8 +236,12 @@ detector in CI:
   and `/v1/health` answers 503 while draining
   ([`internal/server/health_test.go`](internal/server/health_test.go)).
 - **Idle connections stay up.** A client that only answers pings is never
-  dropped; one that stops answering is disconnected within about 40 seconds
-  ([`internal/conn`](internal/conn)).
+  dropped, including past the 60 second cutoff older versions had; one that
+  stops answering is disconnected within about 40 seconds
+  ([`internal/conn/pumps_test.go`](internal/conn/pumps_test.go)).
+- **Revocation is immediate.** Revoking an API key closes that key's open
+  connections with 1008 and refuses any that were mid-upgrade
+  ([`internal/hub/hub_test.go`](internal/hub/hub_test.go)).
 
 ## Running it in production
 
