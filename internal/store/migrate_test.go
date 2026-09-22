@@ -8,6 +8,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -643,6 +645,125 @@ func TestMigrateRefusesForeignWALDatabase(t *testing.T) {
 	}
 	if !bytes.Equal(walBefore, walAfter) {
 		t.Fatalf("refused open modified the foreign -wal (%d bytes before, %d after)", len(walBefore), len(walAfter))
+	}
+}
+
+// dirListing renders every entry in dir as "name:size", sorted, so a test
+// can prove an operation created or resized nothing beside a database.
+func dirListing(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	var out []string
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			t.Fatalf("stat %s: %v", e.Name(), err)
+		}
+		out = append(out, e.Name()+":"+strconv.FormatInt(info.Size(), 10))
+	}
+	return out
+}
+
+// TestMigrateRefusalLeavesDirectoryUnchanged proves a refusal adds no files
+// next to the refused database. A cleanly closed WAL database has no -wal
+// on disk, and a plain mode=ro connection to it would create an empty -wal
+// and a -shm, owned by wirefan's user, beside another application's file.
+func TestMigrateRefusalLeavesDirectoryUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dsn  string
+	}{
+		{"rollback journal", ""},
+		{"cleanly closed WAL", "?_journal_mode=WAL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "foreignapp.db")
+			db, err := sql.Open("sqlite3", path+tc.dsn)
+			if err != nil {
+				t.Fatalf("sql.Open: %v", err)
+			}
+			if _, err := db.Exec(`CREATE TABLE invoices (id INTEGER PRIMARY KEY, amount REAL)`); err != nil {
+				t.Fatalf("create foreign table: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
+
+			before := dirListing(t, dir)
+			if len(before) != 1 {
+				t.Fatalf("fixture left %v, want only the main file", before)
+			}
+			mainBefore := fileBytes(t, path)
+
+			_, err = NewSQLite(path)
+			if err == nil {
+				t.Fatal("NewSQLite succeeded on a foreign database, want refusal")
+			}
+			if !strings.Contains(err.Error(), "tables wirefan did not create (invoices)") {
+				t.Fatalf("error = %q, want foreign-table refusal", err)
+			}
+			if after := dirListing(t, dir); !slices.Equal(before, after) {
+				t.Fatalf("refused open changed the directory: before %v, after %v", before, after)
+			}
+			if after := fileBytes(t, path); !bytes.Equal(mainBefore, after) {
+				t.Fatalf("refused open modified the foreign main file (%d bytes before, %d after)", len(mainBefore), len(after))
+			}
+		})
+	}
+}
+
+// TestIsCleanWALDatabase pins which files preflight opens with
+// immutable=1: only a WAL-mode file with no -wal. A rollback-journal file
+// is written in place by a committing writer and can carry a hot journal,
+// and a -wal may hold commits the main file lacks; immutable=1 ignores
+// locks, journals and the WAL, so either would be misread.
+func TestIsCleanWALDatabase(t *testing.T) {
+	dir := t.TempDir()
+	mkdb := func(name, dsn string) string {
+		path := filepath.Join(dir, name)
+		db, err := sql.Open("sqlite3", path+dsn)
+		if err != nil {
+			t.Fatalf("sql.Open: %v", err)
+		}
+		if _, err := db.Exec(`CREATE TABLE t (x)`); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		return path
+	}
+	rollback := mkdb("rollback.db", "")
+	clean := mkdb("clean.db", "?_journal_mode=WAL")
+	withWAL := mkdb("withwal.db", "?_journal_mode=WAL")
+	if err := os.WriteFile(withWAL+"-wal", nil, 0o600); err != nil {
+		t.Fatalf("write -wal: %v", err)
+	}
+	short := filepath.Join(dir, "short.db")
+	if err := os.WriteFile(short, []byte("SQLite"), 0o600); err != nil {
+		t.Fatalf("write short file: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, path string
+		want       bool
+	}{
+		{"rollback journal", rollback, false},
+		{"cleanly closed WAL", clean, true},
+		{"WAL with -wal", withWAL, false},
+		{"shorter than a header", short, false},
+	} {
+		got, err := isCleanWALDatabase(tc.path)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: isCleanWALDatabase = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
