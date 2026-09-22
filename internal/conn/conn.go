@@ -159,6 +159,17 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 		<-errc
 	}
 
+	// Both pumps have returned, so tear the socket down on every exit path.
+	// The oversize-message (1009) path and other pump errors used to return
+	// here with the TCP connection still open and nobody reading it. Any
+	// close frame is already out by now (written by the library on 1009 and
+	// protocol errors, by the peer's handshake, or by the 1008 branch
+	// above), so CloseNow only releases the socket, and it is a no-op once
+	// a Close has finished. Not Close: its handshake discards the rest of a
+	// half-read oversize frame with no deadline, so a peer that claims a
+	// huge frame and then stalls would pin this goroutine forever.
+	_ = ws.CloseNow()
+
 	if err != nil {
 		slog.Debug("conn closed", "socket_id", socketID, "err", err)
 	}

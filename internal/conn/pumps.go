@@ -2,7 +2,6 @@ package conn
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/coder/websocket"
@@ -43,15 +42,15 @@ func (c *Conn) writePump(ctx context.Context) error {
 
 // readPump reads on the Run context with no per-Read timeout; liveness is
 // writePump's job (see pingInterval). Pongs are consumed inside Read, which
-// is what lets writePump's Ping return.
+// is what lets writePump's Ping return. Errors are returned as-is: Run owns
+// tearing the socket down once both pumps are done. (A canceled ctx has
+// already made coder/websocket close the socket under the in-flight Read,
+// so the GoingAway Close that used to live here never reached the peer.)
 func (c *Conn) readPump(ctx context.Context) error {
 	c.ws.SetReadLimit(64 * 1024)
 	for {
 		_, raw, err := c.ws.Read(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return c.ws.Close(websocket.StatusGoingAway, "")
-			}
 			return err
 		}
 		c.handle(ctx, raw)
