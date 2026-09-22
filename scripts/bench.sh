@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # wirefan benchmark runner: matrix over {fanout} x {registry} in Docker.
 #
-# Each cell boots the server in its own container pinned to 1 CPU and 6 GB
-# memory (docker run --cpus=1 --memory=6g), self-mints a pool of API keys
-# against that cell's own admin endpoint, then drives it with cmd/loadtest
-# from the host. Raw output lands in results/, one file per repetition.
+# Each cell boots the server in its own container capped at 1 CPU of quota
+# and 6 GB memory (docker run --cpus=1 --memory=6g; a CFS quota, not CPU
+# pinning), self-mints a pool of API keys against that cell's own admin
+# endpoint, then drives it with cmd/loadtest from the host. Raw output lands
+# in results/, one file per repetition.
 #
 # Key pool: the server rate-limits publishes per API key (100 msg/s, burst
 # 200, see internal/ratelimit wiring in cmd/wirefan). The pool is sized at
@@ -25,8 +26,9 @@
 #
 # Tunables (env): CONNS, CHANNELS, RATE, DURATION, RAMPUP, REPS, CELLS,
 # PROFILE_CELL (cell label to pprof, e.g. "sharded-sharded"; empty = none),
-# RUN_TAG (suffix inserted into results filenames, e.g. "-dropcheck", so
-# verification runs never overwrite previously published raw files).
+# RUN_TAG (suffix inserted into results filenames, raw output and pprof
+# captures alike, e.g. "-dropcheck", so verification runs never overwrite
+# previously published files).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -128,14 +130,16 @@ run_cell() {
   # Optional pprof capture concurrent with the load (headline cell only).
   local pprof_pid=""
   if [ -n "$PROFILE_CELL" ] && [ "$label" = "$PROFILE_CELL" ] && [ "$rep" = "1" ]; then
-    ( sleep 8; curl -fsS "${ADMIN}/debug/pprof/profile?seconds=${PROFILE_SECONDS}" -o "results/${label}-c${CONNS}-cpu.pb.gz" \
-        && curl -fsS "${ADMIN}/debug/pprof/heap" -o "results/${label}-c${CONNS}-heap.pb.gz" ) &
+    ( sleep 8; curl -fsS "${ADMIN}/debug/pprof/profile?seconds=${PROFILE_SECONDS}" -o "results/${label}-c${CONNS}${RUN_TAG}-cpu.pb.gz" \
+        && curl -fsS "${ADMIN}/debug/pprof/heap" -o "results/${label}-c${CONNS}${RUN_TAG}-heap.pb.gz" ) &
     pprof_pid=$!
   fi
 
   # Drive the load. Loadtest exits nonzero on dial failures, server
-  # rejections, or zero throughput; set -e makes that abort the matrix.
-  "$LOADTEST" \
+  # rejections, or zero throughput. The pipeline runs as an `if` condition:
+  # as a bare statement, set -e plus pipefail would kill the script right
+  # there, before fail() could print FATAL and dump the server logs.
+  if ! "$LOADTEST" \
     --addr="ws://127.0.0.1:${PUB_PORT}" \
     --keys="$keys" \
     --conns="$CONNS" \
@@ -143,9 +147,9 @@ run_cell() {
     --rate="$RATE" \
     --dur="$DURATION" \
     --rampup="$RAMPUP" \
-    2>&1 | tee -a "$out"
-  local lt_status=${PIPESTATUS[0]}
-  [ "$lt_status" = "0" ] || fail "loadtest exited ${lt_status} for ${label} rep ${rep} (see $out)"
+    2>&1 | tee -a "$out"; then
+    fail "loadtest exited nonzero for ${label} rep ${rep} (see $out)"
+  fi
 
   [ -z "$pprof_pid" ] || wait "$pprof_pid" || fail "pprof capture failed for ${label}"
 
@@ -162,9 +166,12 @@ run_cell() {
     || fail "latency histogram scrape failed for ${label}"
   awk '/^wirefan_broadcast_latency_seconds_sum/{s=$2} /^wirefan_broadcast_latency_seconds_count/{c=$2} END{if(c>0) printf "SERVER_LATENCY mean_us=%.2f count=%d\n", s/c*1e6, c}' "$out" | tee -a "$out"
 
-  # Record the container's effective GOMAXPROCS (Docker's --cpus quota is
-  # rounded up by the Go runtime, so 1 vCPU does not mean GOMAXPROCS=1;
-  # the sharded fanout sizes its worker pool from this value).
+  # Record the container's effective GOMAXPROCS; the sharded fanout sizes
+  # its worker pool from it. The Go runtime derives the default from the
+  # cgroup CPU quota as min(logical CPUs, max(ceil(quota), 2)) (see
+  # defaultGOMAXPROCS in runtime/cgroup_linux.go), so --cpus=1 is floored
+  # to GOMAXPROCS=2 on a multi-core host. It is not rounded up: 1 is
+  # already an integer; the floor of 2 is what lifts it.
   curl -fsS "${ADMIN}/metrics" | awk '/^go_sched_gomaxprocs_threads/ {printf "GOMAXPROCS %d\n", $2}' | tee -a "$out"
 
   # Slow-consumer drop check: the server drops events to subscribers whose
@@ -208,4 +215,4 @@ done
 
 echo
 echo "All cells completed cleanly. Raw output in ./results/."
-echo "Render pprof captures (if any): go tool pprof -top -text results/<cell>-cpu.pb.gz > docs/profiles/<cell>-cpu.txt"
+echo "Render pprof captures (if any): go tool pprof -top -text results/<cell>-c<conns><run-tag>-cpu.pb.gz > docs/profiles/<cell>-cpu.txt"

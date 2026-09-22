@@ -1,0 +1,29 @@
+# Build context for deploy/Dockerfile (docker build -f deploy/Dockerfile .).
+# The image needs only the Go module: go.mod, go.sum, cmd/, internal/, and
+# web/ (embedded by web/embed.go). Everything below is VCS metadata, local
+# tooling, build output, docs, or runtime state, and none of it should be
+# sent to the daemon or land in a builder layer. Patterns match from the
+# context root; the **/ forms also catch copies in subdirectories.
+
+# VCS and local tooling
+.git
+.github
+.claude
+.serena
+.thryv-onboard
+
+# Build and benchmark output, docs
+bin
+dist
+results
+docs
+clients/js/node_modules
+clients/js/dist
+
+# Runtime state and secrets: ./var is the default state dir (admin token,
+# SQLite db) relative to wherever wirefan was run from.
+var
+cmd/wirefan/var
+**/*.db*
+**/*.token
+**/.env*

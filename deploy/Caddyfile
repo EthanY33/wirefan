@@ -6,18 +6,30 @@
 wirefan.example.com {
     encode gzip
 
-    # Forward the client IP for wirefan's per-IP connection cap. wirefan only
-    # trusts X-Forwarded-For from addresses listed in the WIREFAN_TRUSTED_PROXIES
-    # env var (see deploy/.env.example); set it to this proxy's address, or
-    # every connection is attributed to the proxy IP and the per-IP cap
-    # becomes a global ceiling.
-    reverse_proxy localhost:8080 {
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Real-IP {remote_host}
+    # Client IP for wirefan's per-IP connection cap: no header_up needed.
+    # Caddy's default X-Forwarded-For handling does the right thing. When the
+    # connecting peer is not in trusted_proxies (none are configured here),
+    # Caddy discards any X-Forwarded-For the client sent and sets it to the
+    # peer's address, so clients cannot spoof it. When the peer IS trusted
+    # (the Cloudflare setup in docs/DEPLOY.md Appendix C adds trusted_proxies
+    # here), Caddy keeps the incoming chain and appends the peer. Overwriting
+    # the header with {remote_host} would break that second case.
+    #
+    # wirefan only reads X-Forwarded-For from peers listed in
+    # WIREFAN_TRUSTED_PROXIES (see deploy/.env.example); provision.sh sets it
+    # to 127.0.0.1, this proxy's address. Without it every connection is
+    # attributed to the proxy and the per-IP cap becomes a global ceiling.
+    #
+    # The upstream is 127.0.0.1, not localhost: localhost may resolve to ::1,
+    # a connection from ::1 does not match the 127.0.0.1 that provision.sh
+    # puts in WIREFAN_TRUSTED_PROXIES, and wirefan would then ignore
+    # X-Forwarded-For. wirefan.service binds this exact address.
+    reverse_proxy 127.0.0.1:8080 {
         flush_interval -1
     }
 
-    # Block direct localhost access to internal endpoints from the public domain.
+    # /debug/pprof is served only on the loopback admin listener (6060),
+    # never on 8080; refusing the path here as well is belt and braces.
     @internal path /debug/pprof*
     respond @internal "Not Found" 404
 }
