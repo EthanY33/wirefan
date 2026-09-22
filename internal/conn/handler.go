@@ -282,7 +282,8 @@ func (c *Conn) sendAck(typ, channel string) {
 // that frame's type and Channel the channel exactly as the client sent it,
 // so a client can match the error to the request that caused it. Both are
 // omitted for BAD_JSON and BAD_TYPE, and Channel is omitted when the frame
-// had none. Clients ignore unknown fields, so this is additive within v1.
+// had none or its channel is longer than maxChannelNameLen (see
+// sendOpError). Clients ignore unknown fields, so this is additive within v1.
 type errorFrame struct {
 	Type    string `json:"type"`
 	Code    string `json:"code"`
@@ -298,9 +299,17 @@ func (c *Conn) sendError(code, message string) {
 }
 
 // sendOpError sends an error answering msg, a subscribe, unsubscribe or
-// publish frame.
+// publish frame. A channel longer than maxChannelNameLen is not echoed. Such
+// a name cannot be a real channel, and echoing it let one 64 KiB frame queue
+// an error of up to 384 KiB (json.Marshal writes '<' as \u003c): six
+// times the input, in memory and in egress, with no rate limit, 64 deep per
+// conn. With the cap an error frame stays under 1 KiB.
 func (c *Conn) sendOpError(msg incoming, code, message string) {
-	c.sendErrorFrame(errorFrame{Type: "error", Code: code, Message: message, Op: msg.Type, Channel: msg.Channel})
+	f := errorFrame{Type: "error", Code: code, Message: message, Op: msg.Type}
+	if len(msg.Channel) <= maxChannelNameLen {
+		f.Channel = msg.Channel
+	}
+	c.sendErrorFrame(f)
 }
 
 func (c *Conn) sendErrorFrame(f errorFrame) {
