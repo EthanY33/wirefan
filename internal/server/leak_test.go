@@ -110,3 +110,83 @@ func testNoGoroutineLeakAfterChurn(t *testing.T, fan fanout.Fanout) {
 	t.Fatalf("goroutine leak suspected: base=%d after=%d (tolerance %d; real per-conn leak would be ~2000)",
 		base, runtime.NumGoroutine(), tolerance)
 }
+
+// TestNoGoroutineLeakAfterHubCloses extends the leak invariant to the hub's
+// goroutine-spawning close paths: Hub.CloseKey (key revoke) and Hub.Drain
+// (shutdown) each run one close handshake per conn in its own goroutine.
+// Both must leave nothing behind once the conns are gone.
+func TestNoGoroutineLeakAfterHubCloses(t *testing.T) {
+	s := store.NewMemory()
+	secret, _ := auth.GenerateSecret()
+	k, _ := s.CreateKey(context.Background(), "t", auth.HashSecret(secret))
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	h := hub.New()
+	srv := httptest.NewServer(NewUpgradeHandler(UpgradeDeps{
+		Store:          s,
+		AllowedOrigins: []string{"*"},
+		Registry:       registry.NewSyncMap(),
+		SigningSecret:  "test-signing-secret",
+		Fanout:         fanout.NewPerConn(),
+		RateLimit:      rl,
+		Policy:         conn.PolicyDisconnect{},
+		Hub:            h,
+	}))
+	defer srv.Close()
+	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key=" + k.ID
+
+	// Warm up so httptest's own goroutines are part of the baseline.
+	if c, _, err := websocket.Dial(context.Background(), wsURL, nil); err == nil {
+		_ = c.Close(websocket.StatusNormalClosure, "")
+	}
+	time.Sleep(100 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	// open dials n clients that keep reading (so they answer the close
+	// handshake) and returns once the hub tracks all of them.
+	var readers sync.WaitGroup
+	open := func(n int) {
+		for i := 0; i < n; i++ {
+			c, _, err := websocket.Dial(context.Background(), wsURL, nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			readers.Add(1)
+			go func() {
+				defer readers.Done()
+				for {
+					if _, _, err := c.Read(context.Background()); err != nil {
+						_ = c.CloseNow()
+						return
+					}
+				}
+			}()
+		}
+		waitForLen(t, h, n)
+	}
+
+	const n = 100
+	open(n)
+	if got := h.CloseKey(k.ID, websocket.StatusPolicyViolation, "key revoked"); got != n {
+		t.Fatalf("CloseKey closed %d conns, want %d", got, n)
+	}
+	waitForLen(t, h, 0)
+
+	open(n)
+	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h.Drain(drainCtx, 5*time.Second)
+	waitForLen(t, h, 0)
+	readers.Wait()
+
+	const tolerance = 30
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= base+tolerance {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("goroutine leak suspected after CloseKey/Drain: base=%d after=%d (tolerance %d)",
+		base, runtime.NumGoroutine(), tolerance)
+}
