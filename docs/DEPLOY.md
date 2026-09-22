@@ -136,16 +136,25 @@ platform-specific. Releases ship `linux/amd64` and `linux/arm64` binaries
 built natively on Ubuntu 24.04 runners, so they link the runner's glibc
 and match an Ubuntu 24.04 target; the release workflow's smoke-test step
 prints `ldd --version` so the exact glibc is on record in every build
-log. Check your arch with `uname -m`: `x86_64` means amd64, `aarch64`
-means arm64.
+log.
+
+Every option below leaves the binary in your home directory on the
+server under the release's own name, `wirefan_<version>_linux_<arch>`
+(for example `wirefan_v1.0.0_linux_amd64`), and the later steps refer to
+it by that name. Set the two parts once in each shell you run the
+snippets in, laptop or server:
+
+```bash
+VER=v1.0.0    # the release tag you are deploying
+ARCH=amd64    # the SERVER's arch: amd64 if its `uname -m` prints x86_64, arm64 if aarch64
+```
 
 **Option A: download from a GitHub release** (on the server). Releases
 exist from the first `v1.x` tag onward; until that tag is pushed these
 URLs return 404 and Option B is the path:
 
 ```bash
-VER=v1.0.0            # pick the release you want
-ARCH=amd64            # or arm64, per uname -m
+cd ~
 curl -fL -o wirefan_${VER}_linux_${ARCH} \
     https://github.com/EthanY33/wirefan/releases/download/${VER}/wirefan_${VER}_linux_${ARCH}
 curl -fL -o SHA256SUMS \
@@ -154,13 +163,19 @@ sha256sum -c --ignore-missing SHA256SUMS
 # expect: wirefan_v1.0.0_linux_amd64: OK
 ```
 
-**Option B: build locally and copy up.** From the repo root on a machine
-with Docker (produces `dist/wirefan_linux_amd64`, `dist/wirefan_linux_arm64`,
-and `dist/SHA256SUMS`):
+**Option B: build locally and copy up.** From a checkout of the tag on a
+machine with Docker. `make release-local` writes
+`dist/wirefan_<version>_linux_amd64`, `dist/wirefan_<version>_linux_arm64`
+and `dist/SHA256SUMS`, the same names the release workflow uses, where
+`<version>` is `git describe --tags --always --dirty`: exactly the tag on
+a clean tag checkout. (Built from any other commit, the name carries the
+describe output, such as `v1.0.0-3-gabc1234`; set `VER` to that.)
 
 ```bash
+git checkout ${VER}
 make release-local
-scp -i ~/.ssh/wirefan_vps dist/wirefan_linux_${ARCH} dist/SHA256SUMS ubuntu@<public-ip>:
+scp -i ~/.ssh/wirefan_vps dist/wirefan_${VER}_linux_${ARCH} dist/SHA256SUMS ubuntu@<public-ip>:
+# then on the server, in ~: sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 **Option C: build on the server** (needs ~1 GB RAM free; the Go toolchain
@@ -168,8 +183,11 @@ plus gcc):
 
 ```bash
 sudo apt-get install -y golang-go gcc git
-git clone https://github.com/EthanY33/wirefan.git && cd wirefan
-CGO_ENABLED=1 go build -o wirefan_local ./cmd/wirefan
+cd ~ && git clone https://github.com/EthanY33/wirefan.git && cd wirefan
+git checkout ${VER}
+CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${VER}" \
+    -o ~/wirefan_${VER}_linux_${ARCH} ./cmd/wirefan
+cd ~
 ```
 
 ---
@@ -177,17 +195,17 @@ CGO_ENABLED=1 go build -o wirefan_local ./cmd/wirefan
 ## 5. Provision
 
 Copy the repo's `deploy/` directory to the server (skip if you cloned the
-repo in option C):
+repo in Option C; its copy is `~/wirefan/deploy`):
 
 ```bash
 scp -i ~/.ssh/wirefan_vps -r deploy ubuntu@<public-ip>:
 ```
 
-Then on the server, one command:
+Then on the server, with `VER` and `ARCH` set as in step 4, one command:
 
 ```bash
-cd deploy
-sudo ./provision.sh --domain wirefan.example.com --binary ../wirefan_v1.0.0_linux_amd64
+cd ~/deploy    # Option C: cd ~/wirefan/deploy
+sudo ./provision.sh --domain wirefan.example.com --binary ~/wirefan_${VER}_linux_${ARCH}
 ```
 
 The script is idempotent (safe to re-run) and stops at the first error.
@@ -266,11 +284,16 @@ The wire protocol for real clients is in `docs/PROTOCOL.md`.
 
 ## 7. Upgrade
 
-Get the new binary and its checksum onto the server (step 4), then:
+Get the new binary and its checksum onto the server (step 4, with `VER`
+set to the new tag), then:
 
 ```bash
-sudo ./deploy/deploy.sh ./wirefan_v1.1.0_linux_amd64 ./SHA256SUMS
+sudo ~/deploy/deploy.sh ~/wirefan_${VER}_linux_${ARCH} ~/SHA256SUMS
 ```
+
+(Option C builds have no `SHA256SUMS`; pass the digest instead:
+`"$(sha256sum ~/wirefan_${VER}_linux_${ARCH} | awk '{print $1}')"`. With
+an Option C checkout the script is `~/wirefan/deploy/deploy.sh`.)
 
 `deploy.sh` verifies the SHA-256 (refusing on mismatch), stops the
 service, snapshots the database, keeps the current binary at
@@ -306,7 +329,7 @@ sudo sqlite3 /var/lib/wirefan/wirefan.db.prev 'PRAGMA user_version'
 is enough. API keys minted since the upgrade are kept:
 
 ```bash
-sudo ./deploy/deploy.sh /usr/local/bin/wirefan.prev \
+sudo ~/deploy/deploy.sh /usr/local/bin/wirefan.prev \
     "$(sha256sum /usr/local/bin/wirefan.prev | awk '{print $1}')"
 ```
 
