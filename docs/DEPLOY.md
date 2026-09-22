@@ -270,18 +270,37 @@ sudo ./deploy/deploy.sh ./wirefan_v1.1.0_linux_amd64 ./SHA256SUMS
 ```
 
 `deploy.sh` verifies the SHA-256 (refusing on mismatch), stops the
-service, keeps the current binary at `/usr/local/bin/wirefan.prev`, swaps
-in the new one, starts, and polls `http://127.0.0.1:8080/v1/health` for up
-to 30 seconds. **If the health check fails it automatically rolls back**
-to the previous binary, restarts, and exits non-zero.
+service, snapshots the database, keeps the current binary at
+`/usr/local/bin/wirefan.prev`, swaps in the new one, starts, and polls
+`http://127.0.0.1:8080/v1/health` for up to 30 seconds. **If the health
+check fails it automatically rolls back**: it restores the database
+snapshot, puts the previous binary back, restarts, and exits non-zero.
+The database is part of the rollback because a new version may migrate
+the schema on its first start, and an older binary refuses to open a
+database whose schema is newer than it knows.
 
-State survives upgrades: the admin token and API keys live in
-`/var/lib/wirefan`, which the swap never touches. One behavior to know:
-subscribe tokens for `private-`/`presence-` channels are signed with a
-per-process secret, so any restart invalidates already-issued tokens;
-clients must fetch a fresh one from `POST /v1/auth/sign` and reconnect.
+The snapshot is `/var/lib/wirefan/wirefan.db.prev`, plus
+`wirefan.db-wal.prev` and `wirefan.db-shm.prev` when those sidecars
+existed at stop time. Each `deploy.sh` run replaces it. Otherwise state
+carries over: the admin token and API keys stay in `/var/lib/wirefan`.
+One behavior to know: subscribe tokens for `private-`/`presence-`
+channels are signed with a per-process secret, so any restart invalidates
+already-issued tokens; clients must fetch a fresh one from
+`POST /v1/auth/sign` and reconnect.
 
-Manual rollback later, if a problem surfaces after a green health check:
+### Manual rollback
+
+If a problem surfaces after a green health check, first find out whether
+the upgrade migrated the database schema (needs
+`sudo apt-get install -y sqlite3`):
+
+```bash
+sudo sqlite3 /var/lib/wirefan/wirefan.db 'PRAGMA user_version'
+sudo sqlite3 /var/lib/wirefan/wirefan.db.prev 'PRAGMA user_version'
+```
+
+**Same number:** the schema did not change and swapping the binary back
+is enough. API keys minted since the upgrade are kept:
 
 ```bash
 sudo ./deploy/deploy.sh /usr/local/bin/wirefan.prev \
@@ -292,6 +311,35 @@ This command both reads and rewrites `wirefan.prev` (the bad binary you
 are rolling away from becomes the new `.prev`). It is safe because
 `deploy.sh` copies the verified binary to a staging file before it
 touches `wirefan.prev`.
+
+**Different numbers:** the new version migrated the schema, so the
+previous binary refuses the current database (it logs
+`database schema version N is newer than this binary supports`) and the
+database has to go back too. Do not use `deploy.sh` for this: it would
+snapshot the migrated database over `wirefan.db.prev`, fail its health
+check, and roll forward again. Restore by hand, as root (the state dir
+is mode 0700):
+
+```bash
+sudo -i
+systemctl stop wirefan
+cd /var/lib/wirefan
+mkdir -p /root/wirefan-migrated-db
+for f in wirefan.db wirefan.db-wal wirefan.db-shm; do
+    [ ! -f "$f" ] || cp -p "$f" /root/wirefan-migrated-db/
+    if [ -f "$f.prev" ]; then cp -p "$f.prev" "$f"; else rm -f "$f"; fi
+done
+install -m 0755 /usr/local/bin/wirefan.prev /usr/local/bin/wirefan
+systemctl start wirefan
+curl -fsS http://127.0.0.1:8080/v1/health    # expect: ok
+exit
+```
+
+This rolls back data, not just code. Every API key minted since the
+upgrade is lost (its clients get `401` until you mint a replacement),
+and every key revoked since the upgrade is valid again, so revoke those
+once more. The migrated database stays in `/root/wirefan-migrated-db`
+for reference.
 
 ---
 
