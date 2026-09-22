@@ -53,7 +53,8 @@ EXPOSE 8080 6060
 USER nonroot:nonroot
 
 # No default args: --allowed-origins is required and deployment-specific, so
-# the container exits immediately with a usage error unless you pass flags.
+# without flags the container exits at once with status 1, logging
+# `ERROR fatal err="--allowed-origins is required (...)"`.
 # Working invocation (admin listener must bind 0.0.0.0 inside the container
 # to be reachable through the port mapping):
 #

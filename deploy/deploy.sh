@@ -19,17 +19,25 @@
 #      /usr/local/bin/wirefan.prev itself as <new-binary>, which is
 #      exactly what the manual-rollback command in docs/DEPLOY.md does
 #   3. stops wirefan
-#   4. saves the currently installed binary to /usr/local/bin/wirefan.prev
+#   4. snapshots the stopped database: /var/lib/wirefan/wirefan.db and any
+#      -wal/-shm sidecars are copied (cp -p) to <file>.prev, replacing the
+#      previous run's snapshot
+#   5. saves the currently installed binary to /usr/local/bin/wirefan.prev
 #      (exactly one previous version is kept, for rollback)
-#   5. installs the staged binary at /usr/local/bin/wirefan
-#   6. starts wirefan (a failed start falls through to the health check
+#   6. installs the staged binary at /usr/local/bin/wirefan
+#   7. starts wirefan (a failed start falls through to the health check
 #      rather than aborting) and polls http://127.0.0.1:8080/v1/health
 #      for up to 30s expecting HTTP 200
-#   7. on health-check failure: puts wirefan.prev back, restarts, re-checks,
-#      and exits non-zero either way
+#   8. on health-check failure: stops wirefan, restores the database
+#      snapshot, puts wirefan.prev back, restarts, re-checks, and exits
+#      non-zero either way
 #
-# The state dir (/var/lib/wirefan: admin token + SQLite db) is untouched, so
-# API keys and the admin token survive every upgrade.
+# The database snapshot exists because a new version may migrate the schema
+# on its first start, and an older binary refuses to open a database whose
+# schema is newer than it knows. Rolling back the binary alone would then
+# leave the service down. After a successful upgrade the snapshot stays in
+# place for a manual rollback (docs/DEPLOY.md, step 7); the next run of this
+# script replaces it. The admin token is never touched.
 
 set -euo pipefail
 
@@ -37,6 +45,12 @@ BIN_PATH=/usr/local/bin/wirefan
 PREV_PATH=/usr/local/bin/wirefan.prev
 HEALTH_URL=http://127.0.0.1:8080/v1/health
 HEALTH_TIMEOUT=30
+# Matches --db-path in deploy/wirefan.service; change both together.
+DB_PATH=/var/lib/wirefan/wirefan.db
+# The database plus its WAL sidecars. They are snapshotted and restored as
+# one set: a -wal left over from a different moment than the main file
+# would be replayed on top of it.
+DB_FILES=("$DB_PATH" "$DB_PATH-wal" "$DB_PATH-shm")
 
 fail() {
     echo "deploy.sh: FATAL: $*" >&2
@@ -103,10 +117,48 @@ health_check() {
     return 1
 }
 
-# --- 3-5. stop, swap, start -------------------------------------------------
+# Both helpers run only while wirefan is stopped, so the files are quiescent.
+# Each step checks its own status because callers use them in `if !`/`||`
+# context, where set -e does not apply inside the function.
+#
+# snapshot_db copies every DB file that exists to <file>.prev and removes
+# any .prev whose source is absent, so the .prev set always describes one
+# moment rather than mixing in sidecars from an older run.
+snapshot_db() {
+    local f
+    for f in "${DB_FILES[@]}"; do
+        rm -f "$f.prev" || return 1
+        if [ -f "$f" ]; then
+            cp -p "$f" "$f.prev" || return 1
+        fi
+    done
+}
+
+# restore_db makes the DB files match the snapshot exactly: files with a
+# .prev are copied back, files without one are removed (a -wal the new
+# binary left behind must not be replayed onto the restored database).
+restore_db() {
+    local f
+    for f in "${DB_FILES[@]}"; do
+        if [ -f "$f.prev" ]; then
+            cp -p "$f.prev" "$f" || return 1
+        else
+            rm -f "$f" || return 1
+        fi
+    done
+}
+
+# --- 3-7. stop, snapshot, swap, start ---------------------------------------
 
 echo "deploy.sh: stopping wirefan"
 systemctl stop wirefan
+
+if ! snapshot_db; then
+    # Nothing has been swapped yet, so the current binary can come back up.
+    systemctl start wirefan || true
+    fail "could not snapshot $DB_PATH to $DB_PATH.prev (disk full?); nothing was swapped and wirefan was restarted on the current binary"
+fi
+echo "deploy.sh: snapshotted $DB_PATH (and any -wal/-shm) to .prev"
 
 HAD_PREVIOUS=0
 if [ -f "$BIN_PATH" ]; then
@@ -127,11 +179,11 @@ echo "deploy.sh: starting wirefan"
 systemctl start wirefan \
     || echo "deploy.sh: WARNING: systemctl start failed; falling through to health check + rollback" >&2
 
-# --- 6-7. health check, rollback on failure ---------------------------------
+# --- 7-8. health check, rollback on failure ---------------------------------
 
 if health_check; then
     echo "deploy.sh: health check OK ($HEALTH_URL responded 200 'ok')"
-    echo "deploy.sh: DONE. Previous binary kept at $PREV_PATH for manual rollback."
+    echo "deploy.sh: DONE. Previous binary kept at $PREV_PATH and pre-upgrade database at $DB_PATH.prev for manual rollback."
     exit 0
 fi
 
@@ -139,14 +191,17 @@ echo "deploy.sh: HEALTH CHECK FAILED after ${HEALTH_TIMEOUT}s. Recent logs:" >&2
 journalctl -u wirefan -n 20 --no-pager >&2 || true
 
 if [ "$HAD_PREVIOUS" -eq 1 ]; then
-    echo "deploy.sh: ROLLING BACK to $PREV_PATH" >&2
+    echo "deploy.sh: ROLLING BACK to $PREV_PATH and the pre-upgrade database" >&2
     systemctl stop wirefan || true
+    # The new binary may already have migrated the schema, which the
+    # previous binary would refuse to open.
+    restore_db || fail "new binary failed its health check AND restoring the database from $DB_PATH.prev failed. Service is stopped; restore the *.prev files in $(dirname "$DB_PATH") by hand"
     install -m 0755 -o root -g root "$PREV_PATH" "$BIN_PATH"
     # || true so a failed start still reaches the explanatory fail below
     # instead of exiting silently with systemd's status code.
     systemctl start wirefan || true
     if health_check; then
-        fail "new binary failed its health check; ROLLED BACK to previous binary, which is healthy again"
+        fail "new binary failed its health check; ROLLED BACK to previous binary and pre-upgrade database, which are healthy again"
     else
         fail "new binary failed AND rollback failed its health check. Service is down; investigate with: journalctl -u wirefan -n 100"
     fi

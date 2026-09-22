@@ -18,9 +18,11 @@
 #      substituted; a previous version that differs is saved to <file>.bak
 #      before being replaced
 #   7. installs the wirefan binary if --binary was given
-#   8. enables + (re)starts wirefan and reloads Caddy (skipped with a loud
-#      notice when systemd is not running, e.g. inside a container); re-runs
-#      restart wirefan so a changed unit or binary actually takes effect
+#   8. enables + (re)starts wirefan (start only if a binary is installed)
+#      and reloads Caddy so the new Caddyfile takes effect either way
+#      (skipped with a loud notice when systemd is not running, e.g. inside
+#      a container); re-runs restart wirefan so a changed unit or binary
+#      actually takes effect
 #
 # Idempotent: safe to re-run. Existing /etc/wirefan/env is never overwritten.
 # Derived files (unit, Caddyfile) are rewritten each run and are owned by
@@ -54,7 +56,7 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || fail "--binary requires a value"
             BINARY="$2"; shift 2 ;;
         -h|--help)
-            sed -n '2,25p' "$0"; exit 0 ;;
+            sed -n '2,27p' "$0"; exit 0 ;;
         *)
             fail "unknown argument: $1 (expected --domain <host> [--binary <path>])" ;;
     esac
@@ -95,7 +97,7 @@ HAVE_SYSTEMD=1
 if [ ! -d /run/systemd/system ]; then
     HAVE_SYSTEMD=0
     echo "provision.sh: NOTICE: systemd is not running (container or chroot?)." >&2
-    echo "provision.sh: NOTICE: files will be installed, but service enable/start is SKIPPED." >&2
+    echo "provision.sh: NOTICE: files will be installed, but service enable/start and the Caddy reload are SKIPPED." >&2
 fi
 
 # --- 2. service user --------------------------------------------------------
@@ -187,23 +189,29 @@ fi
 
 if [ "$HAVE_SYSTEMD" -eq 1 ]; then
     systemctl daemon-reload
+    systemctl enable wirefan
     if [ -x /usr/local/bin/wirefan ]; then
-        systemctl enable wirefan
         # restart, not `enable --now`: on a re-run the service is already
         # active and `--now` would be a no-op, silently leaving a changed
         # unit or binary without effect.
         systemctl restart wirefan
-        systemctl reload-or-restart caddy
-        echo "provision.sh: wirefan enabled and (re)started; caddy reloaded"
-        echo "provision.sh: verify with: curl -fsS https://$DOMAIN/v1/health   (expect: ok)"
-        echo "provision.sh: admin token (first boot writes it): sudo cat /var/lib/wirefan/admin.token"
+        echo "provision.sh: wirefan enabled and (re)started"
     else
-        systemctl enable wirefan
         echo "provision.sh: wirefan enabled but NOT started (no binary yet); run deploy/deploy.sh"
     fi
+    # Unconditional: the Caddyfile above was rewritten whether or not a
+    # binary exists, and the apt-installed Caddy is still serving its stock
+    # config until told otherwise. Reloading now also starts the ACME
+    # certificate request before the first deploy.
+    systemctl reload-or-restart caddy
+    echo "provision.sh: caddy reloaded with /etc/caddy/Caddyfile"
+    if [ -x /usr/local/bin/wirefan ]; then
+        echo "provision.sh: verify with: curl -fsS https://$DOMAIN/v1/health   (expect: ok)"
+        echo "provision.sh: admin token (first boot writes it): sudo cat /var/lib/wirefan/admin.token"
+    fi
 else
-    echo "provision.sh: SKIPPED systemd enable/start (no systemd in this environment)."
-    echo "provision.sh: on a real host, finish with: systemctl daemon-reload && systemctl enable --now wirefan"
+    echo "provision.sh: SKIPPED systemd enable/start and the caddy reload (no systemd in this environment)."
+    echo "provision.sh: on a real host, finish with: systemctl daemon-reload && systemctl enable --now wirefan && systemctl reload-or-restart caddy"
 fi
 
 echo "provision.sh: DONE"
