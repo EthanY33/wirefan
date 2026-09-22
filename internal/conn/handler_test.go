@@ -22,6 +22,13 @@ import (
 
 func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 	t.Helper()
+	return newTestConnWithCache(t, signingSecret, nil)
+}
+
+// newTestConnWithCache is newTestConn with a subscribe-token replay cache
+// (nil disables replay protection, as in newTestConn).
+func newTestConnWithCache(t *testing.T, signingSecret string, cache *auth.ReplayCache) (*websocket.Conn, string) {
+	t.Helper()
 	const socketID = "01HTEST"
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
@@ -35,6 +42,7 @@ func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 		_ = Run(ctx, c, socketID, "test-key", Deps{
 			Registry:      registry.NewSyncMap(),
 			SigningSecret: signingSecret,
+			ReplayCache:   cache,
 			Fanout:        fanout.NewPerConn(),
 			RateLimit:     rl,
 			Policy:        PolicyDisconnect{},
@@ -148,6 +156,42 @@ func TestDuplicateSubscribeIdempotent(t *testing.T) {
 	}
 }
 
+// TestResubscribeHeldChannelNeedsNoToken is the DB6 regression. Re-subscribing
+// to a channel this conn already holds is a no-op that grants nothing new, so
+// it must ack without requiring a token and without consuming one. Before the
+// fix the token check ran first: a tokenless re-subscribe got AUTH_FAILED and
+// a fresh token was burned in the replay cache for nothing.
+func TestResubscribeHeldChannelNeedsNoToken(t *testing.T) {
+	const secret = "test-signing-secret"
+	cache := auth.NewReplayCache()
+	c, socketID := newTestConnWithCache(t, secret, cache)
+	tok, err := auth.SignToken(secret, socketID, "private-x", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "private-x", "token": tok})
+	if got := readJSON(t, c); got["type"] != "subscribed" {
+		t.Fatalf("first subscribe: %+v", got)
+	}
+
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "private-x"})
+	if got := readJSON(t, c); got["type"] != "subscribed" || got["channel"] != "private-x" {
+		t.Fatalf("tokenless re-subscribe: want subscribed, got %+v", got)
+	}
+
+	fresh, err := auth.SignToken(secret, socketID, "private-x", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "private-x", "token": fresh})
+	if got := readJSON(t, c); got["type"] != "subscribed" {
+		t.Fatalf("re-subscribe with token: %+v", got)
+	}
+	if err := auth.VerifyTokenAgainst(secret, socketID, "private-x", fresh, cache); err != nil {
+		t.Fatalf("re-subscribe consumed the token: %v", err)
+	}
+}
+
 func TestLimitChannelsPerConn(t *testing.T) {
 	ws, _ := newTestConn(t, "test-secret")
 	for i := 0; i < 64; i++ {
@@ -156,7 +200,10 @@ func TestLimitChannelsPerConn(t *testing.T) {
 			t.Fatalf("subscribe %d: %+v", i, got)
 		}
 	}
-	// 65th — expect LIMIT_CHANNELS error
+	// 65th: expect a LIMIT_CHANNELS error. The 64 subscribes spent the whole
+	// per-conn control burst; wait for a refill so the channel cap, not the
+	// rate limit, is what answers.
+	time.Sleep(2 * time.Second / defaultConnControlRate)
 	sendJSON(t, ws, map[string]any{"type": "subscribe", "channel": "public-overflow"})
 	got := readJSON(t, ws)
 	if got["type"] != "error" || got["code"] != "LIMIT_CHANNELS" {
@@ -424,6 +471,54 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 	}
 }
 
+// TestSpammingConnCannotStarveKey is the G4 regression. Every conn on an API
+// key shares one per-key bucket, and the per-conn publish limit used to be
+// charged only after it (control ops had no per-conn limit at all). One
+// socket could therefore burn the whole key budget with junk unsubscribes,
+// or with publishes its own per-conn limit then rejected, and lock every
+// other client on the key out. Per-conn limits now come first, so a
+// spammer hits RATE_LIMITED_CONN and the key keeps budget for others.
+func TestSpammingConnCannotStarveKey(t *testing.T) {
+	for _, op := range []string{"unsubscribe", "publish"} {
+		t.Run(op, func(t *testing.T) {
+			conns := newSharedEnvConns(t, PolicyDisconnect{}, 2)
+			spam, victim := conns[0], conns[1]
+			if op == "publish" {
+				sendJSON(t, spam, map[string]any{"type": "subscribe", "channel": "public-spam"})
+				if got := readJSON(t, spam); got["type"] != "subscribed" {
+					t.Fatalf("spam subscribe: %+v", got)
+				}
+			}
+
+			// Well past the per-key burst (200). One reply per frame: an
+			// ack, the spammer's own event, or an error.
+			codes := map[string]int{}
+			for i := 0; i < 400; i++ {
+				switch op {
+				case "unsubscribe":
+					sendJSON(t, spam, map[string]any{"type": "unsubscribe", "channel": "public-never-held"})
+				case "publish":
+					sendJSON(t, spam, map[string]any{"type": "publish", "channel": "public-spam", "data": i})
+				}
+				if got := readJSON(t, spam); got["type"] == "error" {
+					codes[got["code"].(string)]++
+				}
+			}
+			if codes["RATE_LIMITED_CONN"] == 0 {
+				t.Fatalf("spammer never hit its per-conn limit: %v", codes)
+			}
+			if codes["RATE_LIMITED"] != 0 {
+				t.Fatalf("spammer drained the shared per-key bucket: %v", codes)
+			}
+
+			sendJSON(t, victim, map[string]any{"type": "subscribe", "channel": "public-victim"})
+			if got := readJSON(t, victim); got["type"] != "subscribed" {
+				t.Fatalf("second conn on the key was starved: %+v", got)
+			}
+		})
+	}
+}
+
 func TestUnsubscribeRoundTrip(t *testing.T) {
 	ws, _ := newTestConn(t, "test-secret")
 	sendJSON(t, ws, map[string]any{"type": "subscribe", "channel": "public-x"})
@@ -439,4 +534,88 @@ func TestUnsubscribeRoundTrip(t *testing.T) {
 	if got := readJSON(t, ws); got["type"] != "unsubscribed" {
 		t.Fatalf("expected idempotent unsubscribed, got %+v", got)
 	}
+}
+
+// wantError asserts an error frame with the given code, op and channel.
+// An empty op or channel means the field must be absent.
+func wantError(t *testing.T, got map[string]any, code, op, channel string) {
+	t.Helper()
+	if got["type"] != "error" || got["code"] != code {
+		t.Fatalf("want error %s, got %+v", code, got)
+	}
+	if _, ok := got["message"].(string); !ok {
+		t.Fatalf("error frame without message: %+v", got)
+	}
+	for _, f := range []struct{ key, want string }{{"op", op}, {"channel", channel}} {
+		v, present := got[f.key]
+		switch {
+		case f.want == "" && present:
+			t.Fatalf("%s: want no %q field, got %+v", code, f.key, got)
+		case f.want != "" && v != f.want:
+			t.Fatalf("%s: want %s %q, got %+v", code, f.key, f.want, got)
+		}
+	}
+}
+
+// TestErrorFramesCarryOpAndChannel covers the error-frame contract: errors
+// answering a subscribe, unsubscribe or publish frame echo "op" and the
+// channel exactly as sent; BAD_JSON and BAD_TYPE carry neither.
+func TestErrorFramesCarryOpAndChannel(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "_internal"})
+	wantError(t, readJSON(t, c), "RESERVED_CHANNEL", "subscribe", "_internal")
+
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "private-y", "token": "garbage"})
+	wantError(t, readJSON(t, c), "AUTH_FAILED", "subscribe", "private-y")
+
+	sendJSON(t, c, map[string]any{"type": "unsubscribe", "channel": "bad\x01name"})
+	wantError(t, readJSON(t, c), "BAD_CHANNEL", "unsubscribe", "bad\x01name")
+
+	sendJSON(t, c, map[string]any{"type": "unsubscribe"})
+	wantError(t, readJSON(t, c), "BAD_CHANNEL", "unsubscribe", "")
+
+	sendJSON(t, c, map[string]any{"type": "publish", "channel": "public-z", "data": 1})
+	wantError(t, readJSON(t, c), "NOT_SUBSCRIBED", "publish", "public-z")
+
+	if err := c.Write(context.Background(), websocket.MessageText, []byte(`{"type":`)); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, readJSON(t, c), "BAD_JSON", "", "")
+
+	sendJSON(t, c, map[string]any{"type": "nope", "channel": "public-x"})
+	wantError(t, readJSON(t, c), "BAD_TYPE", "", "")
+}
+
+// TestOverlongChannelNotEchoed bounds what an error frame can cost. Echoing
+// the channel of a frame rejected for a too-long name let one 64 KiB frame
+// queue an error of up to 384 KiB (json.Marshal writes '<' as \u003c), with
+// no rate limit, 64 deep per conn. Such a name can never be a real channel,
+// so the error carries op and code but not the channel, and stays small. A
+// name at the limit is still echoed exactly.
+func TestOverlongChannelNotEchoed(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+	c.SetReadLimit(1 << 20) // so an oversized error frame fails the size check below, not the read
+
+	// Written by hand: json.Marshal would escape the '<'s past the read limit.
+	frame := `{"type":"subscribe","channel":"` + strings.Repeat("<", 60_000) + `"}`
+	if err := c.Write(context.Background(), websocket.MessageText, []byte(frame)); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > 1024 {
+		t.Fatalf("error frame for an overlong channel is %d bytes, want under 1 KiB", len(raw))
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", raw, err)
+	}
+	wantError(t, got, "BAD_CHANNEL", "subscribe", "")
+
+	atLimit := "private-" + strings.Repeat("<", maxChannelNameLen-len("private-"))
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": atLimit, "token": "garbage"})
+	wantError(t, readJSON(t, c), "AUTH_FAILED", "subscribe", atLimit)
 }

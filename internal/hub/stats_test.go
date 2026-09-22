@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/EthanY33/wirefan/internal/registry"
+	"github.com/oklog/ulid/v2"
 )
 
 type captureSub struct {
@@ -82,6 +83,12 @@ func TestPublishStatsLoop(t *testing.T) {
 	}
 	if data["connections"] != float64(42) { // JSON numbers are float64
 		t.Errorf("connections=%v want 42", data["connections"])
+	}
+	// Every event id on the wire is a ULID, stats events included; this one
+	// used to be an RFC3339 timestamp.
+	id, _ := got["id"].(string)
+	if _, err := ulid.ParseStrict(id); err != nil {
+		t.Errorf("id %q is not a ULID: %v", id, err)
 	}
 
 	cancel()

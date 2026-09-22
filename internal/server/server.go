@@ -74,7 +74,7 @@ func New(cfg Config, deps Deps) *Server {
 		replayCache: rc,
 	}
 
-	rest := NewRestHandler(deps.Store, deps.AdminToken, deps.SigningSecret)
+	rest := NewRestHandler(deps.Store, deps.AdminToken, deps.SigningSecret, deps.Hub)
 
 	// Public listener: health, /v1/connect (WS), /v1/auth/sign, static client.
 	s.mux.Handle("/v1/health", s.health)
@@ -92,8 +92,11 @@ func New(cfg Config, deps Deps) *Server {
 	}))
 	s.mux.Handle("/", http.FileServerFS(web.Files))
 
-	// Admin listener: metrics, pprof, key management. All gated by
-	// requireAdmin AND bound to a separate (typically loopback) listener.
+	// Admin listener: metrics, pprof, key management. Only the /v1/keys
+	// routes check the admin bearer token (requireAdmin). /metrics and
+	// /debug/pprof/* have no auth of their own: the only thing protecting
+	// them is that this listener is separate from the public one and bound
+	// to loopback or an internal network, so AdminAddr must never be public.
 	metrics.Register()
 	s.adminMux.Handle("/metrics", promhttp.Handler())
 	s.adminMux.HandleFunc("/debug/pprof/", pprof.Index)
@@ -109,11 +112,15 @@ func New(cfg Config, deps Deps) *Server {
 	// /v1/connect is a long-lived WS upgrade — a body-read deadline here
 	// would force a reconnect every N seconds, and writes are paced by
 	// websocket.Conn's own per-message deadlines (see internal/conn/conn.go).
+	// ConnContext puts each request's TCP connection in its context, so
+	// conn.Run can close a WebSocket's socket when coder/websocket cannot
+	// (a close handshake stuck on a peer that stalled mid-frame).
 	s.srv = &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           s.mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		ConnContext:       conn.WithNetConn,
 	}
 	if cfg.AdminAddr != "" {
 		s.adminSrv = &http.Server{

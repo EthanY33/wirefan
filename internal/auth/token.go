@@ -22,10 +22,14 @@ var (
 )
 
 // Token format: "<expMs>:<jti>:<base64mac>"
-// jti is a random 16-byte hex string (32 chars) embedded in the HMAC payload
-// so it can't be swapped out without breaking the signature. ReplayCache
-// records jti -> expiry; a second VerifyTokenAgainst call with the same
-// jti returns ErrTokenReplayed.
+// jti is a random 16-byte hex string (32 lowercase chars) embedded in the
+// HMAC payload so it can't be swapped out without breaking the signature.
+// ReplayCache records jti -> expiry; a second VerifyTokenAgainst call with
+// the same jti returns ErrTokenReplayed. The MAC input is built by
+// macPayload; the token string itself carries only expMs, jti and the MAC.
+
+// jtiHexLen is the length of the hex-encoded 16-byte jti SignToken emits.
+const jtiHexLen = 32
 
 // SignToken signs a one-time-use token. Each call generates a fresh jti, so
 // distinct calls with the same args still produce distinct tokens.
@@ -36,10 +40,40 @@ func SignToken(secret, socketID, channel string, expiry time.Time) (string, erro
 		return "", err
 	}
 	jti := hex.EncodeToString(jtiBytes)
-	payload := fmt.Sprintf("%d|%s|%s|%s", expMs, socketID, channel, jti)
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(payload))
+	mac.Write([]byte(macPayload(expMs, socketID, channel, jti)))
 	return strconv.FormatInt(expMs, 10) + ":" + jti + ":" + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
+// macPayload builds the HMAC input:
+//
+//	v1|<expMs>|<len>:<socket_id>|<len>:<channel>|<jti>
+//
+// socket_id and channel are length-prefixed so no bytes can move from one
+// field into its neighbor. The old "%d|%s|%s|%s" layout had no such
+// boundary: an app server that signs a browser-supplied socket_id
+// "S|private-victim" for "private-attacker" produced a MAC that, with
+// "private-attacker|" moved into the jti slot, also verified for socket S
+// on private-victim. jti needs no prefix because VerifyTokenAgainst accepts
+// only canonical hex there. The version tag keeps any future layout from
+// colliding with this one.
+func macPayload(expMs int64, socketID, channel, jti string) string {
+	return fmt.Sprintf("v1|%d|%d:%s|%d:%s|%s", expMs, len(socketID), socketID, len(channel), channel, jti)
+}
+
+// validJTI reports whether s is exactly jtiHexLen lowercase hex characters,
+// the only form SignToken produces.
+func validJTI(s string) bool {
+	if len(s) != jtiHexLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // VerifyToken validates a token without replay protection. Provided for
@@ -65,7 +99,7 @@ func VerifyTokenAgainst(secret, socketID, channel, tok string, cache *ReplayCach
 		return ErrTokenExpired
 	}
 	jti := parts[1]
-	if jti == "" {
+	if !validJTI(jti) {
 		return ErrTokenMalformed
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
@@ -73,7 +107,7 @@ func VerifyTokenAgainst(secret, socketID, channel, tok string, cache *ReplayCach
 		return ErrTokenMalformed
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = fmt.Fprintf(mac, "%d|%s|%s|%s", expMs, socketID, channel, jti)
+	mac.Write([]byte(macPayload(expMs, socketID, channel, jti)))
 	if !hmac.Equal(sig, mac.Sum(nil)) {
 		return ErrTokenInvalid
 	}

@@ -22,7 +22,10 @@ import (
 // monotonically with attacker effort.
 const maxChannelNameLen = 128
 
-func validateChannelName(name string) error {
+// ValidateChannelName enforces the channel-name rules shared by the WS
+// protocol and POST /v1/auth/sign: non-empty, at most maxChannelNameLen
+// bytes, no control characters.
+func ValidateChannelName(name string) error {
 	if name == "" {
 		return errors.New("channel name is empty")
 	}
@@ -88,7 +91,10 @@ func channelReserved(name string) bool {
 	return strings.HasPrefix(name, reservedChannelPrefix)
 }
 
-func channelRequiresAuth(name string) bool {
+// ChannelRequiresAuth reports whether subscribing to name needs a signed
+// token (a private- or presence- channel). POST /v1/auth/sign refuses to
+// mint tokens for any other channel.
+func ChannelRequiresAuth(name string) bool {
 	for _, p := range authRequiredPrefixes {
 		if strings.HasPrefix(name, p) {
 			return true
@@ -105,8 +111,8 @@ func (c *Conn) handle(ctx context.Context, raw []byte) {
 	}
 	switch msg.Type {
 	case "subscribe", "unsubscribe", "publish":
-		if err := validateChannelName(msg.Channel); err != nil {
-			c.sendError("BAD_CHANNEL", err.Error())
+		if err := ValidateChannelName(msg.Channel); err != nil {
+			c.sendOpError(msg, "BAD_CHANNEL", err.Error())
 			return
 		}
 	}
@@ -130,33 +136,39 @@ const maxSubscribeRetries = 3
 
 func (c *Conn) handleSubscribe(msg incoming) {
 	if channelReserved(msg.Channel) && !reservedSubscribeAllowed(msg.Channel) {
-		c.sendError("RESERVED_CHANNEL", "channel name reserved for server use")
+		c.sendOpError(msg, "RESERVED_CHANNEL", "channel name reserved for server use")
 		return
 	}
-	if !c.rateLimit.Allow(c.apiKeyID) {
-		c.sendError("RATE_LIMITED", "too many control ops")
+	if !c.allowControl(msg) {
 		return
 	}
-	if channelRequiresAuth(msg.Channel) {
+	// A channel this conn already holds is acked before the token check: a
+	// re-subscribe grants nothing new, so demanding a token (and burning it
+	// in the replay cache) would only break clients that repeat a subscribe.
+	// handle runs solely on readPump, so the channel cannot be added to
+	// c.subs between this check and the insert below.
+	c.subsMu.Lock()
+	_, already := c.subs[msg.Channel]
+	c.subsMu.Unlock()
+	if already {
+		c.sendAck("subscribed", msg.Channel)
+		return
+	}
+	if ChannelRequiresAuth(msg.Channel) {
 		if err := auth.VerifyTokenAgainst(c.signingSecret, c.socketID, msg.Channel, msg.Token, c.replayCache); err != nil {
 			metrics.AuthFails.Inc()
 			if errors.Is(err, auth.ErrTokenReplayed) {
-				c.sendError("AUTH_REPLAYED", "token already used")
+				c.sendOpError(msg, "AUTH_REPLAYED", "token already used")
 				return
 			}
-			c.sendError("AUTH_FAILED", "invalid token")
+			c.sendOpError(msg, "AUTH_FAILED", "invalid token")
 			return
 		}
 	}
 	c.subsMu.Lock()
-	if _, already := c.subs[msg.Channel]; already {
-		c.subsMu.Unlock()
-		c.sendAck("subscribed", msg.Channel)
-		return
-	}
 	if len(c.subs) >= c.maxChannels {
 		c.subsMu.Unlock()
-		c.sendError("LIMIT_CHANNELS", "max channels per conn")
+		c.sendOpError(msg, "LIMIT_CHANNELS", "max channels per conn")
 		return
 	}
 	var ch *registry.Channel
@@ -175,10 +187,10 @@ func (c *Conn) handleSubscribe(msg incoming) {
 	if subErr != nil {
 		c.subsMu.Unlock()
 		if errors.Is(subErr, hub.ErrTooManySubs) {
-			c.sendError("LIMIT_SUBSCRIBERS", "max subscribers per channel")
+			c.sendOpError(msg, "LIMIT_SUBSCRIBERS", "max subscribers per channel")
 			return
 		}
-		c.sendError("SUBSCRIBE_FAILED", subErr.Error())
+		c.sendOpError(msg, "SUBSCRIBE_FAILED", subErr.Error())
 		return
 	}
 	c.subs[msg.Channel] = ch
@@ -188,22 +200,24 @@ func (c *Conn) handleSubscribe(msg incoming) {
 
 func (c *Conn) handlePublish(ctx context.Context, msg incoming) {
 	if channelReserved(msg.Channel) {
-		c.sendError("RESERVED_CHANNEL", "channel name reserved for server use")
+		c.sendOpError(msg, "RESERVED_CHANNEL", "channel name reserved for server use")
 		return
 	}
 	c.subsMu.Lock()
 	ch, ok := c.subs[msg.Channel]
 	c.subsMu.Unlock()
 	if !ok {
-		c.sendError("NOT_SUBSCRIBED", "must subscribe before publish")
+		c.sendOpError(msg, "NOT_SUBSCRIBED", "must subscribe before publish")
+		return
+	}
+	// Per-conn bucket first: a publish this socket's own limit rejects must
+	// not also spend the per-key budget every other conn on the key shares.
+	if !c.connRate.Allow() {
+		c.sendOpError(msg, "RATE_LIMITED_CONN", "too many publishes on this connection")
 		return
 	}
 	if !c.rateLimit.Allow(c.apiKeyID) {
-		c.sendError("RATE_LIMITED", "too many publishes for this API key")
-		return
-	}
-	if !c.connRate.Allow() {
-		c.sendError("RATE_LIMITED_CONN", "too many publishes on this connection")
+		c.sendOpError(msg, "RATE_LIMITED", "too many publishes for this API key")
 		return
 	}
 	id := ulid.Make().String()
@@ -219,9 +233,24 @@ func (c *Conn) handlePublish(ctx context.Context, msg incoming) {
 	metrics.Latency.Observe(time.Since(start).Seconds())
 }
 
-func (c *Conn) handleUnsubscribe(msg incoming) {
+// allowControl charges a subscribe or unsubscribe to the per-conn control
+// bucket and then the shared per-key bucket, answering msg with the matching
+// error when either is empty. The per-conn check comes first so one socket
+// spamming control frames exhausts only its own budget, never the key's.
+func (c *Conn) allowControl(msg incoming) bool {
+	if !c.controlRate.Allow() {
+		c.sendOpError(msg, "RATE_LIMITED_CONN", "too many control ops on this connection")
+		return false
+	}
 	if !c.rateLimit.Allow(c.apiKeyID) {
-		c.sendError("RATE_LIMITED", "too many control ops")
+		c.sendOpError(msg, "RATE_LIMITED", "too many control ops")
+		return false
+	}
+	return true
+}
+
+func (c *Conn) handleUnsubscribe(msg incoming) {
+	if !c.allowControl(msg) {
 		return
 	}
 	c.subsMu.Lock()
@@ -248,8 +277,43 @@ func (c *Conn) sendAck(typ, channel string) {
 	}
 }
 
+// errorFrame is the wire shape of every error. Op and Channel are set only
+// when the error answers a subscribe, unsubscribe or publish frame: Op is
+// that frame's type and Channel the channel exactly as the client sent it,
+// so a client can match the error to the request that caused it. Both are
+// omitted for BAD_JSON and BAD_TYPE, and Channel is omitted when the frame
+// had none or its channel is longer than maxChannelNameLen (see
+// sendOpError). Clients ignore unknown fields, so this is additive within v1.
+type errorFrame struct {
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Op      string `json:"op,omitempty"`
+	Channel string `json:"channel,omitempty"`
+}
+
+// sendError sends an error that answers no particular request (BAD_JSON,
+// BAD_TYPE).
 func (c *Conn) sendError(code, message string) {
-	b, _ := json.Marshal(map[string]string{"type": "error", "code": code, "message": message})
+	c.sendErrorFrame(errorFrame{Type: "error", Code: code, Message: message})
+}
+
+// sendOpError sends an error answering msg, a subscribe, unsubscribe or
+// publish frame. A channel longer than maxChannelNameLen is not echoed. Such
+// a name cannot be a real channel, and echoing it let one 64 KiB frame queue
+// an error of up to 384 KiB (json.Marshal writes '<' as \u003c): six
+// times the input, in memory and in egress, with no rate limit, 64 deep per
+// conn. With the cap an error frame stays under 1 KiB.
+func (c *Conn) sendOpError(msg incoming, code, message string) {
+	f := errorFrame{Type: "error", Code: code, Message: message, Op: msg.Type}
+	if len(msg.Channel) <= maxChannelNameLen {
+		f.Channel = msg.Channel
+	}
+	c.sendErrorFrame(f)
+}
+
+func (c *Conn) sendErrorFrame(f errorFrame) {
+	b, _ := json.Marshal(f)
 	select {
 	case c.send <- b:
 	default:
@@ -260,13 +324,14 @@ func (c *Conn) sendError(code, message string) {
 // backpressure Policy. On ErrSlowConsumer, signals Run to close the conn with
 // 1008 (PolicyViolation).
 //
-// sendMu is required: PolicyDropOldest performs a non-atomic (default-send /
-// drain / send) sequence on c.send. Two concurrent Send calls without this
-// lock can both hit the drain branch, drain one message each, then both block
-// on the unbuffered second send — head-of-line stalls under multi-channel
-// fanout. PolicyDisconnect tolerates concurrency on its own (the send /
-// default pair is atomic per goroutine), but the lock also costs nothing
-// in the common path so we hold it unconditionally.
+// sendMu serializes PolicyDropOldest's non-atomic (try-send / evict /
+// try-send) sequence on c.send, so concurrent multi-channel broadcasts each
+// evict at most the one message their own insert needs. Every step of that
+// sequence is non-blocking, so holding the lock can never stall a
+// broadcaster behind a stuck or exited writePump. PolicyDisconnect tolerates
+// concurrency on its own (the send / default pair is atomic per goroutine),
+// but the lock also costs nothing in the common path so we hold it
+// unconditionally.
 func (c *Conn) Send(b []byte) error {
 	if c.closed.Load() {
 		return ErrSlowConsumer

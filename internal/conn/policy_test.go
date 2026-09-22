@@ -1,6 +1,9 @@
 package conn
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestPolicyDisconnect(t *testing.T) {
 	p := PolicyDisconnect{}
@@ -23,6 +26,25 @@ func TestPolicyDropOldest(t *testing.T) {
 	}
 	if got := <-ch; string(got) != "b" {
 		t.Fatalf("expected b, got %s", got)
+	}
+}
+
+// TestPolicyDropOldestNeverBlocks is the G10 regression. After evicting the
+// oldest message the buffer can still be full: sendAck and sendError write to
+// c.send without taking sendMu and can take the freed slot. The retry used to
+// be a blocking send, so Conn.Send stalled while holding sendMu (forever,
+// once writePump had exited). An unbuffered channel is a buffer that stays
+// full after any eviction; Apply must drop the message and return.
+func TestPolicyDropOldestNeverBlocks(t *testing.T) {
+	done := make(chan error, 1)
+	go func() { done <- PolicyDropOldest{}.Apply(make(chan []byte), []byte("x"), nil) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("want nil, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Apply blocked on a buffer that stayed full after eviction")
 	}
 }
 

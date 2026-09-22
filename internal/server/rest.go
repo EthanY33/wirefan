@@ -10,7 +10,11 @@ import (
 	"time"
 
 	"github.com/EthanY33/wirefan/internal/auth"
+	"github.com/EthanY33/wirefan/internal/conn"
+	"github.com/EthanY33/wirefan/internal/hub"
 	"github.com/EthanY33/wirefan/internal/store"
+	"github.com/coder/websocket"
+	"github.com/oklog/ulid/v2"
 )
 
 // maxAdminBodyBytes caps inbound JSON for admin POST handlers. The admin
@@ -23,10 +27,13 @@ type RestHandler struct {
 	store         store.Store
 	adminToken    string
 	signingSecret string
+	hub           *hub.Hub
 }
 
-func NewRestHandler(s store.Store, adminToken, signingSecret string) *RestHandler {
-	return &RestHandler{store: s, adminToken: adminToken, signingSecret: signingSecret}
+// NewRestHandler wires the REST endpoints. h is the Hub tracking live
+// WebSocket conns; revoking a key closes the conns opened with it.
+func NewRestHandler(s store.Store, adminToken, signingSecret string, h *hub.Hub) *RestHandler {
+	return &RestHandler{store: s, adminToken: adminToken, signingSecret: signingSecret, hub: h}
 }
 
 // keyView is the public projection of store.Key returned by GET /v1/keys.
@@ -150,6 +157,9 @@ func (h *RestHandler) revoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// The store change stops new upgrades and sign requests; sockets already
+	// open with the key would otherwise keep working until they disconnect.
+	h.hub.CloseKey(id, websocket.StatusPolicyViolation, "key revoked")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -173,6 +183,19 @@ func (h *RestHandler) sign(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	// Only mint tokens that a real subscribe could use. socket_id must be a
+	// ULID, the only shape /v1/connect issues, which also keeps '|' and ':'
+	// out of the MAC input (see auth.macPayload for the field-shift forgery
+	// that closed). channel must pass the same rules the WS handler applies
+	// and must actually require a token.
+	if _, err := ulid.ParseStrict(body.SocketID); err != nil {
+		http.Error(w, "bad request: socket_id is not a valid socket id", http.StatusBadRequest)
+		return
+	}
+	if conn.ValidateChannelName(body.Channel) != nil || !conn.ChannelRequiresAuth(body.Channel) {
+		http.Error(w, "bad request: channel must be a valid private- or presence- channel name", http.StatusBadRequest)
 		return
 	}
 	tok, err := auth.SignToken(h.signingSecret, body.SocketID, body.Channel, time.Now().Add(5*time.Minute))
