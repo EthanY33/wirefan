@@ -165,9 +165,12 @@ run_cell() {
     || fail "latency histogram scrape failed for ${label}"
   awk '/^wirefan_broadcast_latency_seconds_sum/{s=$2} /^wirefan_broadcast_latency_seconds_count/{c=$2} END{if(c>0) printf "SERVER_LATENCY mean_us=%.2f count=%d\n", s/c*1e6, c}' "$out" | tee -a "$out"
 
-  # Record the container's effective GOMAXPROCS (Docker's --cpus quota is
-  # rounded up by the Go runtime, so 1 vCPU does not mean GOMAXPROCS=1;
-  # the sharded fanout sizes its worker pool from this value).
+  # Record the container's effective GOMAXPROCS; the sharded fanout sizes
+  # its worker pool from it. The Go runtime derives the default from the
+  # cgroup CPU quota as min(logical CPUs, max(ceil(quota), 2)) (see
+  # defaultGOMAXPROCS in runtime/cgroup_linux.go), so --cpus=1 is floored
+  # to GOMAXPROCS=2 on a multi-core host. It is not rounded up: 1 is
+  # already an integer; the floor of 2 is what lifts it.
   curl -fsS "${ADMIN}/metrics" | awk '/^go_sched_gomaxprocs_threads/ {printf "GOMAXPROCS %d\n", $2}' | tee -a "$out"
 
   # Slow-consumer drop check: the server drops events to subscribers whose
