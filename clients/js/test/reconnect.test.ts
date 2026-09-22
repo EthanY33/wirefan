@@ -4,6 +4,7 @@ import {
   ConnectionClosedError,
   WirefanClient,
   WirefanError,
+  type Subscription,
   type WirefanState,
 } from "../src/index.js";
 import { FakeWSHarness, autoAccept, until } from "./fake-ws.js";
@@ -113,10 +114,13 @@ describe("reconnect", () => {
         return Promise.resolve(`tok-for-${socketId}`);
       },
     });
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
     await c.connect();
-    const sub = c.subscribe("private-room", () => {});
+    const got: unknown[] = [];
+    const sub = c.subscribe("private-room", (ev) => got.push(ev.data));
     const subOutcome = sub.then(
-      () => null,
+      (s) => s,
       (e: unknown) => e,
     );
     await until(() => calls.length === 1, "first authorize");
@@ -129,21 +133,144 @@ describe("reconnect", () => {
     // bound to the new socket), not adopt the stale in-flight one.
     await until(() => calls.length === 2, "authorize re-invoked after reconnect");
     expect(calls).toEqual(["SID0", "SID1"]);
+    // Ordering 1: the resubscribe is confirmed before the stale call returns.
+    await until(() => resub.length === 1, "resubscribed event");
 
     // Now the stale authorize resolves with a token minted for the dead
     // socket. It must never reach the wire.
     releaseStale("tok-for-SID0");
-    await until(
-      () => h.sockets[1]!.sentFrames().some((f) => f.type === "subscribe"),
-      "resubscribe frame",
-    );
     await new Promise((r) => setTimeout(r, 20)); // give the stale path time to (wrongly) send
     const subs = h.sockets[1]!.sentFrames().filter((f) => f.type === "subscribe");
     expect(subs).toEqual([
       { type: "subscribe", channel: "private-room", token: "tok-for-SID1" },
     ]);
-    // The interrupted subscribe() call surfaces the drop instead of lying.
-    expect(await subOutcome).toBeInstanceOf(ConnectionClosedError);
+    // The interrupted subscribe() adopts the resubscribe: it resolves with a
+    // live handle and the caller's handler attached, instead of rejecting
+    // while its channel lives on with no handler.
+    const outcome = await subOutcome;
+    expect(outcome).not.toBeInstanceOf(Error);
+    expect((outcome as Subscription).active).toBe(true);
+    h.sockets[1]!.serverSend({ type: "event", channel: "private-room", data: "hi", id: "e" });
+    expect(got).toEqual(["hi"]);
+    c.close();
+  });
+
+  it("adopts a resubscribe still in flight when the stale authorize() returns first", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) => autoAccept(ws, `SID${i}`);
+    const calls: string[] = [];
+    const release: ((token: string) => void)[] = [];
+    const c = makeClient(h, {
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        // Both calls hang until the test releases them.
+        return new Promise<string>((resolve) => release.push(resolve));
+      },
+    });
+    await c.connect();
+    const got: unknown[] = [];
+    let outcome: unknown = "pending";
+    c.subscribe("private-room", (ev) => got.push(ev.data)).then(
+      (s) => (outcome = s),
+      (e: unknown) => (outcome = e),
+    );
+    await until(() => calls.length === 1, "first authorize");
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => calls.length === 2, "authorize re-invoked after reconnect");
+
+    // Ordering 2: the stale call returns while the resubscribe's own
+    // authorize() is still pending, so nothing is confirmed yet.
+    release[0]!("tok-for-SID0");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(outcome).toBe("pending");
+
+    release[1]!("tok-for-SID1");
+    await until(() => outcome !== "pending", "subscribe settles");
+    expect(outcome).not.toBeInstanceOf(Error);
+    expect((outcome as Subscription).active).toBe(true);
+    const subs = h.sockets[1]!.sentFrames().filter((f) => f.type === "subscribe");
+    expect(subs).toEqual([
+      { type: "subscribe", channel: "private-room", token: "tok-for-SID1" },
+    ]);
+    h.sockets[1]!.serverSend({ type: "event", channel: "private-room", data: "hi", id: "e" });
+    expect(got).toEqual(["hi"]);
+    c.close();
+  });
+
+  it("an adopted resubscribe that is refused rejects the interrupted subscribe with the refusal", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        respond: (f) =>
+          i === 1 && f.type === "subscribe"
+            ? { type: "error", code: "AUTH_FAILED", message: "invalid token", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const calls: string[] = [];
+    const release: ((token: string) => void)[] = [];
+    const c = makeClient(h, {
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        return new Promise<string>((resolve) => release.push(resolve));
+      },
+    });
+    await c.connect();
+    const outcome = c.subscribe("private-room", () => {}).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await until(() => calls.length === 1, "first authorize");
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => calls.length === 2, "authorize re-invoked after reconnect");
+
+    // The stale call returns first, so subscribe() joins the resubscribe;
+    // then that resubscribe is refused.
+    release[0]!("tok-for-SID0");
+    await new Promise((r) => setTimeout(r, 20));
+    release[1]!("tok-for-SID1");
+    const err = await outcome;
+    expect(err).toBeInstanceOf(WirefanError);
+    expect((err as WirefanError).code).toBe("AUTH_FAILED");
+    c.close();
+  });
+
+  it("never adopts a channel the server refused, whichever authorize() returns first", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        respond: (f) =>
+          i === 1 && f.type === "subscribe"
+            ? { type: "error", code: "AUTH_FAILED", message: "invalid token", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const calls: string[] = [];
+    const release: ((token: string) => void)[] = [];
+    const c = makeClient(h, {
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        return new Promise<string>((resolve) => release.push(resolve));
+      },
+    });
+    await c.connect();
+    const sub = c.subscribe("private-room", () => {});
+    const outcome = sub.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await until(() => calls.length === 1, "first authorize");
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => calls.length === 2, "authorize re-invoked after reconnect");
+
+    // Both return in the same tick: the refusal and the stale failure race.
+    release[0]!("tok-for-SID0");
+    release[1]!("tok-for-SID1");
+    const err = await outcome;
+    // Rejected either way (the refusal if it joined in time, the drop if the
+    // channel was already gone), and no third attempt for a refused channel.
+    expect(err).toBeInstanceOf(Error);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toEqual(["SID0", "SID1"]);
     c.close();
   });
 
