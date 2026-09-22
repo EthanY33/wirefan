@@ -1,4 +1,4 @@
-// Package metrics defines wirefan's Prometheus collectors and the OTel hook.
+// Package metrics defines wirefan's Prometheus collectors.
 //
 // All collectors are package-level singletons so call sites can emit values
 // without plumbing a registry through every constructor. Register() must be
