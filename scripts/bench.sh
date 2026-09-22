@@ -25,8 +25,9 @@
 #
 # Tunables (env): CONNS, CHANNELS, RATE, DURATION, RAMPUP, REPS, CELLS,
 # PROFILE_CELL (cell label to pprof, e.g. "sharded-sharded"; empty = none),
-# RUN_TAG (suffix inserted into results filenames, e.g. "-dropcheck", so
-# verification runs never overwrite previously published raw files).
+# RUN_TAG (suffix inserted into results filenames, raw output and pprof
+# captures alike, e.g. "-dropcheck", so verification runs never overwrite
+# previously published files).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -128,8 +129,8 @@ run_cell() {
   # Optional pprof capture concurrent with the load (headline cell only).
   local pprof_pid=""
   if [ -n "$PROFILE_CELL" ] && [ "$label" = "$PROFILE_CELL" ] && [ "$rep" = "1" ]; then
-    ( sleep 8; curl -fsS "${ADMIN}/debug/pprof/profile?seconds=${PROFILE_SECONDS}" -o "results/${label}-c${CONNS}-cpu.pb.gz" \
-        && curl -fsS "${ADMIN}/debug/pprof/heap" -o "results/${label}-c${CONNS}-heap.pb.gz" ) &
+    ( sleep 8; curl -fsS "${ADMIN}/debug/pprof/profile?seconds=${PROFILE_SECONDS}" -o "results/${label}-c${CONNS}${RUN_TAG}-cpu.pb.gz" \
+        && curl -fsS "${ADMIN}/debug/pprof/heap" -o "results/${label}-c${CONNS}${RUN_TAG}-heap.pb.gz" ) &
     pprof_pid=$!
   fi
 
@@ -210,4 +211,4 @@ done
 
 echo
 echo "All cells completed cleanly. Raw output in ./results/."
-echo "Render pprof captures (if any): go tool pprof -top -text results/<cell>-cpu.pb.gz > docs/profiles/<cell>-cpu.txt"
+echo "Render pprof captures (if any): go tool pprof -top -text results/<cell>-c<conns><run-tag>-cpu.pb.gz > docs/profiles/<cell>-cpu.txt"
