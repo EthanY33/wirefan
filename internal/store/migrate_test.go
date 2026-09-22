@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -413,6 +415,133 @@ func TestMigrateConcurrentOpeners(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`INSERT INTO keys(id,name,secret_hash,created_at,note) VALUES('a','b','c',0,'d')`); err != nil {
 		t.Fatalf("insert using migrated column: %v", err)
+	}
+}
+
+// stmtHookDriverName is a sqlite3 driver wrapper that lets a test act in the
+// gap between two statements; see openHooked.
+const stmtHookDriverName = "sqlite3-stmt-hook"
+
+var (
+	stmtHookOnce sync.Once
+	stmtHookMu   sync.Mutex
+	stmtHooks    = map[string]func(query string){} // keyed by DSN
+)
+
+type stmtHookDriver struct{ base driver.Driver }
+
+func (d stmtHookDriver) Open(dsn string) (driver.Conn, error) {
+	c, err := d.base.Open(dsn)
+	if err != nil {
+		return nil, err
+	}
+	stmtHookMu.Lock()
+	hook := stmtHooks[dsn]
+	stmtHookMu.Unlock()
+	return stmtHookConn{Conn: c, hook: hook}, nil
+}
+
+// stmtHookConn embeds only driver.Conn, so database/sql cannot see the
+// wrapped connection's QueryerContext and routes every query through
+// Prepare, where the hook runs before the statement is prepared.
+type stmtHookConn struct {
+	driver.Conn
+	hook func(query string)
+}
+
+func (c stmtHookConn) Prepare(query string) (driver.Stmt, error) {
+	if c.hook != nil {
+		c.hook(query)
+	}
+	return c.Conn.Prepare(query)
+}
+
+// BeginTx forwards to the wrapped connection; database/sql refuses a
+// read-only transaction on a connection without ConnBeginTx.
+func (c stmtHookConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
+}
+
+// openHooked opens path through the statement-hook driver: hook sees every
+// query text just before it is prepared.
+func openHooked(t *testing.T, path string, hook func(query string)) *sql.DB {
+	t.Helper()
+	stmtHookOnce.Do(func() {
+		base, err := sql.Open("sqlite3", "")
+		if err != nil {
+			t.Fatalf("sql.Open base driver: %v", err)
+		}
+		sql.Register(stmtHookDriverName, stmtHookDriver{base: base.Driver()})
+		_ = base.Close()
+	})
+	dsn := path + "?_journal_mode=WAL&_busy_timeout=5000"
+	stmtHookMu.Lock()
+	stmtHooks[dsn] = hook
+	stmtHookMu.Unlock()
+	t.Cleanup(func() {
+		stmtHookMu.Lock()
+		delete(stmtHooks, dsn)
+		stmtHookMu.Unlock()
+	})
+	db, err := sql.Open(stmtHookDriverName, dsn)
+	if err != nil {
+		t.Fatalf("sql.Open hooked: %v", err)
+	}
+	return db
+}
+
+// TestCheckDatabaseReadsOneSnapshot proves checkDatabase takes user_version
+// and the table list from one snapshot. A concurrent opener fully migrates
+// the file, to a two-step schema whose keys table no longer matches v0.2.0,
+// in the gap between the two reads. Read as separate statements, the stale
+// version 0 is paired with the post-migration table list and a database
+// wirefan itself just migrated is refused as unrecognized. Inside one read
+// transaction the pair is version 0 with no tables, which is consistent;
+// applyMigration's locked re-read then sees the concurrent bump and skips.
+func TestCheckDatabaseReadsOneSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	setup := openRaw(t, path)
+	if err := setup.Ping(); err != nil {
+		t.Fatalf("create database file: %v", err)
+	}
+	if err := setup.Close(); err != nil {
+		t.Fatalf("close setup handle: %v", err)
+	}
+
+	ms := []migration{
+		{version: 1, name: "baseline", apply: func(tx execer) error {
+			_, err := tx.Exec(createKeysTableSQL)
+			return err
+		}},
+		{version: 2, name: "add note", apply: func(tx execer) error {
+			_, err := tx.Exec(`ALTER TABLE keys ADD COLUMN note TEXT`)
+			return err
+		}},
+	}
+
+	fired := 0
+	db := openHooked(t, path, func(query string) {
+		if fired > 0 || !strings.Contains(query, "sqlite_master") {
+			return
+		}
+		fired++
+		other := openRaw(t, path)
+		defer func() { _ = other.Close() }()
+		if err := migrate(other, ms); err != nil {
+			t.Errorf("concurrent opener migrate: %v", err)
+		}
+	})
+	defer func() { _ = db.Close() }()
+
+	v, err := checkDatabase(db, ms)
+	if fired != 1 {
+		t.Fatalf("hook fired %d times, want 1; the test no longer reaches the gap between the reads", fired)
+	}
+	if err != nil {
+		t.Fatalf("checkDatabase refused a database a concurrent opener just migrated: %v", err)
+	}
+	if v != 0 {
+		t.Fatalf("version = %d, want 0 (the snapshot taken before the concurrent migration)", v)
 	}
 }
 
