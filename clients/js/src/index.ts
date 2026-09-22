@@ -242,11 +242,15 @@ export interface ClientEvents {
   disconnected: { code?: number; reason?: string; willReconnect: boolean };
   /** A reconnect attempt is scheduled. */
   reconnecting: { attempt: number; delayMs: number };
-  /** After a reconnect, all previous channels were resubscribed. */
+  /**
+   * Channels restored after a reconnect: one event for the first pass over
+   * every channel, then one per channel whose resubscribe needed a retry.
+   */
   resubscribed: { channels: string[] };
   /**
    * A server error frame that does not belong to an in-flight operation,
-   * or a resubscribe failure after reconnect.
+   * or a resubscribe failure after reconnect (each transient failure that
+   * will be retried, and the definitive refusal that drops a channel).
    */
   error: Error;
   /** The client is permanently closed (explicit close() or retries exhausted). */
@@ -285,6 +289,8 @@ interface ChannelRecord {
   confirmed: boolean;
   /** Shared by concurrent subscribe() calls so only one frame is sent. */
   inflight: Promise<void> | null;
+  /** Pending backoff retry of a transiently failed resubscribe. */
+  retryTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /**
@@ -306,6 +312,26 @@ const SUBSCRIBE_ERROR_CODES = new Set<string>([
   "SUBSCRIBE_FAILED",
   "RATE_LIMITED",
 ]);
+
+/**
+ * Refusals that retrying cannot fix (plus every LIMIT_* code): a resubscribe
+ * that ends in one of these drops the channel. Every other failure (ack
+ * timeout, RATE_LIMITED, RATE_LIMITED_CONN, an authorize() callback that
+ * throws, a code this client does not know) is treated as transient and
+ * retried with backoff, so a reconnect herd cannot silently strip channels.
+ */
+const DEFINITIVE_SUBSCRIBE_CODES = new Set<string>([
+  "AUTH_FAILED",
+  "AUTH_REPLAYED",
+  "RESERVED_CHANNEL",
+  "BAD_CHANNEL",
+  "SUBSCRIBE_FAILED",
+]);
+
+function isDefinitiveRefusal(err: Error): boolean {
+  if (!(err instanceof WirefanError)) return false;
+  return DEFINITIVE_SUBSCRIBE_CODES.has(err.code) || err.code.startsWith("LIMIT_");
+}
 
 const DEFAULT_RECONNECT: Required<ReconnectOptions> = {
   initialDelayMs: 300,
@@ -493,7 +519,10 @@ export class WirefanClient {
     this.#failPending(new ConnectionClosedError("client closed"));
     this.#rejectConnectWaiters(new ConnectionClosedError("client closed"));
     this.#socketId = null;
-    for (const rec of this.#channels.values()) rec.handlers.clear();
+    for (const rec of this.#channels.values()) {
+      this.#cancelRetry(rec);
+      rec.handlers.clear();
+    }
     this.#channels.clear();
     this.#setState("closed");
     this.#emit("closed", { reason: "explicit" });
@@ -633,12 +662,9 @@ export class WirefanClient {
     }
     const op = this.#pending.splice(idx, 1)[0]!;
     clearTimeout(op.timer);
-    if (op.kind === "subscribe") {
-      // The subscribe failed: forget the channel unless it was already
-      // confirmed on this connection (idempotent re-subscribes).
-      const rec = this.#channels.get(op.channel);
-      if (rec && !rec.confirmed) this.#channels.delete(op.channel);
-    }
+    // Whether the channel record survives is the awaiting caller's call:
+    // subscribe() forgets a channel nobody else holds, while a resubscribe
+    // keeps it through transient refusals (#resubscribe).
     op.reject(err);
   }
 
@@ -725,10 +751,13 @@ export class WirefanClient {
     // Reset per-connection subscription state. Clearing `inflight` matters:
     // a subscribe attempt stuck awaiting authorize() when the drop hit is now
     // stale (its token targets the dead socket), and the post-reconnect
-    // resubscribe must start a fresh attempt, not adopt the old one.
+    // resubscribe must start a fresh attempt, not adopt the old one. A
+    // pending resubscribe retry is moot too: the next #onConnected restores
+    // every record from scratch.
     for (const rec of this.#channels.values()) {
       rec.confirmed = false;
       rec.inflight = null;
+      this.#cancelRetry(rec);
     }
 
     const canRetry =
@@ -747,14 +776,8 @@ export class WirefanClient {
       return;
     }
 
-    const r = this.#reconnect as Required<ReconnectOptions>;
     this.#attempt += 1;
-    const base = Math.min(
-      r.maxDelayMs,
-      r.initialDelayMs * Math.pow(r.multiplier, this.#attempt - 1),
-    );
-    const jittered = Math.round(base * (1 + r.jitter * (2 * this.#random() - 1)));
-    const delayMs = Math.max(0, jittered);
+    const delayMs = this.#backoffDelay(this.#attempt);
     this.#setState("reconnecting");
     this.#emit("reconnecting", { attempt: this.#attempt, delayMs });
     this.#reconnectTimer = setTimeout(() => {
@@ -764,36 +787,102 @@ export class WirefanClient {
     }, delayMs);
   }
 
+  /** Exponential backoff with jitter for the given 1-based attempt. */
+  #backoffDelay(attempt: number): number {
+    const r = this.#reconnect === false ? DEFAULT_RECONNECT : this.#reconnect;
+    const base = Math.min(
+      r.maxDelayMs,
+      r.initialDelayMs * Math.pow(r.multiplier, attempt - 1),
+    );
+    const jittered = Math.round(base * (1 + r.jitter * (2 * this.#random() - 1)));
+    return Math.max(0, jittered);
+  }
+
+  #cancelRetry(rec: ChannelRecord): void {
+    if (rec.retryTimer !== null) {
+      clearTimeout(rec.retryTimer);
+      rec.retryTimer = null;
+    }
+  }
+
   /**
    * After a reconnect, restore every channel the caller had. Tokens for
    * private-/presence- channels are re-fetched: the old ones were bound to
    * the previous socket_id and are single-use besides.
    */
   async #resubscribeAll(): Promise<void> {
+    const epoch = this.#epoch;
     const channels = [...this.#channels.keys()];
     const restored: string[] = [];
     for (const channel of channels) {
-      if (this.#state !== "connected") return; // dropped again mid-restore
+      // Dropped again mid-restore; after a reconnect, that connection's own
+      // #resubscribeAll takes over.
+      if (this.#epoch !== epoch || this.#state !== "connected") return;
       const rec = this.#channels.get(channel);
       if (!rec) continue; // unsubscribed meanwhile
-      try {
-        await this.#ensureSubscribed(channel, rec);
-        restored.push(channel);
-      } catch (e) {
-        // Surface the failure and drop the dead subscription rather than
-        // silently pretending it is alive.
-        this.#channels.delete(channel);
-        this.#emit(
-          "error",
-          e instanceof Error
-            ? e
-            : new Error(`resubscribe ${channel} failed: ${String(e)}`),
-        );
-      }
+      if (await this.#resubscribe(channel, rec, epoch, 0)) restored.push(channel);
     }
-    if (this.#state === "connected" && restored.length > 0) {
+    if (this.#epoch === epoch && this.#state === "connected" && restored.length > 0) {
       this.#emit("resubscribed", { channels: restored });
     }
+  }
+
+  /**
+   * One resubscribe attempt for a channel the caller still holds; true once
+   * it is confirmed. A failure decides the record's fate by class:
+   * - ConnectionClosedError: the connection dropped again. Keep the record
+   *   without an error event; the next #onConnected restores it.
+   * - A definitive refusal (isDefinitiveRefusal): surface it and drop the
+   *   channel rather than pretend it is alive.
+   * - Anything else is transient: surface it, keep the record, and retry
+   *   on this connection with the reconnect backoff curve.
+   */
+  async #resubscribe(
+    channel: string,
+    rec: ChannelRecord,
+    epoch: number,
+    retries: number,
+  ): Promise<boolean> {
+    try {
+      await this.#ensureSubscribed(channel, rec);
+      return true;
+    } catch (e) {
+      if (e instanceof ConnectionClosedError) return false;
+      const err =
+        e instanceof Error ? e : new Error(`resubscribe ${channel} failed: ${String(e)}`);
+      this.#emit("error", err);
+      if (this.#channels.get(channel) !== rec) return false; // unsubscribed meanwhile
+      if (isDefinitiveRefusal(err)) {
+        this.#channels.delete(channel);
+      } else if (this.#epoch === epoch && this.#state === "connected") {
+        this.#scheduleResubscribe(channel, rec, epoch, retries + 1);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Retry a transiently failed resubscribe after a backoff. Bound to the
+   * connection it was scheduled on: a drop cancels it (#onDrop), and so does
+   * the caller unsubscribing or closing the client.
+   */
+  #scheduleResubscribe(
+    channel: string,
+    rec: ChannelRecord,
+    epoch: number,
+    retries: number,
+  ): void {
+    this.#cancelRetry(rec);
+    rec.retryTimer = setTimeout(() => {
+      rec.retryTimer = null;
+      if (this.#epoch !== epoch || this.#state !== "connected") return;
+      if (this.#channels.get(channel) !== rec) return;
+      void this.#resubscribe(channel, rec, epoch, retries).then((ok) => {
+        if (ok && this.#epoch === epoch && this.#state === "connected") {
+          this.#emit("resubscribed", { channels: [channel] });
+        }
+      });
+    }, this.#backoffDelay(retries));
   }
 
   // ----- operations --------------------------------------------------------
@@ -825,7 +914,7 @@ export class WirefanClient {
     let rec = this.#channels.get(channel);
     const alreadyConfirmed = rec?.confirmed === true;
     if (!rec) {
-      rec = { handlers: new Set(), confirmed: false, inflight: null };
+      rec = { handlers: new Set(), confirmed: false, inflight: null, retryTimer: null };
       this.#channels.set(channel, rec);
     }
     if (handler) rec.handlers.add(handler);
@@ -857,6 +946,7 @@ export class WirefanClient {
         if (!cur) return;
         if (handler) cur.handlers.delete(handler);
         if (cur.handlers.size > 0) return; // other handles still want it
+        client.#cancelRetry(cur);
         client.#channels.delete(channel);
         if (client.#state !== "connected") return; // nothing to tell the server
         await client.#sendOp("unsubscribe", channel, { type: "unsubscribe", channel });
