@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -28,8 +30,9 @@ import (
 // rolls back the schema change and the version bump together.
 //
 // Refusals are read-only: NewSQLite inspects an existing file over a
-// query-only preflight connection before the writable WAL handle is opened,
-// so a refused file is left byte-for-byte unmodified.
+// read-only (mode=ro) preflight connection before the writable WAL handle
+// is opened, so a refused file, and its -wal if it has one, is left
+// byte-for-byte unmodified.
 
 // execer is the statement surface a migration step gets: the
 // transaction-scoped connection that applyMigration drives with
@@ -110,11 +113,18 @@ func validateMigrations(ms []migration) error {
 	return nil
 }
 
-// preflight inspects an existing database file over a query-only connection
+// preflight inspects an existing database file over a read-only connection
 // before the writable handle is opened. The writable DSN converts the file
 // to WAL journaling as a side effect of merely opening it, which would
 // rewrite header bytes even when migrate then refuses; the refusal paths
 // must leave a file wirefan does not own untouched.
+//
+// The connection is opened with mode=ro rather than _query_only.
+// query_only only blocks SQL writes: the handle is still read-write at the
+// file level, so when it closes as the last connection to a WAL database it
+// checkpoints the -wal into the main file and deletes the -wal. A read-only
+// handle reads the WAL (so tables committed only there are still seen) but
+// cannot checkpoint it.
 func preflight(path string, ms []migration) error {
 	fi, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -126,13 +136,30 @@ func preflight(path string, ms []migration) error {
 	if fi.Size() == 0 {
 		return nil // zero-byte file; SQLite treats it as an empty database
 	}
-	db, err := sql.Open("sqlite3", path+"?_query_only=true&_busy_timeout=5000")
+	db, err := sql.Open("sqlite3", readOnlyDSN(path))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 	_, err = checkDatabase(db, ms)
 	return err
+}
+
+// readOnlyDSN builds the preflight DSN for path. mode=ro is a SQLite URI
+// parameter, and go-sqlite3 passes a DSN through as a URI only when it
+// starts with "file:" (for any other DSN it strips the query before
+// SQLite sees it), so the path has to travel as a file: URI. It is
+// percent-escaped so characters with URI meaning (%, plus the ? and # that
+// validateDBPath already rejects) stay part of the filename instead of
+// being decoded or starting a query. A Windows drive path gets a leading
+// slash (file:///C:/...), the form SQLite's Windows VFS expects. The
+// NUL/CR/LF guards stay in validateDBPath, which NewSQLite runs first.
+func readOnlyDSN(path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return "file://" + (&url.URL{Path: p}).EscapedPath() + "?mode=ro&_busy_timeout=5000"
 }
 
 // migrate brings db up to the newest version in ms, refusing databases from
@@ -160,7 +187,7 @@ func migrate(db *sql.DB, ms []migration) error {
 // checkDatabase reads the schema version and refuses databases wirefan
 // cannot own: future versions, and version-0 files that are neither empty
 // nor a v0.2.0 key store. It only reads, so preflight can run it over a
-// query-only connection.
+// read-only connection.
 func checkDatabase(db *sql.DB, ms []migration) (int, error) {
 	var current int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&current); err != nil {
