@@ -507,6 +507,26 @@ that. Only peers on that network can then connect, but they reach
 the network as trusted. A `provision.sh` re-run rewrites the unit, so
 re-apply the change afterwards.
 
+That bind also makes wirefan's startup depend on the tunnel. If the
+tunnel address does not exist yet when wirefan starts, typically at
+boot, the admin listener fails with `bind: cannot assign requested
+address`, the whole process exits (the public listener with it), and
+systemd retries every 5 seconds until the address appears. The unit
+only orders itself after `network.target`, so add the tunnel with a
+drop-in, which `provision.sh` leaves alone:
+
+```bash
+sudo systemctl edit wirefan
+# in the editor, add:
+#   [Unit]
+#   After=wg-quick@wg0.service
+# (or After=tailscaled.service for Tailscale)
+```
+
+Ordering waits only for the tunnel's unit to start. If the address still
+arrives a moment later, expect one or two of those 5-second restarts at
+boot before wirefan stays up.
+
 Ad-hoc profiling uses the same listener:
 
 ```bash
