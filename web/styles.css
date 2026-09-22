@@ -1,20 +1,22 @@
-/* wirefan demo &mdash; editorial / terminal hybrid.
-   Off-white paper, ink-olive type, monospace data, single warm accent. */
+/* wirefan demo: dark ground, one ember accent, monospace data.
+   Same palette as the README visuals in docs/img (drawn in Figma). */
 
 :root {
-  --paper: #f5f1ea;
-  --paper-2: #ebe5d8;
-  --rule: #c9bfa7;
-  --ink: #1f2418;
-  --ink-2: #3a3f31;
-  --dim: #7a7560;
-  --olive: #4a5236;
-  --accent: #c25b1a;       /* warm rust / terracotta */
-  --accent-soft: #e9dfcb;
-  --ok: #4a6b2a;
-  --warn: #b8541a;
-  --err: #8a2424;
-  --serif: "Iowan Old Style", "Hoefler Text", "Palatino Linotype", Palatino, Georgia, serif;
+  color-scheme: dark;
+  --paper: #000000;        /* page ground */
+  --paper-2: #0e0a08;      /* raised surfaces: panels, inputs, log */
+  --rule: #3b2a1f;         /* hairlines */
+  --frame: #5a4436;        /* structural rules between regions */
+  --ink: #fff3e8;          /* primary text */
+  --ink-2: #d9cabe;        /* secondary text */
+  --dim: #a8978b;          /* labels, placeholders */
+  --olive: #8db5f7;        /* channel names and event tags in the log */
+  --accent: #f0561c;       /* ember */
+  --accent-soft: #2a160c;  /* ember wash for highlights */
+  --ok: #4cc38a;
+  --warn: #ffb23f;
+  --err: #e5484d;
+  --display: "Archivo", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", "IBM Plex Mono", "Menlo", "Consolas", "Roboto Mono", monospace;
   --sans: "Inter", -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --peer-color: var(--accent);
@@ -25,7 +27,7 @@ html, body { margin: 0; padding: 0; }
 body {
   background: var(--paper);
   color: var(--ink);
-  font-family: var(--serif);
+  font-family: var(--display);
   font-size: 16px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -39,7 +41,7 @@ a:hover { color: var(--accent); }
 /* ---------- masthead ---------- */
 .masthead {
   padding: 28px 36px 18px;
-  border-bottom: 2px solid var(--ink);
+  border-bottom: 1px solid var(--frame);
   background: var(--paper);
 }
 .masthead-row {
@@ -53,7 +55,7 @@ a:hover { color: var(--accent); }
   display: flex;
   align-items: baseline;
   gap: 10px;
-  font-family: var(--serif);
+  font-family: var(--display);
 }
 .brand-mark {
   width: 28px;
@@ -125,11 +127,11 @@ body.is-connected .peer-badge { display: inline-block; }
   display: grid;
   grid-template-columns: 1fr 1.4fr 1fr;
   gap: 0;
-  border-bottom: 2px solid var(--ink);
+  border-bottom: 1px solid var(--frame);
   min-height: 70vh;
 }
 .panel {
-  border-right: 1px solid var(--ink);
+  border-right: 1px solid var(--frame);
   display: flex;
   flex-direction: column;
   background: var(--paper);
@@ -153,7 +155,7 @@ body.is-connected .peer-badge { display: inline-block; }
 }
 .panel-title {
   margin: 0;
-  font-family: var(--serif);
+  font-family: var(--display);
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -232,13 +234,14 @@ body.is-connected .peer-badge { display: inline-block; }
 .btn:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-primary {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--ink);
   color: var(--paper);
-  border-color: var(--accent);
+  border-color: var(--ink);
 }
 .btn-warn {
   border-color: var(--accent);
@@ -281,7 +284,7 @@ body.is-connected .peer-badge { display: inline-block; }
   max-height: 420px;
   overflow-y: auto;
   border: 1px solid var(--ink-2);
-  background: #fbf8f1;
+  background: #070504;
   padding: 0;
   font-family: var(--mono);
   font-size: 12px;
@@ -290,7 +293,7 @@ body.is-connected .peer-badge { display: inline-block; }
   padding: 22px 16px;
   color: var(--dim);
   font-style: italic;
-  font-family: var(--serif);
+  font-family: var(--display);
   font-size: 14px;
   text-align: center;
 }
@@ -409,7 +412,7 @@ body.is-connected .peer-badge { display: inline-block; }
   .grid {
     grid-template-columns: 1fr;
   }
-  .panel { border-right: none; border-bottom: 1px solid var(--ink); }
+  .panel { border-right: none; border-bottom: 1px solid var(--frame); }
   .panel:last-child { border-bottom: none; }
   .footer { padding: 14px 18px 22px; }
 }
