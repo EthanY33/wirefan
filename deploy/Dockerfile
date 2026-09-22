@@ -23,9 +23,11 @@ COPY . .
 
 # CGO required for mattn/go-sqlite3. -s -w strips debug info to shrink the
 # binary. Native arch by default; for cross-builds use `docker buildx build
-# --platform linux/arm64` from an x86_64 dev box.
+# --platform linux/arm64` from an x86_64 dev box. VERSION is what
+# `wirefan --version` reports: `docker build --build-arg VERSION=v1.0.0 ...`.
+ARG VERSION=dev
 RUN CGO_ENABLED=1 go build \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/wirefan \
     ./cmd/wirefan
 
