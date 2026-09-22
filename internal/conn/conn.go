@@ -55,6 +55,7 @@ type Conn struct {
 	controlRate   *rate.Limiter      // per-conn subscribe/unsubscribe bucket; charged before rateLimit
 	policy        Policy
 	closeReq      chan struct{}
+	cancel        context.CancelFunc // cancels Run's runCtx; see CloseNow
 	subs          map[string]*registry.Channel
 	subsMu        sync.Mutex
 	closed        atomic.Bool
@@ -86,11 +87,21 @@ const (
 	defaultConnControlBurst = defaultMaxChannelsPerConn
 )
 
-// CloseFrame implements the hub.closer interface — used by Hub.Drain to broadcast
-// shutdown closes to all tracked conns.
+// CloseFrame implements the hub tracked-conn interface: Hub.Drain uses it to
+// send shutdown closes to all tracked conns. It runs the close handshake and
+// can block for several seconds on a peer that never answers.
 func (c *Conn) CloseFrame(code websocket.StatusCode, reason string) {
 	_ = c.ws.Close(code, reason)
 }
+
+// CloseNow implements the hub tracked-conn interface: Hub.Drain force-closes
+// conns still open when its deadline passes. It cancels runCtx and returns
+// at once; coder/websocket then tears the socket down under readPump's
+// in-flight Read, which also cuts short a CloseFrame handshake stuck waiting
+// on a silent peer, and Run finishes its normal teardown. ws.CloseNow would
+// not do: while a Close handshake is running it waits for that handshake
+// rather than interrupting it.
+func (c *Conn) CloseNow() { c.cancel() }
 
 // Deps bundles the long-lived dependencies a Conn needs. All fields except
 // ReplayCache are required; ReplayCache may be nil to disable subscribe-token
@@ -127,6 +138,12 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 		maxChannels:   defaultMaxChannelsPerConn,
 	}
 
+	// runCtx exists before Hub.Add so a Drain that force-closes this conn
+	// the moment it is tracked always has a cancel to call.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	c.cancel = cancel
+
 	metrics.Connections.Inc()
 	defer metrics.Connections.Dec()
 
@@ -143,9 +160,6 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 	default:
 		return ws.Close(websocket.StatusInternalError, "send chan full at start")
 	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	errc := make(chan error, 2)
 	go func() { errc <- c.writePump(runCtx) }()
