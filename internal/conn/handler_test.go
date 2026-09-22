@@ -440,3 +440,54 @@ func TestUnsubscribeRoundTrip(t *testing.T) {
 		t.Fatalf("expected idempotent unsubscribed, got %+v", got)
 	}
 }
+
+// wantError asserts an error frame with the given code, op and channel.
+// An empty op or channel means the field must be absent.
+func wantError(t *testing.T, got map[string]any, code, op, channel string) {
+	t.Helper()
+	if got["type"] != "error" || got["code"] != code {
+		t.Fatalf("want error %s, got %+v", code, got)
+	}
+	if _, ok := got["message"].(string); !ok {
+		t.Fatalf("error frame without message: %+v", got)
+	}
+	for _, f := range []struct{ key, want string }{{"op", op}, {"channel", channel}} {
+		v, present := got[f.key]
+		switch {
+		case f.want == "" && present:
+			t.Fatalf("%s: want no %q field, got %+v", code, f.key, got)
+		case f.want != "" && v != f.want:
+			t.Fatalf("%s: want %s %q, got %+v", code, f.key, f.want, got)
+		}
+	}
+}
+
+// TestErrorFramesCarryOpAndChannel covers the error-frame contract: errors
+// answering a subscribe, unsubscribe or publish frame echo "op" and the
+// channel exactly as sent; BAD_JSON and BAD_TYPE carry neither.
+func TestErrorFramesCarryOpAndChannel(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "_internal"})
+	wantError(t, readJSON(t, c), "RESERVED_CHANNEL", "subscribe", "_internal")
+
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "private-y", "token": "garbage"})
+	wantError(t, readJSON(t, c), "AUTH_FAILED", "subscribe", "private-y")
+
+	sendJSON(t, c, map[string]any{"type": "unsubscribe", "channel": "bad\x01name"})
+	wantError(t, readJSON(t, c), "BAD_CHANNEL", "unsubscribe", "bad\x01name")
+
+	sendJSON(t, c, map[string]any{"type": "unsubscribe"})
+	wantError(t, readJSON(t, c), "BAD_CHANNEL", "unsubscribe", "")
+
+	sendJSON(t, c, map[string]any{"type": "publish", "channel": "public-z", "data": 1})
+	wantError(t, readJSON(t, c), "NOT_SUBSCRIBED", "publish", "public-z")
+
+	if err := c.Write(context.Background(), websocket.MessageText, []byte(`{"type":`)); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, readJSON(t, c), "BAD_JSON", "", "")
+
+	sendJSON(t, c, map[string]any{"type": "nope", "channel": "public-x"})
+	wantError(t, readJSON(t, c), "BAD_TYPE", "", "")
+}
