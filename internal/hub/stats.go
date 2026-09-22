@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/EthanY33/wirefan/internal/registry"
+	"github.com/oklog/ulid/v2"
 )
 
 // PublishStatsLoop periodically publishes a snapshot to the reserved
@@ -24,7 +25,9 @@ func PublishStatsLoop(ctx context.Context, r registry.Registry, interval time.Du
 				"type":    "event",
 				"channel": "_wirefan-stats",
 				"data":    snap(),
-				"id":      time.Now().Format(time.RFC3339Nano),
+				// A ULID like every other event id, so clients can
+				// treat ids uniformly (and still sort them by time).
+				"id": ulid.Make().String(),
 			})
 			Broadcast(ch, payload)
 		}
