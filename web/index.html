@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>wirefan &mdash; live demo</title>
+  <title>wirefan live demo</title>
   <link rel="icon" type="image/svg+xml" href="/mark.svg">
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -52,9 +52,9 @@
           <button id="btnDisconnect" class="btn btn-ghost" type="button" disabled>disconnect</button>
         </div>
         <dl class="kv">
-          <dt>socket_id</dt><dd id="socketId" class="mono">&mdash;</dd>
-          <dt>endpoint</dt><dd id="wsEndpoint" class="mono">&mdash;</dd>
-          <dt>subscribed</dt><dd id="subList" class="mono">&mdash;</dd>
+          <dt>socket_id</dt><dd id="socketId" class="mono">&ndash;</dd>
+          <dt>endpoint</dt><dd id="wsEndpoint" class="mono">&ndash;</dd>
+          <dt>subscribed</dt><dd id="subList" class="mono">&ndash;</dd>
         </dl>
       </div>
     </section>
@@ -83,7 +83,7 @@
           <button id="btnStress" class="btn btn-warn" type="button" disabled>
             stress: open 50 phantom conns
           </button>
-          <span id="stressStatus" class="mono dim">&mdash;</span>
+          <span id="stressStatus" class="mono dim">&ndash;</span>
         </div>
         <div class="log" id="log" aria-live="polite">
           <div class="log-empty">no frames yet. subscribe and publish to see a fanout.</div>
@@ -96,26 +96,26 @@
       <div class="panel-head">
         <span class="panel-num">03</span>
         <h2 id="stats-h" class="panel-title">Live stats</h2>
-        <span class="panel-status mono" id="statsAge">&mdash;</span>
+        <span class="panel-status mono" id="statsAge">&ndash;</span>
       </div>
       <div class="panel-body">
         <p class="caption" id="statsCaption">published to the <span class="mono">_wirefan-stats</span> system channel.</p>
         <div class="stats-grid" id="statsGrid">
           <div class="stat">
             <div class="stat-label">connections</div>
-            <div class="stat-value mono" data-stat="connections">&mdash;</div>
+            <div class="stat-value mono" data-stat="connections">&ndash;</div>
           </div>
           <div class="stat">
             <div class="stat-label">channels</div>
-            <div class="stat-value mono" data-stat="channels">&mdash;</div>
+            <div class="stat-value mono" data-stat="channels">&ndash;</div>
           </div>
           <div class="stat">
             <div class="stat-label">published</div>
-            <div class="stat-value mono" data-stat="published">&mdash;</div>
+            <div class="stat-value mono" data-stat="published">&ndash;</div>
           </div>
           <div class="stat">
             <div class="stat-label">dropped</div>
-            <div class="stat-value mono" data-stat="dropped">&mdash;</div>
+            <div class="stat-value mono" data-stat="dropped">&ndash;</div>
           </div>
         </div>
         <pre class="raw" id="statsRaw">awaiting first snapshot&hellip;</pre>

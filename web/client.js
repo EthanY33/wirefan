@@ -17,9 +17,10 @@ const STRESS_HOLD_MS = 10_000;
 // and is not a presence or membership feature (see CLAUDE.md, "Deferred").
 // The label is the last 4 chars of the socket_id the server already sent;
 // the color is a local hash of it. Nothing here is invented data.
+// Eight hues stepped for a dark ground (each at least 3:1 against black).
 const PEER_COLORS = [
-  '#9e470f', '#12615f', '#33357f', '#6e2050',
-  '#27526e', '#6f520e', '#276030', '#9b2033',
+  '#3987e5', '#d95926', '#199e70', '#c98500',
+  '#d55181', '#4cc38a', '#9085e9', '#e66767',
 ];
 function deriveIdentity(sid) {
   if (!sid) return { short: '', color: 'var(--accent)' };
@@ -74,7 +75,7 @@ function setStatus(state, label) {
 
 function refreshSubList() {
   if (subscribed.size === 0) {
-    els.subList.textContent = '—';
+    els.subList.textContent = '–';
   } else {
     els.subList.textContent = [...subscribed].join(', ');
   }
@@ -97,8 +98,8 @@ function setUiConnected(connected) {
   els.btnPublish.disabled = !connected;
   els.btnStress.disabled = !connected || stressActive;
   if (!connected) {
-    els.socketId.textContent = '—';
-    els.wsEndpoint.textContent = '—';
+    els.socketId.textContent = '–';
+    els.wsEndpoint.textContent = '–';
     subscribed.clear();
     refreshSubList();
     document.body.classList.remove('is-connected');
@@ -108,7 +109,7 @@ function setUiConnected(connected) {
   }
 }
 
-// Build a log row using DOM APIs (no innerHTML &mdash; avoids XSS via frame data).
+// Build a log row using DOM APIs (no innerHTML, which would allow XSS via frame data).
 function logFrame(kind, channel, body, fromSid) {
   if (!logCleared) {
     els.log.replaceChildren();
@@ -323,7 +324,7 @@ function formatStat(v) {
 
 function updateStatsAge() {
   if (!lastStatsAt) {
-    els.statsAge.textContent = '—';
+    els.statsAge.textContent = '–';
     return;
   }
   const dt = Math.floor((Date.now() - lastStatsAt) / 1000);
@@ -393,7 +394,7 @@ async function runStress() {
       const s = new WebSocket(url);
       s.onopen = () => { opened++; updateLabel(); };
       s.onclose = () => { closed++; updateLabel(); };
-      s.onerror = () => { /* swallow &mdash; counted by close */ };
+      s.onerror = () => { /* swallowed; the close handler counts it */ };
       sockets.push(s);
     } catch (e) {
       logFrame('error', '', `stress dial: ${e}`);
