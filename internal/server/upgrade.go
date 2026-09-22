@@ -30,6 +30,35 @@ import (
 // legitimately exceed 200 conns per IP).
 const defaultIPCap = 200
 
+// ipv6CapPrefixBits is the IPv6 prefix length the per-IP cap counts as one
+// client. A single subscriber line is routinely delegated a whole /64 and
+// can source connections from any address in it (privacy extensions rotate
+// through it on their own), so per-address keying let one client open
+// unbounded sockets.
+const ipv6CapPrefixBits = 64
+
+// ipCapKey maps a client IP, as returned by clientIP, to its per-IP cap
+// bucket: the full address for IPv4, the /64 prefix for IPv6. An
+// IPv4-mapped IPv6 address is unmapped first so it counts as the IPv4
+// client it is; its /64 would be ::/64, one bucket shared by every mapped
+// client. A value that does not parse (clientIP's raw RemoteAddr fallback)
+// is its own bucket, as before.
+func ipCapKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	if a.Is4() {
+		return a.String()
+	}
+	p, err := a.WithZone("").Prefix(ipv6CapPrefixBits)
+	if err != nil {
+		return ip
+	}
+	return p.String()
+}
+
 // parseIPCap resolves the per-IP cap from a WIREFAN_IP_CAP value, mirroring
 // the parse-once-at-startup pattern of WIREFAN_TRUSTED_PROXIES. Empty,
 // non-numeric, or non-positive values fall back to the default with a
@@ -233,8 +262,9 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Per-source-IP active-connection cap. Phantom-conn loops are the threat
 	// model; we count ALL conns on the IP, not just phantom ones (a real
 	// browser will only ever have a couple of tabs open at once, so the
-	// distinction doesn't matter in practice).
-	ip := clientIP(r, h.trustedProxies)
+	// distinction doesn't matter in practice). IPv6 clients are counted by
+	// their /64 (see ipCapKey).
+	ip := ipCapKey(clientIP(r, h.trustedProxies))
 	h.ipMu.Lock()
 	if h.ipCount[ip] >= h.ipCap {
 		h.ipMu.Unlock()

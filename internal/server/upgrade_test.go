@@ -180,6 +180,97 @@ func TestNewUpgradeHandlerHonorsIPCapEnv(t *testing.T) {
 	}
 }
 
+// TestIPCapKeysIPv6By64 proves the per-IP connection cap counts an IPv6
+// client by its /64 while IPv4 stays keyed by the full address. One
+// subscriber line is routinely delegated a whole /64 and can source
+// connections from any address in it, so keying on the full IPv6 address
+// let a single client rotate addresses and never hit the cap. Addresses
+// reach the handler through X-Forwarded-For from a trusted loopback proxy,
+// the same path production uses behind a reverse proxy.
+func TestIPCapKeysIPv6By64(t *testing.T) {
+	t.Setenv("WIREFAN_IP_CAP", "1")
+	t.Setenv("WIREFAN_TRUSTED_PROXIES", "127.0.0.1/32,::1/128")
+	ctx := context.Background()
+	s := store.NewMemory()
+	secret, _ := auth.GenerateSecret()
+	k, _ := s.CreateKey(ctx, "t", auth.HashSecret(secret))
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	h := NewUpgradeHandler(UpgradeDeps{
+		Store:          s,
+		AllowedOrigins: []string{"*"},
+		Registry:       registry.NewSyncMap(),
+		SigningSecret:  "test-signing-secret",
+		Fanout:         fanout.NewPerConn(),
+		RateLimit:      rl,
+		Policy:         conn.PolicyDisconnect{},
+		Hub:            hub.New(),
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close) // runs after the per-socket cleanups below
+	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key=" + k.ID
+
+	// dialFrom opens a socket that claims to come from client. Accepted
+	// sockets stay open until the test ends so they keep holding the cap.
+	dialFrom := func(client string) (accepted bool, status int) {
+		t.Helper()
+		hdr := http.Header{}
+		hdr.Set("X-Forwarded-For", client)
+		c, res, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: hdr})
+		if res != nil {
+			status = res.StatusCode
+		}
+		if err != nil {
+			return false, status
+		}
+		t.Cleanup(func() { _ = c.Close(websocket.StatusNormalClosure, "") })
+		return true, status
+	}
+	mustAccept := func(client, why string) {
+		t.Helper()
+		if ok, status := dialFrom(client); !ok {
+			t.Fatalf("%s: dial from %s refused (status %d), want accepted", why, client, status)
+		}
+	}
+	mustCap := func(client, why string) {
+		t.Helper()
+		ok, status := dialFrom(client)
+		if ok {
+			t.Fatalf("%s: dial from %s accepted, want the per-IP cap to refuse it", why, client)
+		}
+		if status != http.StatusTooManyRequests {
+			t.Fatalf("%s: dial from %s got status %d, want %d", why, client, status, http.StatusTooManyRequests)
+		}
+	}
+
+	mustAccept("2001:db8:1:2::1", "first IPv6 client")
+	mustCap("2001:db8:1:2:ffff:ffff:ffff:9", "another address in the same /64")
+	mustAccept("2001:db8:1:3::1", "a different /64 is a different client")
+
+	mustAccept("203.0.113.5", "first IPv4 client")
+	mustAccept("203.0.113.6", "an IPv4 neighbor is a different client")
+	mustCap("203.0.113.5", "the same IPv4 address again")
+	// An IPv4-mapped IPv6 address is that IPv4 client. Taking its /64
+	// instead would put every mapped client in the one ::/64 bucket.
+	mustCap("::ffff:203.0.113.5", "the IPv4-mapped form of a capped IPv4 address")
+}
+
+func TestIPCapKey(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"203.0.113.5", "203.0.113.5"},
+		{"2001:db8:1:2::1", "2001:db8:1:2::/64"},
+		{"2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64"},
+		{"fe80::1%eth0", "fe80::/64"},
+		{"::ffff:203.0.113.5", "203.0.113.5"},
+		{"not-an-ip", "not-an-ip"},
+	}
+	for _, c := range cases {
+		if got := ipCapKey(c.in); got != c.want {
+			t.Errorf("ipCapKey(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func mustPrefix(t *testing.T, s string) netip.Prefix {
 	t.Helper()
 	p, err := netip.ParsePrefix(s)
