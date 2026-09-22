@@ -273,7 +273,13 @@ export class WirefanClient {
         let rec = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel);
         const alreadyConfirmed = rec?.confirmed === true;
         if (!rec) {
-            rec = { handlers: new Set(), confirmed: false, inflight: null, retryTimer: null };
+            rec = {
+                handlers: new Set(),
+                confirmed: false,
+                inflight: null,
+                retryTimer: null,
+                refusal: null,
+            };
             __classPrivateFieldGet(this, _WirefanClient_channels, "f").set(channel, rec);
         }
         if (handler)
@@ -302,34 +308,45 @@ export class WirefanClient {
                     }
                     if (handler)
                         rec.handlers.delete(handler);
-                    const cur = __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel);
-                    if (cur && !cur.confirmed && cur.handlers.size === 0) {
-                        __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, cur);
+                    // Forget only this call's own record. If it was already dropped,
+                    // a record now under the name belongs to a later subscribe().
+                    if (__classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel) === rec &&
+                        !rec.confirmed &&
+                        rec.handlers.size === 0) {
+                        __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, rec);
                         __classPrivateFieldGet(this, _WirefanClient_channels, "f").delete(channel);
                     }
+                    // The server refused the channel on a newer connection before this
+                    // cut-short attempt failed, so there was nothing left to adopt.
+                    // That refusal is the real outcome; the drop is incidental.
+                    if (e instanceof ConnectionClosedError && rec.refusal)
+                        throw rec.refusal;
                     throw e;
                 }
             }
         }
+        // The handle is bound to this record, not to the channel name: once the
+        // record is dropped (a definitive refusal, say), a later subscribe() to
+        // the same channel creates a new record that this handle must not claim.
+        const held = rec;
         let active = true;
         const client = this;
         return {
             channel,
             get active() {
-                return active && __classPrivateFieldGet(client, _WirefanClient_channels, "f").has(channel);
+                return active && __classPrivateFieldGet(client, _WirefanClient_channels, "f").get(channel) === held;
             },
             async unsubscribe() {
                 if (!active)
                     return;
                 active = false;
-                const cur = __classPrivateFieldGet(client, _WirefanClient_channels, "f").get(channel);
-                if (!cur)
+                if (__classPrivateFieldGet(client, _WirefanClient_channels, "f").get(channel) !== held)
                     return;
                 if (handler)
-                    cur.handlers.delete(handler);
-                if (cur.handlers.size > 0)
+                    held.handlers.delete(handler);
+                if (held.handlers.size > 0)
                     return; // other handles still want it
-                __classPrivateFieldGet(client, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(client, cur);
+                __classPrivateFieldGet(client, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(client, held);
                 __classPrivateFieldGet(client, _WirefanClient_channels, "f").delete(channel);
                 if (__classPrivateFieldGet(client, _WirefanClient_state, "f") !== "connected")
                     return; // nothing to tell the server
@@ -515,6 +532,7 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
         if (rec && !rec.confirmed) {
             __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, rec);
             __classPrivateFieldGet(this, _WirefanClient_channels, "f").delete(op.channel);
+            rec.refusal = err;
         }
     }
     op.reject(err);
@@ -536,8 +554,17 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
     return __classPrivateFieldGet(this, _WirefanClient_pending, "f").findIndex((op) => op.kind === "subscribe");
 }, _WirefanClient_settleOp = function _WirefanClient_settleOp(kind, channel) {
     const idx = __classPrivateFieldGet(this, _WirefanClient_pending, "f").findIndex((op) => op.kind === kind && op.channel === channel);
+    let undoneLater = false;
     if (idx !== -1) {
         const op = __classPrivateFieldGet(this, _WirefanClient_pending, "f").splice(idx, 1)[0];
+        // #pending is in send order and the server answers frames in that
+        // order, so an unsubscribe for this channel still pending behind this
+        // subscribe has not reached the server yet and will undo it there.
+        undoneLater =
+            kind === "subscribe" &&
+                __classPrivateFieldGet(this, _WirefanClient_pending, "f")
+                    .slice(idx)
+                    .some((p) => p.kind === "unsubscribe" && p.channel === channel);
         clearTimeout(op.timer);
         op.resolve();
     }
@@ -546,7 +573,7 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
         if (rec) {
             rec.confirmed = true;
         }
-        else {
+        else if (!undoneLater) {
             // Nobody wants this channel any more (the subscribe timed out or was
             // abandoned before its ack landed), but the server now holds it and
             // would keep fanning events to a record that no longer exists. Undo
@@ -656,7 +683,9 @@ async function _WirefanClient_resubscribeAll() {
 }, _WirefanClient_resubscribe = 
 /**
  * One resubscribe attempt for a channel the caller still holds; true once
- * it is confirmed. A failure decides the record's fate by class:
+ * it is confirmed and the caller still holds it (an unsubscribe while the
+ * attempt was in flight means nothing was restored for the caller). A
+ * failure decides the record's fate by class:
  * - ConnectionClosedError: the connection dropped again. Keep the record
  *   without an error event; the next #onConnected restores it.
  * - A definitive refusal (isDefinitiveRefusal): surface it. #onErrorFrame
@@ -667,7 +696,7 @@ async function _WirefanClient_resubscribeAll() {
 async function _WirefanClient_resubscribe(channel, rec, epoch, retries) {
     try {
         await __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_ensureSubscribed).call(this, channel, rec);
-        return true;
+        return __classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel) === rec;
     }
     catch (e) {
         if (e instanceof ConnectionClosedError)
