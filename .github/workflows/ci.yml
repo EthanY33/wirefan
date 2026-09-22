@@ -1,5 +1,7 @@
 name: ci
 on: [push, pull_request]
+permissions:
+  contents: read
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,3 +19,44 @@ jobs:
           # go1.26.1 (verified via `golangci-lint version` locally), so it
           # accepts this module. Older v2.x built with Go 1.25 would not.
           version: v2.11.4
+
+  vuln:
+    # Known-vulnerability scan of the module graph and the Go standard
+    # library, reachable call paths only. A new advisory against the pinned
+    # toolchain fails this job until go.mod's toolchain line is bumped.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+
+  client-js:
+    # @wirefan/client unit tests plus the end-to-end suite against a real
+    # server binary built from this commit (WIREFAN_BIN), so a protocol
+    # change that breaks the client fails here, not in a user's browser.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/js
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: clients/js/package-lock.json
+      - name: Build the server for the integration suite
+        working-directory: .
+        run: go build -o "$RUNNER_TEMP/wirefan" ./cmd/wirefan
+      - run: npm ci
+      - run: npm test
+        env:
+          WIREFAN_BIN: ${{ runner.temp }}/wirefan
+      - name: Vendored demo client matches the package build
+        run: |
+          npm run vendor:web
+          git diff --exit-code -- ../../web/wirefan-client.js
