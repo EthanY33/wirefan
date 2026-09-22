@@ -210,7 +210,9 @@ It:
    with your domain substituted (public listener `:8080` loopback-proxied
    by Caddy; admin listener stays `127.0.0.1:6060`)
 6. installs the binary at `/usr/local/bin/wirefan`
-7. `systemctl enable wirefan`, then restarts it and reloads Caddy
+7. `systemctl enable wirefan`, restarts it if a binary is installed, and
+   reloads Caddy either way so the new Caddyfile replaces Caddy's stock
+   config
 
 It generates and prints no secrets. Caddy fetches the Let's Encrypt
 certificate on the first HTTPS request, typically well under a minute,
