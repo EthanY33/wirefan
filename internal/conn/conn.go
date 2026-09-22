@@ -21,10 +21,19 @@ import (
 
 const (
 	sendChanSize    = 64
-	pingInterval    = 30 * time.Second
-	readDeadline    = 60 * time.Second
 	writeDeadline   = 10 * time.Second
 	protocolVersion = "v1"
+)
+
+// Keepalive timers. writePump pings every pingInterval and ends the conn when
+// the pong is not back within pongWait, so a dead or silent peer is dropped
+// within about pingInterval + pongWait. There is deliberately no read
+// deadline: coder/websocket handles pongs inside Read, so a pong never
+// resets a per-Read timeout, and one would disconnect a healthy idle client
+// that answers every ping. Vars rather than consts so tests can shorten them.
+var (
+	pingInterval = 30 * time.Second
+	pongWait     = 10 * time.Second
 )
 
 // ErrSlowConsumer is returned by Conn.Send when the send buffer is full.
