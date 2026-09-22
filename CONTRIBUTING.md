@@ -54,9 +54,11 @@ commands. `make bench` needs Docker and bash; see
 ## Compatibility
 
 wirefan follows [Semantic Versioning](https://semver.org). Within 1.x, the
-wire protocol (`v1`), the HTTP endpoints, the command-line flags and the
-`WIREFAN_*` environment variables only change in backward-compatible ways.
-A breaking change waits for 2.0.
+wire protocol (`v1`), the HTTP endpoints, the command-line flags, the
+`WIREFAN_*` environment variables and the metric names only change in
+backward-compatible ways; a breaking change waits for 2.0.
+[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) lists exactly what is
+covered.
 
 ## Commits and pull requests
 
