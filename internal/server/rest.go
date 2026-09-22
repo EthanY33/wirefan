@@ -11,7 +11,9 @@ import (
 
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/conn"
+	"github.com/EthanY33/wirefan/internal/hub"
 	"github.com/EthanY33/wirefan/internal/store"
+	"github.com/coder/websocket"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -25,10 +27,13 @@ type RestHandler struct {
 	store         store.Store
 	adminToken    string
 	signingSecret string
+	hub           *hub.Hub
 }
 
-func NewRestHandler(s store.Store, adminToken, signingSecret string) *RestHandler {
-	return &RestHandler{store: s, adminToken: adminToken, signingSecret: signingSecret}
+// NewRestHandler wires the REST endpoints. h is the Hub tracking live
+// WebSocket conns; revoking a key closes the conns opened with it.
+func NewRestHandler(s store.Store, adminToken, signingSecret string, h *hub.Hub) *RestHandler {
+	return &RestHandler{store: s, adminToken: adminToken, signingSecret: signingSecret, hub: h}
 }
 
 // keyView is the public projection of store.Key returned by GET /v1/keys.
@@ -152,6 +157,9 @@ func (h *RestHandler) revoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// The store change stops new upgrades and sign requests; sockets already
+	// open with the key would otherwise keep working until they disconnect.
+	h.hub.CloseKey(id, websocket.StatusPolicyViolation, "key revoked")
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -4,19 +4,27 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EthanY33/wirefan/internal/auth"
+	"github.com/EthanY33/wirefan/internal/conn"
+	"github.com/EthanY33/wirefan/internal/fanout"
+	"github.com/EthanY33/wirefan/internal/hub"
+	"github.com/EthanY33/wirefan/internal/ratelimit"
+	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/EthanY33/wirefan/internal/store"
+	"github.com/coder/websocket"
 )
 
 func TestCreateAndListKeys(t *testing.T) {
 	s := store.NewMemory()
-	rest := NewRestHandler(s, "admin-tok", "test-signing-secret")
+	rest := NewRestHandler(s, "admin-tok", "test-signing-secret", hub.New())
 	mux := http.NewServeMux()
 	rest.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -54,7 +62,7 @@ func TestRevokeKey(t *testing.T) {
 	s := store.NewMemory()
 	secret, _ := auth.GenerateSecret()
 	k, _ := s.CreateKey(context.Background(), "app", auth.HashSecret(secret))
-	rest := NewRestHandler(s, "admin-tok", "test-signing-secret")
+	rest := NewRestHandler(s, "admin-tok", "test-signing-secret", hub.New())
 	mux := http.NewServeMux()
 	rest.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -81,11 +89,95 @@ func TestRevokeKey(t *testing.T) {
 	}
 }
 
+// TestRevokeKeyClosesLiveConns is the G6 regression. Revoking a key used to
+// stop only new upgrades and new sign requests; sockets already open with
+// the key kept working. After DELETE /v1/keys/{id} returns, every live conn
+// opened with that key must be closed with 1008 "key revoked", and conns on
+// other keys must be left alone.
+func TestRevokeKeyClosesLiveConns(t *testing.T) {
+	s := store.NewMemory()
+	secret, _ := auth.GenerateSecret()
+	revoked, _ := s.CreateKey(context.Background(), "revoked", auth.HashSecret(secret))
+	kept, _ := s.CreateKey(context.Background(), "kept", auth.HashSecret(secret))
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	h := hub.New()
+
+	mux := http.NewServeMux()
+	NewRestHandler(s, "admin-tok", "test-signing-secret", h).Register(mux)
+	mux.Handle("/v1/connect", NewUpgradeHandler(UpgradeDeps{
+		Store:          s,
+		AllowedOrigins: []string{"*"},
+		Registry:       registry.NewSyncMap(),
+		SigningSecret:  "test-signing-secret",
+		Fanout:         fanout.NewPerConn(),
+		RateLimit:      rl,
+		Policy:         conn.PolicyDisconnect{},
+		Hub:            h,
+	}))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	wsBase := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key="
+
+	dial := func(keyID string) *websocket.Conn {
+		c, _, err := websocket.Dial(context.Background(), wsBase+keyID, nil)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { _ = c.CloseNow() })
+		if _, _, err := c.Read(context.Background()); err != nil { // hello
+			t.Fatalf("hello: %v", err)
+		}
+		return c
+	}
+	victims := []*websocket.Conn{dial(revoked.ID), dial(revoked.ID)}
+	survivor := dial(kept.ID)
+
+	req, _ := http.NewRequest("DELETE", srv.URL+"/v1/keys/"+revoked.ID, nil)
+	req.Header.Set("Authorization", "Bearer admin-tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: want 204, got %d", res.StatusCode)
+	}
+
+	for i, c := range victims {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, _, err := c.Read(ctx)
+		cancel()
+		var ce websocket.CloseError
+		if !errors.As(err, &ce) {
+			t.Fatalf("conn %d on the revoked key: want a close frame, got %v", i, err)
+		}
+		if ce.Code != websocket.StatusPolicyViolation || ce.Reason != "key revoked" {
+			t.Fatalf("conn %d: want 1008 %q, got %d %q", i, "key revoked", ce.Code, ce.Reason)
+		}
+	}
+
+	// The other key's conn still round-trips.
+	b, _ := json.Marshal(map[string]string{"type": "subscribe", "channel": "public-alive"})
+	if err := survivor.Write(context.Background(), websocket.MessageText, b); err != nil {
+		t.Fatalf("survivor write: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, raw, err := survivor.Read(ctx)
+	if err != nil {
+		t.Fatalf("conn on an unrevoked key was closed: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"subscribed"`)) {
+		t.Fatalf("survivor: want subscribed ack, got %s", raw)
+	}
+}
+
 func TestListKeysOmitsSecretHash(t *testing.T) {
 	s := store.NewMemory()
 	secret, _ := auth.GenerateSecret()
 	_, _ = s.CreateKey(context.Background(), "app", auth.HashSecret(secret))
-	rest := NewRestHandler(s, "admin-tok", "test-signing-secret")
+	rest := NewRestHandler(s, "admin-tok", "test-signing-secret", hub.New())
 	mux := http.NewServeMux()
 	rest.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -108,7 +200,7 @@ func TestListKeysOmitsSecretHash(t *testing.T) {
 
 func TestRequiresAdminBearer(t *testing.T) {
 	s := store.NewMemory()
-	rest := NewRestHandler(s, "tok", "test-signing-secret")
+	rest := NewRestHandler(s, "tok", "test-signing-secret", hub.New())
 	mux := http.NewServeMux()
 	rest.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -124,7 +216,7 @@ func TestAuthSign(t *testing.T) {
 	s := store.NewMemory()
 	secret, _ := auth.GenerateSecret()
 	k, _ := s.CreateKey(context.Background(), "app", auth.HashSecret(secret))
-	rest := NewRestHandler(s, "admin-tok", "server-signing-secret")
+	rest := NewRestHandler(s, "admin-tok", "server-signing-secret", hub.New())
 	mux := http.NewServeMux()
 	rest.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -158,7 +250,7 @@ func postSign(t *testing.T, socketID, channel string) (int, string) {
 	s := store.NewMemory()
 	secret, _ := auth.GenerateSecret()
 	k, _ := s.CreateKey(context.Background(), "app", auth.HashSecret(secret))
-	rest := NewRestHandler(s, "admin-tok", "server-signing-secret")
+	rest := NewRestHandler(s, "admin-tok", "server-signing-secret", hub.New())
 	mux := http.NewServeMux()
 	rest.Register(mux)
 	srv := httptest.NewServer(mux)
