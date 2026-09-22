@@ -6,6 +6,7 @@ import {
   WirefanClient,
   WirefanError,
   type ChannelEvent,
+  type Subscription,
 } from "../src/index.js";
 import { FakeWSHarness, autoAccept, until } from "./fake-ws.js";
 
@@ -235,6 +236,244 @@ describe("subscribe / events / unsubscribe", () => {
     await expect(c.subscribe("demo")).rejects.toBeInstanceOf(
       ConnectionClosedError,
     );
+    c.close();
+  });
+});
+
+describe("error routing", () => {
+  // Settle-state probe that never blocks: "pending" until the promise settles.
+  function track(p: Promise<unknown>): { state: string; value: unknown } {
+    const t = { state: "pending", value: undefined as unknown };
+    p.then(
+      (v) => {
+        t.state = "resolved";
+        t.value = v;
+      },
+      (e: unknown) => {
+        t.state = "rejected";
+        t.value = e;
+      },
+    );
+    return t;
+  }
+
+  function sentOf(h: FakeWSHarness, type: string): Record<string, unknown>[] {
+    return h.current.sentFrames().filter((f) => f.type === type);
+  }
+
+  it("routes an error naming op and channel to that pending subscribe, not the oldest", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
+    const c = makeClient(h, { ackTimeoutMs: 1000 });
+    await c.connect();
+    const a = track(c.subscribe("a"));
+    const b = track(c.subscribe("b"));
+    await until(() => sentOf(h, "subscribe").length === 2, "both subscribe frames");
+
+    h.current.serverSend({
+      type: "error",
+      code: "RATE_LIMITED",
+      message: "too many control ops",
+      op: "subscribe",
+      channel: "b",
+    });
+    await until(() => b.state !== "pending", "subscribe b settles");
+    expect(b.state).toBe("rejected");
+    expect(b.value).toBeInstanceOf(WirefanError);
+    expect((b.value as WirefanError).code).toBe("RATE_LIMITED");
+    expect((b.value as WirefanError).op).toBe("subscribe");
+    expect((b.value as WirefanError).channel).toBe("b");
+    expect(a.state).toBe("pending"); // the older subscribe is not blamed
+
+    h.current.serverSend({ type: "subscribed", channel: "a" });
+    await until(() => a.state !== "pending", "subscribe a settles");
+    expect(a.state).toBe("resolved");
+    c.close();
+  });
+
+  it("does not blame a pending subscribe for a publish error", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
+    const c = makeClient(h, { ackTimeoutMs: 1000 });
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    await c.connect();
+    const a = track(c.subscribe("a"));
+    await until(() => sentOf(h, "subscribe").length === 1, "subscribe frame");
+    c.publish("_x", 1);
+
+    h.current.serverSend({
+      type: "error",
+      code: "RESERVED_CHANNEL",
+      message: "channel name reserved for server use",
+      op: "publish",
+      channel: "_x",
+    });
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as WirefanError).code).toBe("RESERVED_CHANNEL");
+    expect((errors[0] as WirefanError).op).toBe("publish");
+    expect((errors[0] as WirefanError).channel).toBe("_x");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(a.state).toBe("pending");
+
+    h.current.serverSend({ type: "subscribed", channel: "a" });
+    await until(() => a.state !== "pending", "subscribe a settles");
+    expect(a.state).toBe("resolved");
+    c.close();
+  });
+
+  it("settles a pending unsubscribe on its own error instead of timing out", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) =>
+      autoAccept(ws, "S", {
+        respond: (f) => (f.type === "unsubscribe" ? null : undefined),
+      });
+    const c = makeClient(h, { ackTimeoutMs: 1000 });
+    await c.connect();
+    const sub = await c.subscribe("demo");
+    const u = track(sub.unsubscribe());
+    await until(() => sentOf(h, "unsubscribe").length === 1, "unsubscribe frame");
+
+    h.current.serverSend({
+      type: "error",
+      code: "RATE_LIMITED",
+      message: "too many control ops",
+      op: "unsubscribe",
+      channel: "demo",
+    });
+    await until(() => u.state !== "pending", "unsubscribe settles", 500);
+    expect(u.state).toBe("rejected");
+    expect(u.value).toBeInstanceOf(WirefanError);
+    expect((u.value as WirefanError).code).toBe("RATE_LIMITED");
+    c.close();
+  });
+
+  it("RATE_LIMITED_CONN answers subscribe and unsubscribe when the server names the op", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) =>
+      autoAccept(ws, "S", {
+        respond: (f) =>
+          (f.type === "subscribe" && f.channel === "a") || f.type === "unsubscribe"
+            ? {
+                type: "error",
+                code: "RATE_LIMITED_CONN",
+                message: "too many frames on this connection",
+                op: f.type,
+                channel: f.channel,
+              }
+            : undefined,
+      });
+    const c = makeClient(h, { ackTimeoutMs: 1000 });
+    await c.connect();
+
+    const err = await c.subscribe("a").then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(WirefanError);
+    expect((err as WirefanError).code).toBe("RATE_LIMITED_CONN");
+
+    const sub = await c.subscribe("b");
+    const uerr = await sub.unsubscribe().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(uerr).toBeInstanceOf(WirefanError);
+    expect((uerr as WirefanError).code).toBe("RATE_LIMITED_CONN");
+    c.close();
+  });
+
+  it("emits an error naming an operation that is no longer pending instead of misrouting it", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
+    const c = makeClient(h, { ackTimeoutMs: 1000 });
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    await c.connect();
+    const a = track(c.subscribe("a"));
+    await until(() => sentOf(h, "subscribe").length === 1, "subscribe frame");
+
+    h.current.serverSend({
+      type: "error",
+      code: "BAD_CHANNEL",
+      message: "bad channel",
+      op: "subscribe",
+      channel: "gone",
+    });
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as WirefanError).code).toBe("BAD_CHANNEL");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(a.state).toBe("pending");
+    c.close();
+  });
+
+  it("falls back to oldest-subscribe attribution when the server sends neither op nor channel", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
+    const c = makeClient(h, { ackTimeoutMs: 1000 });
+    await c.connect();
+    const a = track(c.subscribe("a"));
+    const b = track(c.subscribe("b"));
+    await until(() => sentOf(h, "subscribe").length === 2, "both subscribe frames");
+
+    h.current.serverSend({ type: "error", code: "RATE_LIMITED", message: "too many control ops" });
+    await until(() => a.state !== "pending", "subscribe a settles");
+    expect(a.state).toBe("rejected");
+    expect((a.value as WirefanError).code).toBe("RATE_LIMITED");
+    expect(b.state).toBe("pending");
+    c.close();
+  });
+
+  it("unsubscribes when a subscribed ack arrives for a channel with no local record", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
+    const c = makeClient(h, { ackTimeoutMs: 20 });
+    await c.connect();
+
+    // The ack is late: the client gave up and forgot the channel.
+    await expect(c.subscribe("late")).rejects.toBeInstanceOf(AckTimeoutError);
+    h.current.serverSend({ type: "subscribed", channel: "late" });
+    expect(sentOf(h, "unsubscribe")).toEqual([{ type: "unsubscribe", channel: "late" }]);
+    c.close();
+  });
+
+  it("still undoes a late ack when the only pending unsubscribe was sent before that subscribe", async () => {
+    // Older server: it refuses the unsubscribe without naming the op, the
+    // FIFO fallback pins that refusal on the subscribe sent after it, and
+    // the unsubscribe stays pending. The server has already processed that
+    // unsubscribe, so it cannot undo the subscribe behind it: the client must.
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
+    const c = makeClient(h, { ackTimeoutMs: 1000 });
+    await c.connect();
+    const first = track(c.subscribe("demo"));
+    await until(() => sentOf(h, "subscribe").length === 1, "first subscribe");
+    h.current.serverSend({ type: "subscribed", channel: "demo" });
+    await until(() => first.state === "resolved", "first subscribe settles");
+
+    const unsub = track((first.value as Subscription).unsubscribe());
+    const second = track(c.subscribe("demo"));
+    await until(() => sentOf(h, "subscribe").length === 2, "second subscribe");
+    h.current.serverSend({ type: "error", code: "RATE_LIMITED", message: "too many control ops" });
+    await until(() => second.state === "rejected", "second subscribe takes the refusal");
+
+    h.current.serverSend({ type: "subscribed", channel: "demo" });
+    expect(sentOf(h, "unsubscribe")).toEqual([
+      { type: "unsubscribe", channel: "demo" },
+      { type: "unsubscribe", channel: "demo" },
+    ]);
+    expect(unsub.state).toBe("pending");
+    c.close();
+  });
+
+  it("does not unsubscribe on a duplicate ack for a channel it still holds", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h);
+    await c.connect();
+    await c.subscribe("demo");
+    h.current.serverSend({ type: "subscribed", channel: "demo" });
+    expect(sentOf(h, "unsubscribe")).toHaveLength(0);
     c.close();
   });
 });
