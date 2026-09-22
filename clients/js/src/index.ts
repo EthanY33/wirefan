@@ -212,7 +212,11 @@ export interface ChannelEvent {
 export interface ClientEvents {
   /** Any state transition. */
   state: { state: WirefanState; previous: WirefanState };
-  /** Connection is ready (fired on first connect and on every reconnect). */
+  /**
+   * Connection is ready (fired on first connect and on every reconnect).
+   * `reconnected` is false for the client's first successful connection,
+   * however many dials that took, and true for every one after it.
+   */
   connected: { socketId: string; reconnected: boolean };
   /** The transport dropped. `willReconnect` says whether a retry is scheduled. */
   disconnected: { code?: number; reason?: string; willReconnect: boolean };
@@ -319,6 +323,12 @@ export class WirefanClient {
   #state: WirefanState = "idle";
   #socketId: string | null = null;
   #closed = false;
+  /**
+   * Set by the first `connected` frame. The retry counter cannot answer
+   * "is this a reconnect?": it is also non-zero when the very first dial
+   * failed and a later attempt is the first to succeed.
+   */
+  #everConnected = false;
   #attempt = 0;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #handshakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -554,7 +564,8 @@ export class WirefanClient {
     this.#clearHandshakeTimer();
     this.#epoch += 1;
     this.#socketId = frame.socket_id;
-    const reconnected = this.#attempt > 0;
+    const reconnected = this.#everConnected;
+    this.#everConnected = true;
     this.#attempt = 0;
     this.#setState("connected");
     if (frame.version !== "v1") {
