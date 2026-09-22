@@ -9,7 +9,10 @@ import (
 )
 
 func (c *Conn) writePump(ctx context.Context) error {
-	ticker := time.NewTicker(pingInterval)
+	// Read the keepalive vars once so a test that shortens them cannot race
+	// a pump that is already running.
+	interval, wait := pingInterval, pongWait
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -26,7 +29,9 @@ func (c *Conn) writePump(ctx context.Context) error {
 				return err
 			}
 		case <-ticker.C:
-			pctx, cancel := context.WithTimeout(ctx, writeDeadline)
+			// Ping blocks until readPump's Read sees the pong, so this
+			// bounds both the write and the peer's round trip.
+			pctx, cancel := context.WithTimeout(ctx, wait)
 			err := c.ws.Ping(pctx)
 			cancel()
 			if err != nil {
@@ -36,12 +41,13 @@ func (c *Conn) writePump(ctx context.Context) error {
 	}
 }
 
+// readPump reads on the Run context with no per-Read timeout; liveness is
+// writePump's job (see pingInterval). Pongs are consumed inside Read, which
+// is what lets writePump's Ping return.
 func (c *Conn) readPump(ctx context.Context) error {
 	c.ws.SetReadLimit(64 * 1024)
 	for {
-		rctx, cancel := context.WithTimeout(ctx, readDeadline)
-		_, raw, err := c.ws.Read(rctx)
-		cancel()
+		_, raw, err := c.ws.Read(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return c.ws.Close(websocket.StatusGoingAway, "")
