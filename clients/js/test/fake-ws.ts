@@ -100,32 +100,45 @@ export class FakeWSHarness {
   }
 }
 
+/** A client frame as the fake server sees it. */
+export type ClientFrame = { type?: string; channel?: string; token?: string };
+
+/**
+ * Scripted reply to one client frame: a server frame to send back, `null`
+ * for silence, or `undefined` to fall through to the default ack.
+ */
+export type Responder = (frame: ClientFrame) => object | null | undefined;
+
 /**
  * Standard "well-behaved server" script: open the socket, send the connected
- * frame, then ack subscribes/unsubscribes for public channels.
+ * frame, then ack subscribes/unsubscribes for public channels. `respond`
+ * overrides the reply per frame.
  */
 export function autoAccept(
   ws: FakeWebSocket,
   socketId: string,
-  opts: { ackSubscribes?: boolean } = {},
+  opts: { ackSubscribes?: boolean; respond?: Responder } = {},
 ): void {
   const ackSubscribes = opts.ackSubscribes ?? true;
   ws.serverOpen();
-  if (ackSubscribes) {
+  if (ackSubscribes || opts.respond) {
     // Install the ack responder BEFORE the connected frame: the client starts
     // resubscribing synchronously while that frame is being dispatched.
     const origSend = ws.send.bind(ws);
     ws.send = (data: string) => {
       origSend(data);
-      const frame = JSON.parse(data) as { type?: string; channel?: string };
-      if (frame.type === "subscribe") {
-        queueMicrotask(() =>
-          ws.serverSend({ type: "subscribed", channel: frame.channel }),
-        );
-      } else if (frame.type === "unsubscribe") {
-        queueMicrotask(() =>
-          ws.serverSend({ type: "unsubscribed", channel: frame.channel }),
-        );
+      const frame = JSON.parse(data) as ClientFrame;
+      let reply = opts.respond?.(frame);
+      if (reply === undefined && ackSubscribes) {
+        if (frame.type === "subscribe") {
+          reply = { type: "subscribed", channel: frame.channel };
+        } else if (frame.type === "unsubscribe") {
+          reply = { type: "unsubscribed", channel: frame.channel };
+        }
+      }
+      if (reply) {
+        const out = reply;
+        queueMicrotask(() => ws.serverSend(out));
       }
     };
   }

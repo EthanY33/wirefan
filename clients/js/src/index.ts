@@ -43,6 +43,16 @@ export interface ErrorFrame {
   type: "error";
   code: string;
   message: string;
+  /**
+   * The client frame type this error answers. Optional: older servers omit
+   * it, and BAD_JSON / BAD_TYPE never carry it.
+   */
+  op?: "subscribe" | "unsubscribe" | "publish" | (string & {});
+  /**
+   * The channel exactly as the client sent it in that frame. Optional:
+   * omitted by older servers and when the frame had none.
+   */
+  channel?: string;
 }
 
 export type ServerFrame =
@@ -75,10 +85,20 @@ export type WirefanErrorCode =
 /** A server `error` frame surfaced as a typed exception. */
 export class WirefanError extends Error {
   readonly code: WirefanErrorCode;
-  constructor(code: WirefanErrorCode, message: string) {
+  /** The frame type the error answers, when the server names it. */
+  readonly op: string | undefined;
+  /** The channel of the frame the error answers, when the server names it. */
+  readonly channel: string | undefined;
+  constructor(
+    code: WirefanErrorCode,
+    message: string,
+    detail: { op?: string; channel?: string } = {},
+  ) {
     super(`${code}: ${message}`);
     this.name = "WirefanError";
     this.code = code;
+    this.op = detail.op;
+    this.channel = detail.channel;
   }
 }
 
@@ -268,10 +288,13 @@ interface ChannelRecord {
 }
 
 /**
- * Error codes that answer a `subscribe` request. The server's error frames
- * carry no channel field (§5.9), so attribution is by code class + FIFO order:
- * the server processes one inbound frame at a time, so replies to control ops
- * arrive in the order the ops were sent.
+ * Error codes that answer a `subscribe` request on servers that predate the
+ * error frame's `op` / `channel` fields. Those frames name no operation, so
+ * attribution falls back to code class + FIFO order: the server processes
+ * one inbound frame at a time, so replies to control ops arrive in the order
+ * the ops were sent. The heuristic can still blame a subscribe for a publish
+ * or unsubscribe rejection that shares a code; servers that send `op` and
+ * `channel` are routed exactly and never reach this set.
  */
 const SUBSCRIBE_ERROR_CODES = new Set<string>([
   "AUTH_FAILED",
@@ -599,24 +622,43 @@ export class WirefanClient {
   }
 
   #onErrorFrame(frame: ErrorFrame): void {
-    const err = new WirefanError(frame.code, frame.message);
-    // Error frames carry no channel (§5.9). The server handles inbound frames
-    // sequentially, so an error answering a control op arrives before any
-    // later op's ack: attribute by code class to the oldest matching pending op.
-    if (SUBSCRIBE_ERROR_CODES.has(frame.code)) {
-      const idx = this.#pending.findIndex((op) => op.kind === "subscribe");
-      if (idx !== -1) {
-        const op = this.#pending.splice(idx, 1)[0]!;
-        clearTimeout(op.timer);
-        // The subscribe failed: forget the channel unless it was already
-        // confirmed on this connection (idempotent re-subscribes).
-        const rec = this.#channels.get(op.channel);
-        if (rec && !rec.confirmed) this.#channels.delete(op.channel);
-        op.reject(err);
-        return;
-      }
+    const detail: { op?: string; channel?: string } = {};
+    if (typeof frame.op === "string") detail.op = frame.op;
+    if (typeof frame.channel === "string") detail.channel = frame.channel;
+    const err = new WirefanError(frame.code, frame.message, detail);
+    const idx = this.#pendingIndexFor(frame);
+    if (idx === -1) {
+      this.#emit("error", err);
+      return;
     }
-    this.#emit("error", err);
+    const op = this.#pending.splice(idx, 1)[0]!;
+    clearTimeout(op.timer);
+    if (op.kind === "subscribe") {
+      // The subscribe failed: forget the channel unless it was already
+      // confirmed on this connection (idempotent re-subscribes).
+      const rec = this.#channels.get(op.channel);
+      if (rec && !rec.confirmed) this.#channels.delete(op.channel);
+    }
+    op.reject(err);
+  }
+
+  /** The index in #pending of the operation an error frame answers, or -1. */
+  #pendingIndexFor(frame: ErrorFrame): number {
+    if (frame.op !== undefined || frame.channel !== undefined) {
+      // The server named the frame it answers: route exactly, never guess.
+      // Publish has no pending op, so its errors go to the error event.
+      if (frame.op !== "subscribe" && frame.op !== "unsubscribe") return -1;
+      // A missing channel means the client sent none (only "" can do that).
+      const channel = frame.channel ?? "";
+      return this.#pending.findIndex(
+        (op) => op.kind === frame.op && op.channel === channel,
+      );
+    }
+    // Older server: the frame names no operation. It handles inbound frames
+    // sequentially, so an error answering a control op arrives before any
+    // later op's ack: attribute by code class to the oldest pending subscribe.
+    if (!SUBSCRIBE_ERROR_CODES.has(frame.code)) return -1;
+    return this.#pending.findIndex((op) => op.kind === "subscribe");
   }
 
   #settleOp(kind: PendingOp["kind"], channel: string): void {
@@ -630,7 +672,26 @@ export class WirefanClient {
     }
     if (kind === "subscribe") {
       const rec = this.#channels.get(channel);
-      if (rec) rec.confirmed = true;
+      if (rec) {
+        rec.confirmed = true;
+      } else {
+        // Nobody wants this channel any more (the subscribe timed out or was
+        // abandoned before its ack landed), but the server now holds it and
+        // would keep fanning events to a record that no longer exists. Undo
+        // it. Fire-and-forget: the unsubscribed ack matches no pending op.
+        this.#sendRaw({ type: "unsubscribe", channel });
+      }
+    }
+  }
+
+  /** Best-effort send with no ack tracking. */
+  #sendRaw(frame: object): void {
+    const ws = this.#ws;
+    if (!ws || ws.readyState !== WS_OPEN) return;
+    try {
+      ws.send(JSON.stringify(frame));
+    } catch {
+      // The socket is failing; its close event drives the drop path.
     }
   }
 
