@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/EthanY33/wirefan/security/advisories/new
+    about: Please report security issues privately, not as a public issue.
+  - name: Wire protocol reference
+    url: https://github.com/EthanY33/wirefan/blob/main/docs/PROTOCOL.md
+    about: Frame formats, error codes and close codes.

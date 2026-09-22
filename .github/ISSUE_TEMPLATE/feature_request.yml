@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest a change to the server, protocol, client or deploy tooling.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Multi-server fanout, presence, message history and per-key signing are out of scope for 1.x.
+        If your request is one of those, say what you need it for; that helps shape a future design.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and where does wirefan get in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+      description: Include any wire-format or flag changes you have in mind.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you have tried

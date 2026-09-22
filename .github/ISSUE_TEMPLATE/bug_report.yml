@@ -1,0 +1,44 @@
+name: Bug report
+description: Something in wirefan behaves differently from the docs.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go through private reporting instead: see SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: wirefan version
+      description: Output of `wirefan --version`, or the commit you built from.
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: run
+    attributes:
+      label: How the server was started
+      description: Flags and WIREFAN_* environment variables, with secrets removed. Mention the OS and architecture.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: Include the frames sent and received if it is a protocol issue.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant server log lines, pasted as-is.
+      render: text
