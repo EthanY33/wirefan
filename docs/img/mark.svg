@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80" fill="none" role="img" aria-label="wirefan">
+  <!-- wirefan mark: one publish wire enters the hub and fans out to five
+       subscribers. Drawn in the wirefan 1.0 Figma file. -->
+  <rect width="80" height="80" rx="18" fill="#000"/>
+  <path d="M6 40H22" stroke="#F0561C" stroke-width="3" stroke-linecap="round"/>
+  <path d="M22 40C42 40 46 14 64 14" stroke="#F0561C" stroke-width="3" stroke-linecap="round"/>
+  <path d="M22 40C42 40 46 27 64 27" stroke="#F0561C" stroke-width="3" stroke-linecap="round"/>
+  <path d="M22 40C42 40 46 40 64 40" stroke="#FFD2B8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M22 40C42 40 46 53 64 53" stroke="#F0561C" stroke-width="3" stroke-linecap="round"/>
+  <path d="M22 40C42 40 46 66 64 66" stroke="#F0561C" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="69" cy="14" r="4" fill="#FFF3E8"/>
+  <circle cx="69" cy="27" r="4" fill="#FFF3E8"/>
+  <circle cx="69" cy="40" r="4" fill="#FFF3E8"/>
+  <circle cx="69" cy="53" r="4" fill="#FFF3E8"/>
+  <circle cx="69" cy="66" r="4" fill="#FFF3E8"/>
+  <circle cx="22" cy="40" r="8" stroke="#F0561C" stroke-width="2" opacity="0.6"/>
+  <circle cx="22" cy="40" r="5" fill="#FFF"/>
+</svg>
