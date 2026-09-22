@@ -22,6 +22,13 @@ import (
 
 func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 	t.Helper()
+	return newTestConnWithCache(t, signingSecret, nil)
+}
+
+// newTestConnWithCache is newTestConn with a subscribe-token replay cache
+// (nil disables replay protection, as in newTestConn).
+func newTestConnWithCache(t *testing.T, signingSecret string, cache *auth.ReplayCache) (*websocket.Conn, string) {
+	t.Helper()
 	const socketID = "01HTEST"
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
@@ -35,6 +42,7 @@ func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
 		_ = Run(ctx, c, socketID, "test-key", Deps{
 			Registry:      registry.NewSyncMap(),
 			SigningSecret: signingSecret,
+			ReplayCache:   cache,
 			Fanout:        fanout.NewPerConn(),
 			RateLimit:     rl,
 			Policy:        PolicyDisconnect{},
@@ -145,6 +153,42 @@ func TestDuplicateSubscribeIdempotent(t *testing.T) {
 	second := readJSON(t, c)
 	if second["type"] != "subscribed" || second["channel"] != "public-dup" {
 		t.Fatalf("second ack: %+v", second)
+	}
+}
+
+// TestResubscribeHeldChannelNeedsNoToken is the DB6 regression. Re-subscribing
+// to a channel this conn already holds is a no-op that grants nothing new, so
+// it must ack without requiring a token and without consuming one. Before the
+// fix the token check ran first: a tokenless re-subscribe got AUTH_FAILED and
+// a fresh token was burned in the replay cache for nothing.
+func TestResubscribeHeldChannelNeedsNoToken(t *testing.T) {
+	const secret = "test-signing-secret"
+	cache := auth.NewReplayCache()
+	c, socketID := newTestConnWithCache(t, secret, cache)
+	tok, err := auth.SignToken(secret, socketID, "private-x", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "private-x", "token": tok})
+	if got := readJSON(t, c); got["type"] != "subscribed" {
+		t.Fatalf("first subscribe: %+v", got)
+	}
+
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "private-x"})
+	if got := readJSON(t, c); got["type"] != "subscribed" || got["channel"] != "private-x" {
+		t.Fatalf("tokenless re-subscribe: want subscribed, got %+v", got)
+	}
+
+	fresh, err := auth.SignToken(secret, socketID, "private-x", time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "private-x", "token": fresh})
+	if got := readJSON(t, c); got["type"] != "subscribed" {
+		t.Fatalf("re-subscribe with token: %+v", got)
+	}
+	if err := auth.VerifyTokenAgainst(secret, socketID, "private-x", fresh, cache); err != nil {
+		t.Fatalf("re-subscribe consumed the token: %v", err)
 	}
 }
 
