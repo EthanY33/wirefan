@@ -9,8 +9,9 @@ Nothing here depends on a specific provider's API or CLI.
 The full runbook is `docs/DEPLOY.md`. Short version:
 
 ```bash
-# on the server, from a copy of this directory, with a release binary at hand
-sudo ./provision.sh --domain wirefan.example.com --binary ./wirefan_linux_amd64
+# on the server, from a copy of this directory, with a release binary in ~
+# (named wirefan_<version>_linux_<arch>; see docs/DEPLOY.md step 4)
+sudo ./provision.sh --domain wirefan.example.com --binary ~/wirefan_v1.0.0_linux_amd64
 ```
 
 ## Files
@@ -26,9 +27,11 @@ sudo ./provision.sh --domain wirefan.example.com --binary ./wirefan_linux_amd64
 
 Release binaries for linux/amd64 and linux/arm64 are built by
 `.github/workflows/release.yml` on tag push (native runners per arch because
-the SQLite driver needs cgo), with a `SHA256SUMS` file attached to the
-GitHub release. `make release-local` produces the same artifacts locally via
-Docker.
+the SQLite driver needs cgo) as `wirefan_<tag>_linux_amd64` and
+`wirefan_<tag>_linux_arm64`, with a `SHA256SUMS` file attached to the
+GitHub release. `make release-local` produces the same file names in
+`dist/` via Docker, with `<tag>` taken from `git describe --tags --always
+--dirty` (override with `VERSION=`).
 
 ## Verifying the Docker image locally
 

@@ -50,17 +50,24 @@ bench: loadtest bench-image
 # glibc (2.36) is older than Ubuntu 24.04's (2.39), so these binaries run
 # on Ubuntu 24.04 targets. CI (.github/workflows/release.yml) builds the
 # published release binaries natively on amd64/arm64 runners instead; this
-# target is for local verification and ad-hoc deploys.
+# target is for local verification and ad-hoc deploys. File names match
+# CI's: dist/wirefan_$(VERSION)_linux_{amd64,arm64}, so deploy.sh finds
+# them in SHA256SUMS the same way. Build from a tag checkout (or pass
+# VERSION=vX.Y.Z) to get release names.
+# safe.directory: the container runs as root, but on a Linux host the
+# bind-mounted checkout belongs to your user, so git refuses it as
+# "dubious ownership" and go build fails with "error obtaining VCS status".
 # Direct: see the docker run command below; works from Git Bash on Windows
 # (MSYS_NO_PATHCONV=1 may be needed for the volume mount).
 release-local:
 	docker run --rm -v "$(CURDIR)":/src -w /src golang:1.26-bookworm bash -c '\
 		set -euo pipefail; \
+		git config --global --add safe.directory /src; \
 		apt-get update -qq && apt-get install -y -qq gcc gcc-aarch64-linux-gnu >/dev/null; \
 		mkdir -p dist; \
-		CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o dist/wirefan_linux_amd64 ./cmd/wirefan; \
-		CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o dist/wirefan_linux_arm64 ./cmd/wirefan; \
-		cd dist && sha256sum wirefan_linux_amd64 wirefan_linux_arm64 > SHA256SUMS && cat SHA256SUMS'
+		CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o dist/wirefan_$(VERSION)_linux_amd64 ./cmd/wirefan; \
+		CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o dist/wirefan_$(VERSION)_linux_arm64 ./cmd/wirefan; \
+		cd dist && sha256sum wirefan_$(VERSION)_linux_amd64 wirefan_$(VERSION)_linux_arm64 > SHA256SUMS && cat SHA256SUMS'
 
 docs-sync:
 	@echo "Manual reminder: keep ARCHITECTURE.md / DESIGN.md / PROTOCOL.md in sync."
