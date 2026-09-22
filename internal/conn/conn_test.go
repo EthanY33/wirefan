@@ -72,12 +72,18 @@ func TestConnectedMessageSent(t *testing.T) {
 // websocketHandler accepts a WS upgrade and passes the connected websocket.Conn to fn.
 // Used to test conn-level behavior with a real upgraded conn rather than mocking.
 func websocketHandler(fn func(*websocket.Conn)) http.Handler {
+	return websocketHandlerCtx(func(_ context.Context, c *websocket.Conn) { fn(c) })
+}
+
+// websocketHandlerCtx is websocketHandler that also passes the request
+// context, as the upgrade handler does to Run.
+func websocketHandlerCtx(fn func(context.Context, *websocket.Conn)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 		if err != nil {
 			return
 		}
-		fn(c)
+		fn(r.Context(), c)
 	})
 }
 
@@ -238,4 +244,106 @@ func TestRunRefusesKeyClosedBeforeAdd(t *testing.T) {
 	if n := h.Len(); n != 0 {
 		t.Fatalf("hub still tracks %d conns", n)
 	}
+}
+
+// stallMidFrame drives a raw client into the one state coder/websocket cannot
+// leave on its own. The client streams a fragmented message; trigger starts
+// a server-side close handshake while readPump holds the read lock mid-frame.
+// Once the close frame arrives the client finishes that fragment, which hands
+// the read lock to the handshake, then sends half of one more fragment and
+// goes silent. The handshake now discards the rest of that fragment one byte
+// at a time with no deadline. Returns once the client has stalled.
+func stallMidFrame(t *testing.T, nc net.Conn, br *bufio.Reader, trigger func()) {
+	t.Helper()
+	const fragLen = 1024
+	half := bytes.Repeat([]byte("x"), fragLen/2)
+	// Masked, zero masking key, 16-bit length: FIN clear on the first
+	// fragment, set on the continuation.
+	first := append([]byte{0x01, 0x80 | 126, fragLen >> 8, fragLen & 0xff, 0, 0, 0, 0}, half...)
+	cont := append([]byte{0x80, 0x80 | 126, fragLen >> 8, fragLen & 0xff, 0, 0, 0, 0}, half...)
+
+	if _, _, err := readRawFrame(br); err != nil { // connected hello
+		t.Fatalf("hello: %v", err)
+	}
+	if _, err := nc.Write(first); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // readPump now waits for the rest
+
+	trigger()
+	_ = nc.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		op, _, err := readRawFrame(br)
+		if err != nil {
+			t.Fatalf("waiting for the close frame: %v", err)
+		}
+		if op == 0x8 {
+			break
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // the handshake now waits for the read lock
+	if _, err := nc.Write(half); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // the handshake has the lock and reads the next header
+	if _, err := nc.Write(cont); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitSocketClosed fails unless the server ends the TCP connection within d.
+func waitSocketClosed(t *testing.T, nc net.Conn, br *bufio.Reader, d time.Duration) {
+	t.Helper()
+	_ = nc.SetReadDeadline(time.Now().Add(d))
+	_, err := io.Copy(io.Discard, br)
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Fatalf("socket still open %v after the peer stalled mid-frame", d)
+	}
+}
+
+// TestCloseHandshakeStalledMidFrame is the regression for a peer that stalls
+// mid-frame during a server-side close handshake. coder/websocket then blocks
+// discarding the unfinished frame with no deadline, and neither ws.CloseNow
+// nor cancelling Run's context closes the socket, so the handshake goroutine
+// and the TCP connection used to outlive the conn for good. Both hub close
+// paths must still release the socket: CloseKey once the handshake overruns
+// closeHandshakeTimeout, Drain as soon as its grace runs out.
+func TestCloseHandshakeStalledMidFrame(t *testing.T) {
+	t.Run("CloseKey", func(t *testing.T) {
+		setCloseHandshakeTimeout(t, time.Second)
+		h := hub.New()
+		wsURL, ended := serveRunOn(t, h)
+		nc, br := rawDial(t, wsURL)
+		stallMidFrame(t, nc, br, func() {
+			if n := h.CloseKey("test-key", websocket.StatusPolicyViolation, "key revoked"); n != 1 {
+				t.Fatalf("CloseKey closed %d conns, want 1", n)
+			}
+		})
+		waitSocketClosed(t, nc, br, 3*time.Second)
+		select {
+		case <-ended:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run did not return after the socket closed")
+		}
+	})
+	t.Run("Drain", func(t *testing.T) {
+		h := hub.New()
+		wsURL, ended := serveRunOn(t, h)
+		nc, br := rawDial(t, wsURL)
+		drained := make(chan struct{})
+		stallMidFrame(t, nc, br, func() {
+			go func() {
+				h.Drain(context.Background(), time.Second)
+				close(drained)
+			}()
+		})
+		waitSocketClosed(t, nc, br, 3*time.Second)
+		select {
+		case <-ended:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run did not return after the socket closed")
+		}
+		<-drained
+	})
 }

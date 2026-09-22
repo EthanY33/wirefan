@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,12 +37,23 @@ var (
 	pongWait     = 10 * time.Second
 )
 
+// closeHandshakeTimeout bounds a server-side close handshake (CloseFrame).
+// coder/websocket gives writing the close frame and reading the reply 5 s
+// each, but not discarding the rest of a frame the peer stopped sending
+// half way: a peer that stalls mid-frame holds that Close, and the socket,
+// open for good. A Close still running after this long can only be stuck
+// there, so CloseFrame then closes the TCP connection under it. A var so
+// tests can shorten it.
+var closeHandshakeTimeout = 15 * time.Second
+
 // ErrSlowConsumer is returned by Conn.Send when the send buffer is full.
 // Task 15's backpressure policy hooks here.
 var ErrSlowConsumer = errors.New("slow consumer")
 
 type Conn struct {
 	ws            *websocket.Conn
+	netConn       net.Conn // TCP conn under ws, or nil; see WithNetConn
+	closeTimeout  time.Duration
 	socketID      string
 	apiKeyID      string
 	send          chan []byte
@@ -95,19 +107,48 @@ func (c *Conn) APIKeyID() string { return c.apiKeyID }
 // CloseFrame implements the hub tracked-conn interface: Hub.Drain uses it to
 // send shutdown closes to all tracked conns, and Hub.CloseKey to close the
 // conns of a revoked key. It runs the close handshake and can block for
-// several seconds on a peer that never answers.
+// several seconds on a peer that never answers. If the handshake is still
+// running after closeHandshakeTimeout it closes the TCP connection, which
+// ends the handshake.
 func (c *Conn) CloseFrame(code websocket.StatusCode, reason string) {
+	t := time.AfterFunc(c.closeTimeout, c.closeNetConn)
+	defer t.Stop()
 	_ = c.ws.Close(code, reason)
 }
 
 // CloseNow implements the hub tracked-conn interface: Hub.Drain force-closes
-// conns still open when its deadline passes. It cancels runCtx and returns
-// at once; coder/websocket then tears the socket down under readPump's
-// in-flight Read, which also cuts short a CloseFrame handshake stuck waiting
-// on a silent peer, and Run finishes its normal teardown. ws.CloseNow would
-// not do: while a Close handshake is running it waits for that handshake
-// rather than interrupting it.
-func (c *Conn) CloseNow() { c.cancel() }
+// conns still open when its deadline passes. It cancels runCtx, closes the
+// TCP connection and returns at once; Run then finishes its normal teardown.
+// Cancelling alone does not always free the socket: coder/websocket closes
+// it only under a Read that is waiting on the network, and a CloseFrame
+// handshake stuck discarding a half-sent frame owns the read side instead.
+// ws.CloseNow would not do either: while a Close handshake is running it
+// waits for that handshake rather than interrupting it.
+func (c *Conn) CloseNow() {
+	c.cancel()
+	c.closeNetConn()
+}
+
+// closeNetConn closes the TCP connection under ws, when Run was given one.
+// coder/websocket then fails whatever read or write it has in flight.
+func (c *Conn) closeNetConn() {
+	if c.netConn != nil {
+		_ = c.netConn.Close()
+	}
+}
+
+// netConnKey is the context key WithNetConn stores the TCP connection under.
+type netConnKey struct{}
+
+// WithNetConn returns ctx carrying nc, the TCP connection a request arrived
+// on. It has the shape of http.Server.ConnContext, where server.New installs
+// it: Run finds the connection under the upgraded WebSocket in its ctx and
+// closes it when coder/websocket cannot (see CloseFrame and CloseNow).
+// Without it Run still works, but a peer that stalls mid-frame during a
+// server-side close handshake keeps its socket open.
+func WithNetConn(ctx context.Context, nc net.Conn) context.Context {
+	return context.WithValue(ctx, netConnKey{}, nc)
+}
 
 // Deps bundles the long-lived dependencies a Conn needs. All fields except
 // ReplayCache are required; ReplayCache may be nil to disable subscribe-token
@@ -126,8 +167,11 @@ type Deps struct {
 
 // Run owns the conn for its lifetime. Returns when ctx is canceled or peer disconnects.
 func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d Deps) error {
+	netConn, _ := ctx.Value(netConnKey{}).(net.Conn)
 	c := &Conn{
 		ws:            ws,
+		netConn:       netConn,
+		closeTimeout:  closeHandshakeTimeout,
 		socketID:      socketID,
 		apiKeyID:      apiKeyID,
 		send:          make(chan []byte, sendChanSize),
@@ -191,7 +235,7 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 		// first lets the close handshake serialize cleanly with the
 		// pumps, and the subsequent cancel just unblocks them so they
 		// return their (now-stale) errors.
-		_ = ws.Close(websocket.StatusPolicyViolation, "slow consumer")
+		c.CloseFrame(websocket.StatusPolicyViolation, "slow consumer")
 		cancel()
 		<-errc
 		<-errc
@@ -205,8 +249,12 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 	// above), so CloseNow only releases the socket, and it is a no-op once
 	// a Close has finished. Not Close: its handshake discards the rest of a
 	// half-read oversize frame with no deadline, so a peer that claims a
-	// huge frame and then stalls would pin this goroutine forever.
+	// huge frame and then stalls would pin this goroutine forever. While a
+	// CloseFrame handshake is still running, CloseNow waits for it instead,
+	// up to 15 s; closing the TCP connection afterwards means the socket is
+	// released whatever state the library was left in.
 	_ = ws.CloseNow()
+	c.closeNetConn()
 
 	if err != nil {
 		slog.Debug("conn closed", "socket_id", socketID, "err", err)

@@ -112,11 +112,15 @@ func New(cfg Config, deps Deps) *Server {
 	// /v1/connect is a long-lived WS upgrade — a body-read deadline here
 	// would force a reconnect every N seconds, and writes are paced by
 	// websocket.Conn's own per-message deadlines (see internal/conn/conn.go).
+	// ConnContext puts each request's TCP connection in its context, so
+	// conn.Run can close a WebSocket's socket when coder/websocket cannot
+	// (a close handshake stuck on a peer that stalled mid-frame).
 	s.srv = &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           s.mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		ConnContext:       conn.WithNetConn,
 	}
 	if cfg.AdminAddr != "" {
 		s.adminSrv = &http.Server{

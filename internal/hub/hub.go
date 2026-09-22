@@ -80,9 +80,9 @@ func (h *Hub) snapshot() []trackedConn {
 // CloseKey closes every tracked conn opened with API key keyID, using code
 // and reason, and returns how many it closed. From then on Add refuses conns
 // on keyID for the life of the Hub. The handshakes run in their own
-// goroutines so the caller (a revoke request) never waits on a slow peer; a
-// conn that ignores the handshake is still torn down once coder/websocket's
-// handshake wait expires.
+// goroutines so the caller (a revoke request) never waits on a slow peer.
+// CloseFrame bounds each one, so a peer that ignores the handshake or
+// stalls part way through a frame is still torn down.
 func (h *Hub) CloseKey(keyID string, code websocket.StatusCode, reason string) int {
 	h.mu.Lock()
 	h.closedKeys[keyID] = websocket.CloseError{Code: code, Reason: reason}
