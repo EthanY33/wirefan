@@ -586,3 +586,36 @@ func TestErrorFramesCarryOpAndChannel(t *testing.T) {
 	sendJSON(t, c, map[string]any{"type": "nope", "channel": "public-x"})
 	wantError(t, readJSON(t, c), "BAD_TYPE", "", "")
 }
+
+// TestOverlongChannelNotEchoed bounds what an error frame can cost. Echoing
+// the channel of a frame rejected for a too-long name let one 64 KiB frame
+// queue an error of up to 384 KiB (json.Marshal writes '<' as \u003c), with
+// no rate limit, 64 deep per conn. Such a name can never be a real channel,
+// so the error carries op and code but not the channel, and stays small. A
+// name at the limit is still echoed exactly.
+func TestOverlongChannelNotEchoed(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+	c.SetReadLimit(1 << 20) // so an oversized error frame fails the size check below, not the read
+
+	// Written by hand: json.Marshal would escape the '<'s past the read limit.
+	frame := `{"type":"subscribe","channel":"` + strings.Repeat("<", 60_000) + `"}`
+	if err := c.Write(context.Background(), websocket.MessageText, []byte(frame)); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > 1024 {
+		t.Fatalf("error frame for an overlong channel is %d bytes, want under 1 KiB", len(raw))
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", raw, err)
+	}
+	wantError(t, got, "BAD_CHANNEL", "subscribe", "")
+
+	atLimit := "private-" + strings.Repeat("<", maxChannelNameLen-len("private-"))
+	sendJSON(t, c, map[string]any{"type": "subscribe", "channel": atLimit, "token": "garbage"})
+	wantError(t, readJSON(t, c), "AUTH_FAILED", "subscribe", atLimit)
+}
