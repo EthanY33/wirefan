@@ -1,10 +1,19 @@
 package conn
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -70,4 +79,130 @@ func websocketHandler(fn func(*websocket.Conn)) http.Handler {
 		}
 		fn(c)
 	})
+}
+
+// rawDial performs the WebSocket opening handshake by hand so a test can see
+// what the server does at the TCP level, which a websocket.Conn client hides
+// (it answers a close frame and tears down its own side).
+func rawDial(t *testing.T, wsURL string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = nc.Close() })
+	key := make([]byte, 16)
+	_, _ = rand.Read(key)
+	req := "GET / HTTP/1.1\r\nHost: " + u.Host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+		"Sec-WebSocket-Key: " + base64.StdEncoding.EncodeToString(key) + "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+	if _, err := io.WriteString(nc, req); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(nc)
+	res, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("handshake: want 101, got %d", res.StatusCode)
+	}
+	return nc, br
+}
+
+// writeRawFrame writes one client frame. Clients must mask; an all-zero
+// masking key leaves the payload bytes unchanged.
+func writeRawFrame(w io.Writer, opcode byte, payload []byte) error {
+	hdr := []byte{0x80 | opcode}
+	switch n := len(payload); {
+	case n < 126:
+		hdr = append(hdr, 0x80|byte(n))
+	case n <= 0xFFFF:
+		hdr = append(hdr, 0x80|126, 0, 0)
+		binary.BigEndian.PutUint16(hdr[2:], uint16(n))
+	default:
+		hdr = append(hdr, 0x80|127, 0, 0, 0, 0, 0, 0, 0, 0)
+		binary.BigEndian.PutUint64(hdr[2:], uint64(n))
+	}
+	hdr = append(hdr, 0, 0, 0, 0)
+	_, err := w.Write(append(hdr, payload...))
+	return err
+}
+
+// readRawFrame reads one unmasked server frame.
+func readRawFrame(r *bufio.Reader) (byte, []byte, error) {
+	var h [2]byte
+	if _, err := io.ReadFull(r, h[:]); err != nil {
+		return 0, nil, err
+	}
+	n := uint64(h[1] & 0x7f)
+	switch n {
+	case 126:
+		var b [2]byte
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return 0, nil, err
+		}
+		n = uint64(binary.BigEndian.Uint16(b[:]))
+	case 127:
+		var b [8]byte
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return 0, nil, err
+		}
+		n = binary.BigEndian.Uint64(b[:])
+	}
+	p := make([]byte, n)
+	if _, err := io.ReadFull(r, p); err != nil {
+		return 0, nil, err
+	}
+	return h[0] & 0x0f, p, nil
+}
+
+// TestOversizeMessageClosesSocket is the DB3 regression. On the 1009 path the
+// library writes the close frame, readPump returns, and Run used to return
+// without closing the socket, so the TCP connection lingered with nobody
+// reading it. The client must see the connection end promptly.
+func TestOversizeMessageClosesSocket(t *testing.T) {
+	wsURL, ended := serveRun(t)
+	nc, br := rawDial(t, wsURL)
+	if _, _, err := readRawFrame(br); err != nil { // connected hello
+		t.Fatalf("hello: %v", err)
+	}
+
+	// Over the 64 KiB read limit.
+	if err := writeRawFrame(nc, 0x1, bytes.Repeat([]byte("x"), 70_000)); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = nc.SetReadDeadline(time.Now().Add(2 * time.Second))
+	sawClose := false
+	for {
+		op, p, err := readRawFrame(br)
+		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				t.Fatalf("socket still open 2 s after the oversize message (saw close frame: %v)", sawClose)
+			}
+			break // EOF or reset: the server tore the connection down
+		}
+		if op == 0x8 && !sawClose {
+			sawClose = true
+			if len(p) >= 2 {
+				if code := binary.BigEndian.Uint16(p); code != uint16(websocket.StatusMessageTooBig) {
+					t.Fatalf("close code: want 1009, got %d", code)
+				}
+				// Answer like a well-behaved peer would. The server may
+				// already have released the socket, so a failed write
+				// is fine; the read below decides.
+				_ = writeRawFrame(nc, 0x8, p[:2])
+			}
+		}
+	}
+	select {
+	case <-ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after the socket closed")
+	}
 }
