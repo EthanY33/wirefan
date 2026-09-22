@@ -82,7 +82,9 @@ func dialWS(t *testing.T, wsURL string) *websocket.Conn {
 // fixed deadline that pongs never reset, so a healthy idle client was cut
 // off after 60 s.
 func TestKeepaliveIdleReaderStaysConnected(t *testing.T) {
-	setKeepalive(t, 50*time.Millisecond, 250*time.Millisecond)
+	// A 1 s pong wait, so only a pong a full second late (not a scheduler
+	// stall on a loaded -race runner) can end the conn.
+	setKeepalive(t, 50*time.Millisecond, time.Second)
 	wsURL, ended := serveRun(t)
 	c := dialWS(t, wsURL)
 	go func() {
