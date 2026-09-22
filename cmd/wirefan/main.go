@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -24,25 +26,58 @@ import (
 	"github.com/EthanY33/wirefan/internal/store"
 )
 
+// version is stamped at release time with
+// -ldflags "-X main.version=<tag>" (see .github/workflows/release.yml).
+// Empty means an unstamped build; buildVersion falls back to the module
+// version Go records from VCS, then to "dev".
+var version = ""
+
+// buildVersion reports the running binary's version.
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
+
+// versionLine is what --version prints: enough to identify a binary in a
+// bug report without shell access to the build that produced it.
+func versionLine() string {
+	return fmt.Sprintf("wirefan %s (%s, %s/%s)", buildVersion(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
+
 // appConfig is the full process configuration: the server's network surface
 // plus the implementation selections (store, registry, fanout) that main
 // wires together before handing deps to server.New.
 type appConfig struct {
-	srv      server.Config
-	store    string // "sqlite" | "memory"
-	dbPath   string // sqlite file path; empty means <state-dir>/wirefan.db
-	registry string // "sync-map" | "sharded"
-	fanout   string // "per-conn" | "sharded"
+	srv         server.Config
+	store       string // "sqlite" | "memory"
+	dbPath      string // sqlite file path; empty means <state-dir>/wirefan.db
+	registry    string // "sync-map" | "sharded"
+	fanout      string // "per-conn" | "sharded"
+	showVersion bool   // --version: print versionLine and exit
 }
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	cfg, err := parseFlags(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		// The flag package already printed usage; asking for help is not a failure.
+		return
+	}
 	if err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+	if cfg.showVersion {
+		fmt.Println(versionLine())
+		return
+	}
+	slog.Info("wirefan starting", "version", buildVersion(), "go", runtime.Version())
 	if err := run(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
@@ -243,8 +278,12 @@ func parseFlags(args []string) (appConfig, error) {
 	dbPath := fs.String("db-path", "", "sqlite database file (default <state-dir>/wirefan.db; state dir is $WIREFAN_STATE_DIR or ./var)")
 	registryKind := fs.String("registry", "sync-map", "channel registry implementation: sync-map or sharded")
 	fanoutKind := fs.String("fanout", "per-conn", "fanout implementation: per-conn or sharded (worker pool sized to GOMAXPROCS)")
+	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return appConfig{}, err
+	}
+	if *showVersion {
+		return appConfig{showVersion: true}, nil
 	}
 	if *storeKind != "sqlite" && *storeKind != "memory" {
 		return appConfig{}, errors.New("--store must be sqlite or memory")

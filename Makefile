@@ -4,9 +4,14 @@
 
 .PHONY: build test test-race lint clean loadtest bench bench-image docs-sync release-local
 
+# Version reported by `wirefan --version`. release.yml stamps the tag the
+# same way; an unstamped build falls back to Go's VCS module version.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
+
 # Direct: go build -o bin/wirefan ./cmd/wirefan   (bin/wirefan.exe on Windows)
 build:
-	go build -o bin/wirefan ./cmd/wirefan
+	go build -ldflags "$(LDFLAGS)" -o bin/wirefan ./cmd/wirefan
 
 test:
 	go test ./...
@@ -53,8 +58,8 @@ release-local:
 		set -euo pipefail; \
 		apt-get update -qq && apt-get install -y -qq gcc gcc-aarch64-linux-gnu >/dev/null; \
 		mkdir -p dist; \
-		CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/wirefan_linux_amd64 ./cmd/wirefan; \
-		CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -trimpath -ldflags="-s -w" -o dist/wirefan_linux_arm64 ./cmd/wirefan; \
+		CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o dist/wirefan_linux_amd64 ./cmd/wirefan; \
+		CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o dist/wirefan_linux_arm64 ./cmd/wirefan; \
 		cd dist && sha256sum wirefan_linux_amd64 wirefan_linux_arm64 > SHA256SUMS && cat SHA256SUMS'
 
 docs-sync:

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -257,3 +258,46 @@ func TestSQLiteKeyPersistsAcrossRestart(t *testing.T) {
 }
 
 var _ = syscall.SIGINT // keep import for later
+
+func TestParseFlagsVersionSkipsValidation(t *testing.T) {
+	// --version must work on a bare binary: no --allowed-origins, no state
+	// dir, nothing opened. It short-circuits before any validation.
+	cfg, err := parseFlags([]string{"--version"})
+	if err != nil {
+		t.Fatalf("parseFlags(--version): %v", err)
+	}
+	if !cfg.showVersion {
+		t.Fatal("expected showVersion to be set")
+	}
+}
+
+func TestBuildVersionPrefersLinkerValue(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
+	version = "v9.9.9"
+	if got := buildVersion(); got != "v9.9.9" {
+		t.Fatalf("buildVersion() = %q, want v9.9.9", got)
+	}
+}
+
+func TestBuildVersionFallsBackWithoutLinkerValue(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
+	version = ""
+	got := buildVersion()
+	if got == "" || got == "(devel)" {
+		t.Fatalf("buildVersion() = %q, want a module version or \"dev\"", got)
+	}
+}
+
+func TestVersionLineNamesVersionAndPlatform(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
+	version = "v1.2.3"
+	line := versionLine()
+	for _, want := range []string{"wirefan v1.2.3", runtime.Version(), runtime.GOOS + "/" + runtime.GOARCH} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("versionLine() = %q, missing %q", line, want)
+		}
+	}
+}
