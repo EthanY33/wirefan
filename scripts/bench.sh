@@ -134,8 +134,10 @@ run_cell() {
   fi
 
   # Drive the load. Loadtest exits nonzero on dial failures, server
-  # rejections, or zero throughput; set -e makes that abort the matrix.
-  "$LOADTEST" \
+  # rejections, or zero throughput. The pipeline runs as an `if` condition:
+  # as a bare statement, set -e plus pipefail would kill the script right
+  # there, before fail() could print FATAL and dump the server logs.
+  if ! "$LOADTEST" \
     --addr="ws://127.0.0.1:${PUB_PORT}" \
     --keys="$keys" \
     --conns="$CONNS" \
@@ -143,9 +145,9 @@ run_cell() {
     --rate="$RATE" \
     --dur="$DURATION" \
     --rampup="$RAMPUP" \
-    2>&1 | tee -a "$out"
-  local lt_status=${PIPESTATUS[0]}
-  [ "$lt_status" = "0" ] || fail "loadtest exited ${lt_status} for ${label} rep ${rep} (see $out)"
+    2>&1 | tee -a "$out"; then
+    fail "loadtest exited nonzero for ${label} rep ${rep} (see $out)"
+  fi
 
   [ -z "$pprof_pid" ] || wait "$pprof_pid" || fail "pprof capture failed for ${label}"
 
