@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ import (
 // Refusals are read-only: NewSQLite inspects an existing file over a
 // read-only (mode=ro) preflight connection before the writable WAL handle
 // is opened, so a refused file, and its -wal if it has one, is left
-// byte-for-byte unmodified.
+// byte-for-byte unmodified, and a cleanly closed one gains no -wal or -shm.
 
 // execer is the statement surface a migration step gets: the
 // transaction-scoped connection that applyMigration drives with
@@ -125,6 +126,19 @@ func validateMigrations(ms []migration) error {
 // checkpoints the -wal into the main file and deletes the -wal. A read-only
 // handle reads the WAL (so tables committed only there are still seen) but
 // cannot checkpoint it.
+//
+// A read-only handle to a WAL database still creates a missing -wal and
+// -shm, and cannot delete them on close. A WAL database closed cleanly has
+// no -wal on disk (the usual state), so for that case the connection also
+// sets immutable=1, which reads the main file directly with no WAL, no -shm
+// and no locks. That is sound because a WAL-mode file changes only through
+// a checkpoint, which needs a -wal; a writer would have to open, commit
+// and checkpoint within preflight's few reads to race it. When a -wal
+// exists, plain mode=ro is kept so commits that live only in it are still
+// seen; SQLite may then create a -shm, which holds no database content. A
+// rollback-journal file never gets immutable=1: a committing writer
+// rewrites it in place and it can carry a hot journal, both of which
+// immutable=1 would ignore, and mode=ro creates no files for it anyway.
 func preflight(path string, ms []migration) error {
 	fi, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -136,7 +150,11 @@ func preflight(path string, ms []migration) error {
 	if fi.Size() == 0 {
 		return nil // zero-byte file; SQLite treats it as an empty database
 	}
-	db, err := sql.Open("sqlite3", readOnlyDSN(path))
+	immutable, err := isCleanWALDatabase(path)
+	if err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite3", readOnlyDSN(path, immutable))
 	if err != nil {
 		return err
 	}
@@ -145,21 +163,52 @@ func preflight(path string, ms []migration) error {
 	return err
 }
 
-// readOnlyDSN builds the preflight DSN for path. mode=ro is a SQLite URI
-// parameter, and go-sqlite3 passes a DSN through as a URI only when it
-// starts with "file:" (for any other DSN it strips the query before
-// SQLite sees it), so the path has to travel as a file: URI. It is
-// percent-escaped so characters with URI meaning (%, plus the ? and # that
-// validateDBPath already rejects) stay part of the filename instead of
-// being decoded or starting a query. A Windows drive path gets a leading
-// slash (file:///C:/...), the form SQLite's Windows VFS expects. The
-// NUL/CR/LF guards stay in validateDBPath, which NewSQLite runs first.
-func readOnlyDSN(path string) string {
+// isCleanWALDatabase reports whether path is in WAL mode (header bytes 18
+// and 19, the file format write and read versions, are both 2) and has no
+// -wal beside it, the state its last connection leaves on a clean close.
+// A file too short to hold the header is reported as not WAL, leaving the
+// verdict to SQLite.
+func isCleanWALDatabase(path string) (bool, error) {
+	if _, err := os.Stat(path + "-wal"); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return false, err
+	}
+	return hdr[18] == 2 && hdr[19] == 2, nil
+}
+
+// readOnlyDSN builds the preflight DSN for path, adding immutable=1 when
+// immutable is set. mode=ro is a SQLite URI parameter, and go-sqlite3
+// passes a DSN through as a URI only when it starts with "file:" (for any
+// other DSN it strips the query before SQLite sees it), so the path has to
+// travel as a file: URI. It is percent-escaped so characters with URI
+// meaning (%, plus the ? and # that validateDBPath already rejects) stay
+// part of the filename instead of being decoded or starting a query. A
+// Windows drive path gets a leading slash (file:///C:/...), the form
+// SQLite's Windows VFS expects. The NUL/CR/LF guards stay in
+// validateDBPath, which NewSQLite runs first.
+func readOnlyDSN(path string, immutable bool) string {
 	p := filepath.ToSlash(path)
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
-	return "file://" + (&url.URL{Path: p}).EscapedPath() + "?mode=ro&_busy_timeout=5000"
+	q := "?mode=ro&_busy_timeout=5000"
+	if immutable {
+		q = "?mode=ro&immutable=1&_busy_timeout=5000"
+	}
+	return "file://" + (&url.URL{Path: p}).EscapedPath() + q
 }
 
 // migrate brings db up to the newest version in ms, refusing databases from
