@@ -976,9 +976,14 @@ export class WirefanClient {
             continue;
           }
           if (handler) rec.handlers.delete(handler);
-          const cur = this.#channels.get(channel);
-          if (cur && !cur.confirmed && cur.handlers.size === 0) {
-            this.#cancelRetry(cur);
+          // Forget only this call's own record. If it was already dropped,
+          // a record now under the name belongs to a later subscribe().
+          if (
+            this.#channels.get(channel) === rec &&
+            !rec.confirmed &&
+            rec.handlers.size === 0
+          ) {
+            this.#cancelRetry(rec);
             this.#channels.delete(channel);
           }
           // The server refused the channel on a newer connection before this
