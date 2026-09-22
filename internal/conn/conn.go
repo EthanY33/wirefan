@@ -87,9 +87,14 @@ const (
 	defaultConnControlBurst = defaultMaxChannelsPerConn
 )
 
+// APIKeyID implements the hub tracked-conn interface: Hub.CloseKey matches
+// conns to a revoked key by it.
+func (c *Conn) APIKeyID() string { return c.apiKeyID }
+
 // CloseFrame implements the hub tracked-conn interface: Hub.Drain uses it to
-// send shutdown closes to all tracked conns. It runs the close handshake and
-// can block for several seconds on a peer that never answers.
+// send shutdown closes to all tracked conns, and Hub.CloseKey to close the
+// conns of a revoked key. It runs the close handshake and can block for
+// several seconds on a peer that never answers.
 func (c *Conn) CloseFrame(code websocket.StatusCode, reason string) {
 	_ = c.ws.Close(code, reason)
 }

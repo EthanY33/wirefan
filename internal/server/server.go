@@ -74,7 +74,7 @@ func New(cfg Config, deps Deps) *Server {
 		replayCache: rc,
 	}
 
-	rest := NewRestHandler(deps.Store, deps.AdminToken, deps.SigningSecret)
+	rest := NewRestHandler(deps.Store, deps.AdminToken, deps.SigningSecret, deps.Hub)
 
 	// Public listener: health, /v1/connect (WS), /v1/auth/sign, static client.
 	s.mux.Handle("/v1/health", s.health)

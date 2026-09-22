@@ -11,6 +11,8 @@ import (
 // trackedConn is a live conn the Hub can close, either with a close
 // handshake or immediately.
 type trackedConn interface {
+	// APIKeyID is the id of the API key the conn was opened with.
+	APIKeyID() string
 	// CloseFrame closes with code and reason via the close handshake. It can
 	// block for several seconds on a peer that never answers.
 	CloseFrame(code websocket.StatusCode, reason string)
@@ -58,6 +60,23 @@ func (h *Hub) snapshot() []trackedConn {
 		out = append(out, c)
 	}
 	return out
+}
+
+// CloseKey closes every tracked conn opened with API key keyID, using code
+// and reason, and returns how many it closed. The handshakes run in their
+// own goroutines so the caller (a revoke request) never waits on a slow
+// peer; a conn that ignores the handshake is still torn down once
+// coder/websocket's handshake wait expires.
+func (h *Hub) CloseKey(keyID string, code websocket.StatusCode, reason string) int {
+	n := 0
+	for _, c := range h.snapshot() {
+		if c.APIKeyID() != keyID {
+			continue
+		}
+		go c.CloseFrame(code, reason)
+		n++
+	}
+	return n
 }
 
 // Drain sends a GoingAway close to every tracked conn and waits up to grace,
