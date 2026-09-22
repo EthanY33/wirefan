@@ -103,6 +103,33 @@ func TestKeepaliveIdleReaderStaysConnected(t *testing.T) {
 	}
 }
 
+// TestKeepaliveIdleReaderOutlivesOldCutoff is the G2 regression at the
+// production timers. The original bug was a fixed 60 s per-Read deadline,
+// unrelated to pingInterval or pongWait, so the shortened-timer test above
+// cannot see it come back. A healthy idle client must still be connected
+// 65 s in. That takes 65 s, so -short skips it.
+func TestKeepaliveIdleReaderOutlivesOldCutoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs for 65 s at the production keepalive timers")
+	}
+	wsURL, ended := serveRun(t)
+	start := time.Now()
+	c := dialWS(t, wsURL)
+	go func() {
+		for {
+			if _, _, err := c.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case at := <-ended:
+		t.Fatalf("healthy idle client was disconnected after %v", at.Sub(start).Round(time.Second))
+	case <-time.After(65 * time.Second):
+	}
+}
+
 // TestKeepaliveSilentPeerDisconnected proves dead-peer detection now rests on
 // the pong wait: a client that never reads never answers a ping, so Run must
 // end within about pingInterval + pongWait.
