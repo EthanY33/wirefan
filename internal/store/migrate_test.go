@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -416,6 +420,133 @@ func TestMigrateConcurrentOpeners(t *testing.T) {
 	}
 }
 
+// stmtHookDriverName is a sqlite3 driver wrapper that lets a test act in the
+// gap between two statements; see openHooked.
+const stmtHookDriverName = "sqlite3-stmt-hook"
+
+var (
+	stmtHookOnce sync.Once
+	stmtHookMu   sync.Mutex
+	stmtHooks    = map[string]func(query string){} // keyed by DSN
+)
+
+type stmtHookDriver struct{ base driver.Driver }
+
+func (d stmtHookDriver) Open(dsn string) (driver.Conn, error) {
+	c, err := d.base.Open(dsn)
+	if err != nil {
+		return nil, err
+	}
+	stmtHookMu.Lock()
+	hook := stmtHooks[dsn]
+	stmtHookMu.Unlock()
+	return stmtHookConn{Conn: c, hook: hook}, nil
+}
+
+// stmtHookConn embeds only driver.Conn, so database/sql cannot see the
+// wrapped connection's QueryerContext and routes every query through
+// Prepare, where the hook runs before the statement is prepared.
+type stmtHookConn struct {
+	driver.Conn
+	hook func(query string)
+}
+
+func (c stmtHookConn) Prepare(query string) (driver.Stmt, error) {
+	if c.hook != nil {
+		c.hook(query)
+	}
+	return c.Conn.Prepare(query)
+}
+
+// BeginTx forwards to the wrapped connection; database/sql refuses a
+// read-only transaction on a connection without ConnBeginTx.
+func (c stmtHookConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
+}
+
+// openHooked opens path through the statement-hook driver: hook sees every
+// query text just before it is prepared.
+func openHooked(t *testing.T, path string, hook func(query string)) *sql.DB {
+	t.Helper()
+	stmtHookOnce.Do(func() {
+		base, err := sql.Open("sqlite3", "")
+		if err != nil {
+			t.Fatalf("sql.Open base driver: %v", err)
+		}
+		sql.Register(stmtHookDriverName, stmtHookDriver{base: base.Driver()})
+		_ = base.Close()
+	})
+	dsn := path + "?_journal_mode=WAL&_busy_timeout=5000"
+	stmtHookMu.Lock()
+	stmtHooks[dsn] = hook
+	stmtHookMu.Unlock()
+	t.Cleanup(func() {
+		stmtHookMu.Lock()
+		delete(stmtHooks, dsn)
+		stmtHookMu.Unlock()
+	})
+	db, err := sql.Open(stmtHookDriverName, dsn)
+	if err != nil {
+		t.Fatalf("sql.Open hooked: %v", err)
+	}
+	return db
+}
+
+// TestCheckDatabaseReadsOneSnapshot proves checkDatabase takes user_version
+// and the table list from one snapshot. A concurrent opener fully migrates
+// the file, to a two-step schema whose keys table no longer matches v0.2.0,
+// in the gap between the two reads. Read as separate statements, the stale
+// version 0 is paired with the post-migration table list and a database
+// wirefan itself just migrated is refused as unrecognized. Inside one read
+// transaction the pair is version 0 with no tables, which is consistent;
+// applyMigration's locked re-read then sees the concurrent bump and skips.
+func TestCheckDatabaseReadsOneSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	setup := openRaw(t, path)
+	if err := setup.Ping(); err != nil {
+		t.Fatalf("create database file: %v", err)
+	}
+	if err := setup.Close(); err != nil {
+		t.Fatalf("close setup handle: %v", err)
+	}
+
+	ms := []migration{
+		{version: 1, name: "baseline", apply: func(tx execer) error {
+			_, err := tx.Exec(createKeysTableSQL)
+			return err
+		}},
+		{version: 2, name: "add note", apply: func(tx execer) error {
+			_, err := tx.Exec(`ALTER TABLE keys ADD COLUMN note TEXT`)
+			return err
+		}},
+	}
+
+	fired := 0
+	db := openHooked(t, path, func(query string) {
+		if fired > 0 || !strings.Contains(query, "sqlite_master") {
+			return
+		}
+		fired++
+		other := openRaw(t, path)
+		defer func() { _ = other.Close() }()
+		if err := migrate(other, ms); err != nil {
+			t.Errorf("concurrent opener migrate: %v", err)
+		}
+	})
+	defer func() { _ = db.Close() }()
+
+	v, err := checkDatabase(db, ms)
+	if fired != 1 {
+		t.Fatalf("hook fired %d times, want 1; the test no longer reaches the gap between the reads", fired)
+	}
+	if err != nil {
+		t.Fatalf("checkDatabase refused a database a concurrent opener just migrated: %v", err)
+	}
+	if v != 0 {
+		t.Fatalf("version = %d, want 0 (the snapshot taken before the concurrent migration)", v)
+	}
+}
+
 // TestMigrateRefusesForeignDatabase proves that a version-0 SQLite file with
 // no keys table at all (some other application's database handed to
 // --db-path by mistake) is refused rather than adopted, and that the refusal
@@ -446,6 +577,193 @@ func TestMigrateRefusesForeignDatabase(t *testing.T) {
 	}
 	if after := fileBytes(t, path); !bytes.Equal(before, after) {
 		t.Fatalf("refused open modified the foreign database file (%d bytes before, %d after)", len(before), len(after))
+	}
+}
+
+// TestMigrateRefusesForeignWALDatabase extends the byte-for-byte refusal
+// guarantee to a foreign database in WAL mode whose latest commits still
+// live in its -wal file, which is what an application that crashed or was
+// killed leaves behind. query_only only blocks SQL writes: a preflight
+// connection opened that way still checkpoints the WAL into the main file
+// when it closes as the last connection and then deletes the -wal. Both
+// files must survive the refusal untouched.
+func TestMigrateRefusesForeignWALDatabase(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "live.db")
+	w, err := sql.Open("sqlite3", live+"?_journal_mode=WAL")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	// One connection so the pragma below applies to every statement.
+	w.SetMaxOpenConns(1)
+	if _, err := w.Exec(`PRAGMA wal_autocheckpoint=0`); err != nil {
+		t.Fatalf("disable autocheckpoint: %v", err)
+	}
+	if _, err := w.Exec(`CREATE TABLE invoices (id INTEGER PRIMARY KEY, amount REAL)`); err != nil {
+		t.Fatalf("create foreign table: %v", err)
+	}
+	if _, err := w.Exec(`INSERT INTO invoices(amount) VALUES (12.5)`); err != nil {
+		t.Fatalf("insert foreign row: %v", err)
+	}
+
+	// Snapshot the pair while the foreign writer still has it open, so the
+	// copy is the uncheckpointed state a crash would leave on disk. Closing
+	// the writer normally would checkpoint and delete the -wal first.
+	path := filepath.Join(dir, "foreignapp.db")
+	for _, suffix := range []string{"", "-wal"} {
+		if err := os.WriteFile(path+suffix, fileBytes(t, live+suffix), 0o600); err != nil {
+			t.Fatalf("copy %s: %v", suffix, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close foreign writer: %v", err)
+	}
+
+	mainBefore := fileBytes(t, path)
+	walBefore := fileBytes(t, path+"-wal")
+	if len(walBefore) == 0 {
+		t.Fatal("fixture has an empty -wal; the foreign commits must still be in it")
+	}
+
+	_, err = NewSQLite(path)
+	if err == nil {
+		t.Fatal("NewSQLite succeeded on a foreign WAL database, want refusal")
+	}
+	// The refusal must come from seeing the invoices table, which exists
+	// only in the -wal: a preflight that ignored the WAL would find no
+	// tables and adopt the file as empty.
+	if !strings.Contains(err.Error(), "tables wirefan did not create") {
+		t.Fatalf("error = %q, want foreign-table refusal", err)
+	}
+	if after := fileBytes(t, path); !bytes.Equal(mainBefore, after) {
+		t.Fatalf("refused open modified the foreign main file (%d bytes before, %d after)", len(mainBefore), len(after))
+	}
+	walAfter, err := os.ReadFile(path + "-wal")
+	if err != nil {
+		t.Fatalf("refused open removed the foreign -wal: %v", err)
+	}
+	if !bytes.Equal(walBefore, walAfter) {
+		t.Fatalf("refused open modified the foreign -wal (%d bytes before, %d after)", len(walBefore), len(walAfter))
+	}
+}
+
+// dirListing renders every entry in dir as "name:size", sorted, so a test
+// can prove an operation created or resized nothing beside a database.
+func dirListing(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	var out []string
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			t.Fatalf("stat %s: %v", e.Name(), err)
+		}
+		out = append(out, e.Name()+":"+strconv.FormatInt(info.Size(), 10))
+	}
+	return out
+}
+
+// TestMigrateRefusalLeavesDirectoryUnchanged proves a refusal adds no files
+// next to the refused database. A cleanly closed WAL database has no -wal
+// on disk, and a plain mode=ro connection to it would create an empty -wal
+// and a -shm, owned by wirefan's user, beside another application's file.
+func TestMigrateRefusalLeavesDirectoryUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dsn  string
+	}{
+		{"rollback journal", ""},
+		{"cleanly closed WAL", "?_journal_mode=WAL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "foreignapp.db")
+			db, err := sql.Open("sqlite3", path+tc.dsn)
+			if err != nil {
+				t.Fatalf("sql.Open: %v", err)
+			}
+			if _, err := db.Exec(`CREATE TABLE invoices (id INTEGER PRIMARY KEY, amount REAL)`); err != nil {
+				t.Fatalf("create foreign table: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
+
+			before := dirListing(t, dir)
+			if len(before) != 1 {
+				t.Fatalf("fixture left %v, want only the main file", before)
+			}
+			mainBefore := fileBytes(t, path)
+
+			_, err = NewSQLite(path)
+			if err == nil {
+				t.Fatal("NewSQLite succeeded on a foreign database, want refusal")
+			}
+			if !strings.Contains(err.Error(), "tables wirefan did not create (invoices)") {
+				t.Fatalf("error = %q, want foreign-table refusal", err)
+			}
+			if after := dirListing(t, dir); !slices.Equal(before, after) {
+				t.Fatalf("refused open changed the directory: before %v, after %v", before, after)
+			}
+			if after := fileBytes(t, path); !bytes.Equal(mainBefore, after) {
+				t.Fatalf("refused open modified the foreign main file (%d bytes before, %d after)", len(mainBefore), len(after))
+			}
+		})
+	}
+}
+
+// TestIsCleanWALDatabase pins which files preflight opens with
+// immutable=1: only a WAL-mode file with no -wal. A rollback-journal file
+// is written in place by a committing writer and can carry a hot journal,
+// and a -wal may hold commits the main file lacks; immutable=1 ignores
+// locks, journals and the WAL, so either would be misread.
+func TestIsCleanWALDatabase(t *testing.T) {
+	dir := t.TempDir()
+	mkdb := func(name, dsn string) string {
+		path := filepath.Join(dir, name)
+		db, err := sql.Open("sqlite3", path+dsn)
+		if err != nil {
+			t.Fatalf("sql.Open: %v", err)
+		}
+		if _, err := db.Exec(`CREATE TABLE t (x)`); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		return path
+	}
+	rollback := mkdb("rollback.db", "")
+	clean := mkdb("clean.db", "?_journal_mode=WAL")
+	withWAL := mkdb("withwal.db", "?_journal_mode=WAL")
+	if err := os.WriteFile(withWAL+"-wal", nil, 0o600); err != nil {
+		t.Fatalf("write -wal: %v", err)
+	}
+	short := filepath.Join(dir, "short.db")
+	if err := os.WriteFile(short, []byte("SQLite"), 0o600); err != nil {
+		t.Fatalf("write short file: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, path string
+		want       bool
+	}{
+		{"rollback journal", rollback, false},
+		{"cleanly closed WAL", clean, true},
+		{"WAL with -wal", withWAL, false},
+		{"shorter than a header", short, false},
+	} {
+		got, err := isCleanWALDatabase(tc.path)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: isCleanWALDatabase = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

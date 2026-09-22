@@ -25,6 +25,10 @@ func (s *syncMapReg) Lookup(name string) (*Channel, bool) {
 
 func (s *syncMapReg) Delete(name string) { s.m.Delete(name) }
 
+func (s *syncMapReg) CompareAndDelete(name string, c *Channel) bool {
+	return s.m.CompareAndDelete(name, c)
+}
+
 func (s *syncMapReg) Range(fn func(*Channel) bool) {
 	s.m.Range(func(_, v any) bool { return fn(v.(*Channel)) })
 }
