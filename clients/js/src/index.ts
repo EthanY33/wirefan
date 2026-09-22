@@ -662,9 +662,19 @@ export class WirefanClient {
     }
     const op = this.#pending.splice(idx, 1)[0]!;
     clearTimeout(op.timer);
-    // Whether the channel record survives is the awaiting caller's call:
-    // subscribe() forgets a channel nobody else holds, while a resubscribe
-    // keeps it through transient refusals (#resubscribe).
+    if (op.kind === "subscribe" && isDefinitiveRefusal(err)) {
+      // Drop a refused channel before anyone awaiting it resumes. Otherwise
+      // an interrupted subscribe() could see the record between this attempt
+      // settling and its owner reacting, and adopt it with a fresh attempt.
+      // Transient refusals leave the record to the awaiting caller:
+      // subscribe() forgets a channel nobody else holds, while a resubscribe
+      // keeps it and retries (#resubscribe).
+      const rec = this.#channels.get(op.channel);
+      if (rec && !rec.confirmed) {
+        this.#cancelRetry(rec);
+        this.#channels.delete(op.channel);
+      }
+    }
     op.reject(err);
   }
 
@@ -832,8 +842,8 @@ export class WirefanClient {
    * it is confirmed. A failure decides the record's fate by class:
    * - ConnectionClosedError: the connection dropped again. Keep the record
    *   without an error event; the next #onConnected restores it.
-   * - A definitive refusal (isDefinitiveRefusal): surface it and drop the
-   *   channel rather than pretend it is alive.
+   * - A definitive refusal (isDefinitiveRefusal): surface it. #onErrorFrame
+   *   has already dropped the channel rather than pretend it is alive.
    * - Anything else is transient: surface it, keep the record, and retry
    *   on this connection with the reconnect backoff curve.
    */
@@ -851,10 +861,9 @@ export class WirefanClient {
       const err =
         e instanceof Error ? e : new Error(`resubscribe ${channel} failed: ${String(e)}`);
       this.#emit("error", err);
+      if (isDefinitiveRefusal(err)) return false;
       if (this.#channels.get(channel) !== rec) return false; // unsubscribed meanwhile
-      if (isDefinitiveRefusal(err)) {
-        this.#channels.delete(channel);
-      } else if (this.#epoch === epoch && this.#state === "connected") {
+      if (this.#epoch === epoch && this.#state === "connected") {
         this.#scheduleResubscribe(channel, rec, epoch, retries + 1);
       }
       return false;
@@ -920,15 +929,36 @@ export class WirefanClient {
     if (handler) rec.handlers.add(handler);
 
     if (!alreadyConfirmed) {
-      try {
-        await this.#ensureSubscribed(channel, rec);
-      } catch (e) {
-        if (handler) rec.handlers.delete(handler);
-        const cur = this.#channels.get(channel);
-        if (cur && !cur.confirmed && cur.handlers.size === 0) {
-          this.#channels.delete(channel);
+      let epoch = this.#epoch;
+      for (;;) {
+        try {
+          await this.#ensureSubscribed(channel, rec);
+          break;
+        } catch (e) {
+          // A drop can cut this attempt short (typically mid-authorize()),
+          // and by the time it fails the client may have reconnected and its
+          // resubscribe taken the channel over, since the record still holds
+          // this handler. Adopt that attempt (already confirmed, still in
+          // flight, or a fresh one) rather than reject while the channel
+          // lives on without the caller's handler. Each pass needs a newer
+          // connection, which bounds the loop.
+          if (
+            e instanceof ConnectionClosedError &&
+            this.#state === "connected" &&
+            this.#epoch !== epoch &&
+            this.#channels.get(channel) === rec
+          ) {
+            epoch = this.#epoch;
+            continue;
+          }
+          if (handler) rec.handlers.delete(handler);
+          const cur = this.#channels.get(channel);
+          if (cur && !cur.confirmed && cur.handlers.size === 0) {
+            this.#cancelRetry(cur);
+            this.#channels.delete(channel);
+          }
+          throw e;
         }
-        throw e;
       }
     }
 
