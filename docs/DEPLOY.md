@@ -499,22 +499,40 @@ concurrent connections per client IP (`WIREFAN_IP_CAP`, default 200), and
 it attributes a connection to the `X-Forwarded-For` client IP **only**
 when the directly connected peer is listed in `WIREFAN_TRUSTED_PROXIES`.
 The provision script sets that variable to `127.0.0.1` because Caddy
-proxies from loopback; Caddy in turn forwards the address of whoever
-connected to it, which is now a Cloudflare edge, and Caddy is not
-configured to trust Cloudflare's forwarding. The net effect: all of your
-users collapse into a handful of Cloudflare IPs, the per-IP cap fills up,
-and connection 201 is refused no matter who it is. Traffic ramps, then
-legitimate users start getting rejected, and nothing in the wirefan logs
-says "Cloudflare" anywhere.
+proxies from loopback. Out of the box Caddy trusts no upstream proxy, so
+it discards the `X-Forwarded-For` it receives and sends wirefan the
+address of whoever connected to it, which is now a Cloudflare edge. The
+net effect: all of your users collapse into a handful of Cloudflare IPs,
+the per-IP cap fills up, and connection 201 is refused no matter who it
+is. Traffic ramps, then legitimate users start getting rejected, and
+nothing in the wirefan logs says "Cloudflare" anywhere.
 
 The fix is to trust the Cloudflare ranges in **both** layers:
 
-1. In `/etc/wirefan/env`, extend `WIREFAN_TRUSTED_PROXIES` to include
-   Cloudflare's published IPv4 and IPv6 ranges alongside `127.0.0.1`
-   (comma-separated CIDRs).
-2. In the Caddyfile, add the same ranges as `trusted_proxies` so Caddy
-   preserves the client IP Cloudflare puts in `X-Forwarded-For` instead
-   of replacing it with the edge address.
+1. In `/etc/wirefan/env`, set
+   `WIREFAN_TRUSTED_PROXIES=127.0.0.1,<cloudflare-ipv4-cidrs>,<cloudflare-ipv6-cidrs>`
+   (comma-separated).
+2. In the Caddyfile, add the same ranges as `trusted_proxies` inside
+   `reverse_proxy` (C.2 shows the block). Caddy then keeps the
+   `X-Forwarded-For` chain Cloudflare sent and appends the edge address,
+   instead of replacing the chain with the edge address.
+
+How the client address travels, and why each layer is needed. wirefan
+walks `X-Forwarded-For` from the right and takes the first hop that is
+not in `WIREFAN_TRUSTED_PROXIES`, and only when the connection itself
+comes from a trusted address (here always Caddy, `127.0.0.1`):
+
+| Topology | `WIREFAN_TRUSTED_PROXIES` | Caddy `trusted_proxies` | `X-Forwarded-For` reaching wirefan | wirefan picks |
+|---|---|---|---|---|
+| Direct (gray cloud) | `127.0.0.1` | none (shipped Caddyfile) | `<client>` | `<client>` |
+| Cloudflare (orange cloud) | `127.0.0.1,<cloudflare ranges>` | `<cloudflare ranges>` | `<client>, <edge>` | `<client>` (`<edge>` is trusted, skipped) |
+| Cloudflare, only wirefan updated | `127.0.0.1,<cloudflare ranges>` | none | `<edge>` | `<edge>` (every hop trusted, falls back to it) |
+| Cloudflare, only Caddy updated | `127.0.0.1` | `<cloudflare ranges>` | `<client>, <edge>` | `<edge>` (first untrusted hop) |
+
+Spoofing does not get through either correct setup. Direct: Caddy drops
+whatever `X-Forwarded-For` a client sends. Cloudflare: Cloudflare appends
+the address that connected to it, so anything a client prepends ends up
+left of the real `<client>` hop, which wirefan reaches first.
 
 The ranges themselves are published at <https://www.cloudflare.com/ips/>
 (machine-readable at `https://www.cloudflare.com/ips-v4/` and
@@ -527,17 +545,20 @@ slice of traffic arrives via a newer range. Fetch them at setup time:
 CF_V4=$(curl -fsS https://www.cloudflare.com/ips-v4/ | paste -sd, -)
 CF_V6=$(curl -fsS https://www.cloudflare.com/ips-v6/ | paste -sd, -)
 echo "WIREFAN_TRUSTED_PROXIES=127.0.0.1,${CF_V4},${CF_V6}"
-# paste the output line into /etc/wirefan/env, then:
+# paste that line into /etc/wirefan/env, then:
 sudo systemctl restart wirefan
+# the same ranges, space-separated, for the Caddyfile (C.2):
+echo "trusted_proxies $(echo "${CF_V4},${CF_V6}" | tr ',' ' ')"
 ```
 
 **The list must be refreshed.** Cloudflare changes it rarely but does
 change it. Re-run the fetch on a schedule (a monthly cron that regenerates
-the line and restarts wirefan is enough) or whenever Cloudflare announces
-a range change. Note the footgun in `.env.example`: malformed entries are
-silently dropped, so smoke-test after every edit by connecting and
-checking that `wirefan_upgrade_rejected_total{reason=...}` is not climbing
-with real traffic.
+the line and the Caddyfile's `trusted_proxies`, then restarts wirefan and
+reloads Caddy, is enough) or whenever Cloudflare announces a range change.
+Note the footgun in `.env.example`: malformed entries are silently
+dropped, so smoke-test after every edit by connecting and checking that
+`wirefan_upgrade_rejected_total{reason="phantom_cap"}` (the per-IP cap)
+is not climbing with real traffic.
 
 ### C.2 TLS: origin certificate, Full (Strict), no ACME
 
@@ -567,18 +588,28 @@ from ACME to serving the provided pair. Replace the site block that
 ```caddyfile
 wirefan.example.com {
     tls /etc/caddy/cf-origin.pem /etc/caddy/cf-origin.key
+    encode gzip
+
     reverse_proxy 127.0.0.1:8080 {
-        trusted_proxies <cloudflare-ranges>   # the CIDRs fetched in C.1, space-separated
+        trusted_proxies <cloudflare-ranges>   # the trusted_proxies line printed in C.1
+        flush_interval -1
     }
+
+    @internal path /debug/pprof*
+    respond @internal "Not Found" 404
 }
 ```
 
-The `tls <cert> <key>` line is the whole change from the ACME setup: with
-it present, Caddy serves that certificate instead of requesting one. Keep
-the key file root-owned and tight (`chmod 0600`), and reload with
-`sudo systemctl reload caddy`. Remember that re-running `provision.sh`
-rewrites the Caddyfile, so re-apply this block (the previous version is
-saved as a `.bak`).
+Two lines differ from the shipped Caddyfile. `tls <cert> <key>`: with it
+present, Caddy serves that certificate instead of requesting one.
+`trusted_proxies`: C.1. Do not add `header_up X-Forwarded-For ...` or
+similar; overwriting the header throws away the client address
+Cloudflare sent. Caddy runs as the `caddy` user, so make the key
+readable by that group and nobody else
+(`sudo chown root:caddy /etc/caddy/cf-origin.key && sudo chmod 0640 /etc/caddy/cf-origin.key`),
+then reload with `sudo systemctl reload caddy`. Remember that re-running
+`provision.sh` rewrites the Caddyfile, so re-apply this block (the
+previous version is saved as a `.bak`).
 
 ### C.3 Firewall: 443 accepts only Cloudflare
 
