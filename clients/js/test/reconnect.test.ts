@@ -316,6 +316,51 @@ describe("reconnect", () => {
     c.close();
   });
 
+  it("a failing interrupted subscribe() leaves a later caller's record for the same channel alone", async () => {
+    const h = new FakeWSHarness();
+    let seen = 0;
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        // Only the resubscribe on the second connection is refused.
+        respond: (f) =>
+          i === 1 && f.type === "subscribe" && ++seen === 1
+            ? { type: "error", code: "AUTH_FAILED", message: "invalid token", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const calls: string[] = [];
+    const release: ((token: string) => void)[] = [];
+    const c = makeClient(h, {
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        return new Promise<string>((resolve) => release.push(resolve));
+      },
+    });
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    await c.connect();
+    const first = c.subscribe("private-room", () => {}).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await until(() => calls.length === 1, "first authorize");
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => calls.length === 2, "authorize re-invoked after reconnect");
+    release[1]!("tok-for-SID1");
+    await until(() => errors.length === 1, "refusal drops the channel");
+
+    // A later caller (no handler) subscribes again while the stale
+    // authorize() of the first call is still pending.
+    const later = c.subscribe("private-room");
+    await until(() => calls.length === 3, "authorize for the later call");
+    release[0]!("tok-for-SID0");
+    expect(await first).toBeInstanceOf(WirefanError);
+    release[2]!("tok-for-SID1-again");
+    const sub = await later;
+    expect(sub.active).toBe(true);
+    expect(h.sockets[1]!.sentFrames().filter((f) => f.type === "unsubscribe")).toEqual([]);
+    c.close();
+  });
+
   it("times out a handshake that never produces the connected frame and retries", async () => {
     const h = new FakeWSHarness();
     h.onDial = (ws, i) => {
