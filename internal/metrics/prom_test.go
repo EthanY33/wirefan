@@ -1,6 +1,12 @@
 package metrics
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+)
 
 // TestSnapshotBasicTracksCollectors mutates the live collectors and checks
 // the snapshot reflects them. Deltas (not absolutes) are asserted because
@@ -41,7 +47,7 @@ func TestSnapshotBasicTracksCollectors(t *testing.T) {
 	}
 }
 
-// TestChannelSourceBacksGaugeAndSnapshot proves wirefan_channels_total is
+// TestChannelSourceBacksGaugeAndSnapshot proves wirefan_channels is
 // wired to a live source rather than reporting a constant 0, which is what
 // it did before the source callback existed.
 func TestChannelSourceBacksGaugeAndSnapshot(t *testing.T) {
@@ -72,5 +78,60 @@ func TestChannelSourceBacksGaugeAndSnapshot(t *testing.T) {
 	}
 	if got := SnapshotBasic()["channels"]; got != 7 {
 		t.Errorf("snapshot channels after change = %d, want 7", got)
+	}
+}
+
+// TestExpositionNamesAndHelp pins the /metrics surface that 1.0 freezes:
+// the exact family names and types, a non-empty Help on every family, and
+// the Prometheus naming rule that only counters carry the _total suffix. A
+// gauge named *_total reads as a counter to PromQL users and tooling (rate()
+// over it is meaningless), which is what wirefan_connections_total and
+// wirefan_channels_total did before the rename.
+func TestExpositionNamesAndHelp(t *testing.T) {
+	Register()
+	// A Vec exposes no family until at least one label combination exists.
+	Dropped.WithLabelValues("slow_consumer")
+	UpgradeRej.WithLabelValues("bad_key")
+
+	fams, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	got := map[string]*dto.MetricFamily{}
+	for _, f := range fams {
+		if strings.HasPrefix(f.GetName(), "wirefan_") {
+			got[f.GetName()] = f
+		}
+	}
+
+	want := map[string]dto.MetricType{
+		"wirefan_connections":               dto.MetricType_GAUGE,
+		"wirefan_channels":                  dto.MetricType_GAUGE,
+		"wirefan_messages_published_total":  dto.MetricType_COUNTER,
+		"wirefan_messages_dropped_total":    dto.MetricType_COUNTER,
+		"wirefan_broadcast_latency_seconds": dto.MetricType_HISTOGRAM,
+		"wirefan_upgrade_rejected_total":    dto.MetricType_COUNTER,
+		"wirefan_auth_failures_total":       dto.MetricType_COUNTER,
+	}
+	for name, typ := range want {
+		f, ok := got[name]
+		if !ok {
+			t.Errorf("family %s not exposed", name)
+			continue
+		}
+		if f.GetType() != typ {
+			t.Errorf("family %s type = %v, want %v", name, f.GetType(), typ)
+		}
+		if strings.TrimSpace(f.GetHelp()) == "" {
+			t.Errorf("family %s has no Help text", name)
+		}
+	}
+	for name, f := range got {
+		if _, ok := want[name]; !ok {
+			t.Errorf("unexpected family %s exposed", name)
+		}
+		if strings.HasSuffix(name, "_total") && f.GetType() != dto.MetricType_COUNTER {
+			t.Errorf("family %s is a %v but carries the counter-only _total suffix", name, f.GetType())
+		}
 	}
 }
