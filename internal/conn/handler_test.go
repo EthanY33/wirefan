@@ -663,3 +663,36 @@ func TestPublishDoesNotInflatePayload(t *testing.T) {
 		t.Fatalf("data changed in transit (%d bytes in, %d out)", len(payload), len(ev.Data))
 	}
 }
+
+// TestPublishRejectsInvalidUTF8: json.Unmarshal accepts any byte above 0x1f
+// inside a JSON string and json.RawMessage keeps the raw bytes, so a publish
+// carrying invalid UTF-8 used to be relayed inside a text frame. RFC 6455
+// requires a browser to fail the connection on invalid UTF-8 in a text
+// message, so one such publish disconnected every browser on the channel.
+// The server must refuse the frame and relay nothing.
+func TestPublishRejectsInvalidUTF8(t *testing.T) {
+	conns := newSharedEnvConns(t, PolicyDisconnect{}, 2)
+	pub, sub := conns[0], conns[1]
+	for _, c := range []*websocket.Conn{sub, pub} {
+		sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "utf8"})
+		if got := readJSON(t, c); got["type"] != "subscribed" {
+			t.Fatalf("ack: %+v", got)
+		}
+	}
+
+	wctx, wcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer wcancel()
+	bad := []byte("{\"type\":\"publish\",\"channel\":\"utf8\",\"data\":\"\xff\xfe\"}")
+	if err := pub.Write(wctx, websocket.MessageText, bad); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if got := readJSON(t, pub); got["type"] != "error" || got["code"] != "BAD_JSON" {
+		t.Fatalf("publisher: want a BAD_JSON error, got %+v", got)
+	}
+
+	rctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, raw, err := sub.Read(rctx); err == nil {
+		t.Fatalf("subscriber received a relayed frame: %q", raw)
+	}
+}

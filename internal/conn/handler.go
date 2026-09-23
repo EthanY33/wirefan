@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/EthanY33/wirefan/internal/auth"
 	"github.com/EthanY33/wirefan/internal/hub"
@@ -105,6 +106,15 @@ func ChannelRequiresAuth(name string) bool {
 }
 
 func (c *Conn) handle(ctx context.Context, raw []byte) {
+	// json.Unmarshal accepts any byte above 0x1f inside a string, and
+	// json.RawMessage keeps publish data byte for byte, so without this check
+	// invalid UTF-8 would be relayed inside text frames. RFC 6455 makes a
+	// browser fail the connection when that happens, so one such publish
+	// would disconnect every browser subscribed to the channel.
+	if !utf8.Valid(raw) {
+		c.sendError("BAD_JSON", "message is not valid UTF-8")
+		return
+	}
 	var msg incoming
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		c.sendError("BAD_JSON", "malformed message")
