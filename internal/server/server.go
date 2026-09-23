@@ -89,6 +89,7 @@ func New(cfg Config, deps Deps) *Server {
 		RateLimit:      deps.RateLimit,
 		Policy:         deps.Policy,
 		Hub:            deps.Hub,
+		Draining:       s.health.Draining,
 	}))
 	s.mux.Handle("/", http.FileServerFS(web.Files))
 
@@ -170,13 +171,13 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = s.adminSrv.Shutdown(shutdownCtx)
 	}
 	err := s.srv.Shutdown(shutdownCtx)
-	// Stop fanout workers last. Draining conns is not enough on its own: the
-	// public listener still accepts /v1/connect upgrades until Shutdown
-	// returns, so closing earlier leaves a window where a fresh conn can
-	// publish into a closed ShardedPool, whose Broadcast is a silent no-op
-	// after Close while metrics still count the publish as delivered. Once
-	// the listener is down no new broadcast can arrive, and Close waits for
-	// queued ones so the goroutine-leak invariant still holds.
+	// Stop fanout workers last. From SetDraining on, /v1/connect answers 503
+	// and Hub.Add refuses conns, but a conn Drain force-closed can still be
+	// inside a publish until its pumps exit, and ShardedPool's Broadcast is
+	// a silent no-op after Close while metrics still count the publish as
+	// delivered. Once the listener is down and Drain has returned no new
+	// broadcast can arrive, and Close waits for queued ones so the
+	// goroutine-leak invariant still holds.
 	if s.fan != nil {
 		_ = s.fan.Close()
 	}

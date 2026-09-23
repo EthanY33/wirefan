@@ -279,3 +279,21 @@ func mustPrefix(t *testing.T, s string) netip.Prefix {
 	}
 	return p
 }
+
+// TestUpgradeRefusedWhileDraining: once shutdown starts, new upgrades get a
+// plain 503 before any key lookup, instead of a WebSocket that Hub.Add then
+// refuses. The bundled client redials within a second of a GoingAway, so
+// every draining server sees these.
+func TestUpgradeRefusedWhileDraining(t *testing.T) {
+	h := NewUpgradeHandler(UpgradeDeps{Draining: func() bool { return true }})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/v1/connect?key=anything")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 while draining, got %d", res.StatusCode)
+	}
+}

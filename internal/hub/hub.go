@@ -28,22 +28,33 @@ type Hub struct {
 	// gains one entry per revoked key and is never pruned: a revoked key
 	// cannot be restored, and key ids are small.
 	closedKeys map[string]websocket.CloseError
+	// draining is set by Drain, in the same critical section as its snapshot,
+	// and from then on Add refuses every conn with a GoingAway.
+	draining bool
 }
+
+// drainClose is the close Drain sends and Add hands back once draining.
+var drainClose = websocket.CloseError{Code: websocket.StatusGoingAway, Reason: "shutdown"}
 
 // New returns a Hub with an empty conn set.
 func New() *Hub {
 	return &Hub{conns: map[trackedConn]struct{}{}, closedKeys: map[string]websocket.CloseError{}}
 }
 
-// Add registers c with the Hub and reports true, unless CloseKey has already
-// run for c's key. Then c is not tracked, and Add reports false along with
-// the close CloseKey sent, which the caller must send to c itself. Checking
-// under the same lock CloseKey sweeps under means every conn either is in
-// that sweep or is refused here: an upgrade that looked its key up just
-// before a revoke and got here just after would otherwise stay open.
+// Add registers c with the Hub and reports true, unless Drain has started or
+// CloseKey has already run for c's key. Then c is not tracked, and Add
+// reports false along with the close to send, which the caller must send to
+// c itself. Checking under the same lock that Drain and CloseKey take their
+// snapshots under means every conn either is in that snapshot or is refused
+// here: an upgrade that got past its checks just before a revoke or a
+// shutdown and reached Add just after would otherwise stay open (and, during
+// a shutdown, hold Drain open until its grace ran out).
 func (h *Hub) Add(c trackedConn) (websocket.CloseError, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.draining {
+		return drainClose, false
+	}
 	if ce, closed := h.closedKeys[c.APIKeyID()]; closed {
 		return ce, false
 	}
@@ -100,18 +111,23 @@ func (h *Hub) CloseKey(keyID string, code websocket.StatusCode, reason string) i
 }
 
 // Drain sends a GoingAway close to every tracked conn and waits up to grace,
-// bounded by ctx, for them to deregister. The closes run concurrently on a
-// snapshot of the set: each handshake can wait seconds on a peer that never
-// answers, so running them one at a time under the lock made shutdown grow
-// by that timeout per unresponsive peer. Whatever is still tracked when the
-// wait ends is force-closed with CloseNow, so Drain returns promptly once
-// ctx or grace expires. Returns early when the conn count hits 0.
+// bounded by ctx, for them to deregister. From the moment it snapshots the
+// set, Add refuses new conns, so a client that reconnects during shutdown
+// cannot hold the wait open. The closes run concurrently: each handshake can
+// wait seconds on a peer that never answers, so running them one at a time
+// under the lock made shutdown grow by that timeout per unresponsive peer.
+// Whatever is still tracked when the wait ends is force-closed with CloseNow,
+// so Drain returns promptly once ctx or grace expires. Returns early when
+// the conn count hits 0.
 func (h *Hub) Drain(ctx context.Context, grace time.Duration) {
 	ctx, cancel := context.WithTimeout(ctx, grace)
 	defer cancel()
 
+	h.mu.Lock()
+	h.draining = true
+	h.mu.Unlock()
 	for _, c := range h.snapshot() {
-		go c.CloseFrame(websocket.StatusGoingAway, "shutdown")
+		go c.CloseFrame(drainClose.Code, drainClose.Reason)
 	}
 
 	tick := time.NewTicker(50 * time.Millisecond)
