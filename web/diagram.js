@@ -2,12 +2,16 @@
 //
 // Draws the fan from the README art (docs/img/hero.png): this tab's publish
 // wire enters the hub from the left, and the hub fans out on curves to one
-// terminal per other connection. Everything it shows comes from real data:
-// the page feeds it the connection count from the _wirefan-stats channel and
-// the _from field on events. wirefan has no presence feature (see
-// CLAUDE.md, "Deferred"), so a lit terminal without a label stands for a
-// connection the server counted that has not sent anything this tab saw.
-// Dim terminals are empty slots, drawn only to show where peers will land.
+// terminal per other connection. Everything it shows comes from real data,
+// and it only claims what the page can back up. wirefan has no presence
+// feature (see CLAUDE.md, "Deferred"), so terminals come in three kinds:
+//   - peer: a tab confirmed on this channel (it sent a pulse here, or it is
+//     another tab in this browser that said so over BroadcastChannel). Lit,
+//     labelled, and the only kind that delivery comets fly to.
+//   - counted: a connection the server counts in _wirefan-stats that this
+//     tab cannot place on this channel (another key, another room, a tab
+//     that has not sent anything). Drawn dim and dashed, never animated.
+//   - open: an empty slot, drawn only to show where the next tab will land.
 
 const NS = 'http://www.w3.org/2000/svg';
 const PATH_LEN = 1000;        // every wire is normalised to this pathLength
@@ -53,11 +57,12 @@ export class FanoutDiagram {
     this.reduced = reducedMotion;
     this.desc = svg.querySelector('desc');
     this.meShort = '';
-    this.total = 0;            // other connections to draw
-    this.named = [];           // [{ sid, label }], most recent first
+    this.channel = '';
+    this.peers = [];           // [{ sid, label }] confirmed on this channel, most recent first
+    this.counted = 0;          // other connections the server counts but this tab cannot place
     this.slotOf = new Map();   // sid -> slot index
     this.slots = [];
-    this.lit = [];
+    this.lit = [];             // slot indexes holding a confirmed peer
     this.order = [];
     this.compact = false;
     this.W = 0;
@@ -232,14 +237,27 @@ export class FanoutDiagram {
     this.layout(true);
   }
 
-  /**
-   * @param {number} total  other connections to draw
-   * @param {{sid: string, label: string}[]} named  peers seen via _from, most recent first
-   */
-  setPeers(total, named) {
-    this.total = Math.max(0, total | 0);
-    this.named = named;
+  /** Channel name, used only in the accessible description. */
+  setChannel(name) {
+    this.channel = name || '';
     this.applyPeers();
+  }
+
+  /**
+   * @param {{sid: string, label: string}[]} peers  tabs confirmed on this channel, most recent first
+   * @param {number} counted  other connections the server counts that this tab cannot place
+   */
+  setPeers(peers, counted) {
+    this.peers = peers;
+    this.counted = Math.max(0, counted | 0);
+    this.applyPeers();
+  }
+
+  /** How many terminals are drawn in each state (capped by the slot count). */
+  get drawn() {
+    const count = this.slots.length;
+    const peers = Math.min(this.peers.length, count);
+    return { peers, counted: Math.min(this.counted, count - peers), slots: count };
   }
 
   setOffline(off) {
@@ -249,58 +267,62 @@ export class FanoutDiagram {
   applyPeers() {
     const count = this.slots.length;
     if (!count) return;
-    const k = Math.min(this.total, count);
-    const lit = this.order.slice(0, k);
-    const litSet = new Set(lit);
+    const { peers: nPeers, counted: nCounted } = this.drawn;
+    const occupied = this.order.slice(0, nPeers + nCounted);
+    const occSet = new Set(occupied);
 
-    // Keep a named peer on the slot it already had when that slot stays lit.
+    // Keep a peer on the slot it already had while that slot stays
+    // occupied, so a terminal never jumps when the counts change.
     const next = new Map();
     const taken = new Set();
-    const names = this.named.slice(0, k);
-    for (const p of names) {
+    const shown = this.peers.slice(0, nPeers);
+    for (const p of shown) {
       const prev = this.slotOf.get(p.sid);
-      if (prev !== undefined && litSet.has(prev) && !taken.has(prev)) {
+      if (prev !== undefined && occSet.has(prev) && !taken.has(prev)) {
         next.set(p.sid, prev);
         taken.add(prev);
       }
     }
-    for (const p of names) {
+    for (const p of shown) {
       if (next.has(p.sid)) continue;
-      const free = lit.find((i) => !taken.has(i));
+      const free = occupied.find((i) => !taken.has(i));
       if (free === undefined) break;
       next.set(p.sid, free);
       taken.add(free);
     }
     this.slotOf = next;
     const labelAt = new Map();
-    for (const p of names) if (next.has(p.sid)) labelAt.set(next.get(p.sid), p.label);
+    for (const p of shown) if (next.has(p.sid)) labelAt.set(next.get(p.sid), p.label);
 
-    this.lit = lit.slice().sort((a, b) => a - b);
+    this.lit = [...taken].sort((a, b) => a - b);
     this.slots.forEach((slot, i) => {
-      const on = litSet.has(i);
-      slot.wire.classList.toggle('is-lit', on);
-      slot.tail.classList.toggle('is-lit', on);
-      slot.term.classList.toggle('is-lit', on);
-      slot.term.setAttribute('r', on ? '4.2' : '3.2');
+      const peer = taken.has(i);
+      const counted = !peer && occSet.has(i);
+      for (const el of [slot.wire, slot.tail, slot.term]) {
+        el.classList.toggle('is-lit', peer);
+        el.classList.toggle('is-counted', counted);
+      }
+      slot.term.setAttribute('r', peer ? '4.2' : counted ? '3.6' : '3.2');
       slot.label.textContent = labelAt.get(i) || '';
     });
-    this.svg.classList.toggle('is-alone', k === 0);
+    this.svg.classList.toggle('is-alone', nPeers + nCounted === 0);
 
     if (this.desc) {
-      const shown = this.total > count ? ` (${count} drawn)` : '';
-      this.desc.textContent = this.total === 0
-        ? 'This tab is wired to the wirefan hub. No other connections yet.'
-        : `This tab is wired to the wirefan hub, which fans out to ${this.total} other connection${this.total === 1 ? '' : 's'}${shown}.`;
+      const ch = this.channel ? `#${this.channel}` : 'this channel';
+      const p = this.peers.length;
+      const c = this.counted;
+      let text = 'This tab is wired to the wirefan hub.';
+      text += p === 0
+        ? ` No other tab is confirmed on ${ch} yet.`
+        : ` The hub fans its pulses out to ${p} other tab${p === 1 ? '' : 's'} on ${ch}.`;
+      if (c > 0) text += ` The server also counts ${c} other connection${c === 1 ? '' : 's'} this tab cannot place on ${ch}.`;
+      this.desc.textContent = text;
     }
   }
 
-  /** Slot for a sender: its named slot, else any unnamed lit slot, else null. */
+  /** Slot for a sender: its peer slot, or null when this tab cannot place it. */
   slotFor(sid) {
-    if (sid && this.slotOf.has(sid)) return this.slotOf.get(sid);
-    const named = new Set(this.slotOf.values());
-    const anon = this.lit.filter((i) => !named.has(i));
-    if (!anon.length) return null;
-    return anon[Math.floor(Math.random() * anon.length)];
+    return sid && this.slotOf.has(sid) ? this.slotOf.get(sid) : null;
   }
 
   /**
