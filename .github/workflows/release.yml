@@ -35,8 +35,8 @@ jobs:
             goarch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       # CI above runs on amd64 only; this is the arm64 race-test pass.
@@ -61,7 +61,7 @@ jobs:
             "wirefan ${GITHUB_REF_NAME} ("*) ;;
             *) echo "version mismatch: expected tag ${GITHUB_REF_NAME}" >&2; exit 1 ;;
           esac
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: wirefan-linux-${{ matrix.goarch }}
           path: wirefan_*_linux_${{ matrix.goarch }}
@@ -73,8 +73,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v6
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
