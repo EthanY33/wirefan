@@ -62,12 +62,12 @@ var (
 	}, []string{"reason"})
 	Latency = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "wirefan_broadcast_latency_seconds",
-		Help:    "Seconds spent handing one publish to the fanout; with --fanout=sharded this covers enqueueing only, not delivery.",
+		Help:    "Seconds a publish spends in the fanout's Broadcast call: queueing onto each subscriber's send buffer (per-conn) or handing off to a worker (sharded). Socket writes happen later and are not included.",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 2, 16),
 	})
 	UpgradeRej = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "wirefan_upgrade_rejected_total",
-		Help: "WebSocket upgrade requests refused before the handshake, by reason (bad_key, phantom_cap).",
+		Help: "WebSocket upgrade requests refused before the handshake, by reason (bad_key, phantom_cap, draining).",
 	}, []string{"reason"})
 	AuthFails = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "wirefan_auth_failures_total",
