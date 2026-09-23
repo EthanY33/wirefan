@@ -1,6 +1,8 @@
 # Monthly, grouped updates: one pull request per ecosystem for minor and
 # patch bumps, separate ones for majors. Not covered here and bumped by
-# hand: the go.mod toolchain line and the golangci-lint version in ci.yml.
+# hand, together: the go.mod toolchain line, the golang:1.26.x-bookworm
+# image in deploy/Dockerfile and the Makefile, and the golangci-lint and
+# govulncheck versions in ci.yml.
 version: 2
 updates:
   - package-ecosystem: gomod
