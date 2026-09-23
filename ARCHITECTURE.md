@@ -277,7 +277,7 @@ only counters end in `_total`.
 | Modify shutdown behavior            | `internal/server/server.go: Server.Run` + `internal/hub/hub.go: Drain` |
 | Modify what a key revoke does       | `internal/server/rest.go: revoke` + `internal/hub/hub.go: CloseKey` |
 | Sign HMAC channel tokens            | `internal/auth/token.go` (MAC layout in `macPayload`)  |
-| Edit the demo client UI             | `web/index.html`, `web/client.js`, `web/styles.css`   |
+| Edit the demo client UI             | `web/index.html`, `web/client.js`, `web/diagram.js` (live fanout diagram), `web/styles.css`; a new file also goes on the `//go:embed` line in `web/embed.go` |
 | Change the JS client                | `clients/js/src/index.ts`, then `npm run vendor:web` to regenerate `web/wirefan-client.js` (CI fails if it is stale) |
 
 ---

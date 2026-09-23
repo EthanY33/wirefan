@@ -9,6 +9,19 @@ exactly what that covers.
 
 ## [Unreleased]
 
+### Changed
+
+- The demo page at `/` leads with a live fanout diagram instead of a
+  three-panel console. With `?key=` in the URL it connects and subscribes on
+  load; "Send a pulse" animates each publish from its sender into the hub and
+  out to every connected tab, and "Open a second tab" invites the two-tab
+  test. Peers are drawn from the `_wirefan-stats` connection count and the
+  `_from` field on events. Pulses are capped at 4 per second per tab and
+  nothing is published on a timer, since every visitor shares the demo key.
+  The socket id, endpoint, raw frames (tapped from the socket), server stats,
+  limits, custom publish and the capped stress button moved into a
+  collapsed "Under the hood" panel.
+
 ## [1.0.0] - 2026-09-23
 
 1.0.0 is the stability release. The wire protocol (`v1`), the HTTP API,
