@@ -263,7 +263,7 @@ proxy.
 <summary><b>How a release is built</b></summary>
 <br>
 <p align="center">
-  <img src="docs/img/ci-release-pipeline.png" alt="Pipeline: every push runs build, vuln and client-js jobs; a version tag runs CI, builds amd64 and arm64 natively with the version stamped in, publishes SHA256SUMS and CHANGELOG notes to a GitHub release, which deploy.sh installs" width="100%">
+  <img src="docs/img/ci-release-pipeline.png" alt="Pipeline: every push to main and every pull request runs build, vuln and client-js jobs; a version tag runs CI, builds amd64 and arm64 natively with the version stamped in, publishes SHA256SUMS and CHANGELOG notes to a GitHub release, which deploy.sh installs" width="100%">
 </p>
 </details>
 
