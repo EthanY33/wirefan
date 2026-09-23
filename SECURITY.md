@@ -31,8 +31,8 @@ Things that are working as designed, documented in
 [`docs/DESIGN.md`](docs/DESIGN.md) and [`docs/PROTOCOL.md`](docs/PROTOCOL.md):
 
 - Public channels are readable by any client holding a valid API key id.
-  Use `private-*` channels, which require an HMAC-signed subscribe token,
-  for anything that needs authorization.
+  Use `private-*` or `presence-*` channels, which require an HMAC-signed
+  subscribe token, for anything that needs authorization.
 - The admin listener (`/v1/keys`, `/metrics`, `/debug/pprof/*`) binds to
   `127.0.0.1:6060` by default. Exposing it publicly is an operator choice.
 - `X-Forwarded-For` is honored only from addresses listed in

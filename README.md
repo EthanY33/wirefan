@@ -34,7 +34,7 @@ UI, or several transports.
 |---|---|
 | **Protocol** | JSON over WebSocket, one object per frame, versioned `v1` ([spec](docs/PROTOCOL.md)) |
 | **Auth** | API key per app; HMAC-SHA256 subscribe tokens bound to one connection and one channel, five-minute expiry, replay-protected |
-| **Delivery** | FIFO per subscriber; a subscriber that cannot keep up is disconnected (1008) instead of stalling the channel |
+| **Delivery** | FIFO per subscriber; a subscriber that cannot keep up is disconnected instead of stalling the channel |
 | **Operations** | Prometheus metrics and pprof on a loopback admin listener, graceful drain, checksum-verified upgrades that roll back on a failed health check |
 | **Footprint** | One binary for linux/amd64 and linux/arm64; API keys in an embedded SQLite file |
 | **Stability** | [SemVer from 1.0](docs/COMPATIBILITY.md): protocol, HTTP API, flags and metric names are stable across 1.x |
@@ -60,8 +60,8 @@ chmod +x wirefan_${VER}_linux_${ARCH}
 ./wirefan_${VER}_linux_${ARCH} --version
 ```
 
-Building from source needs Go 1.26 and a C compiler, because the SQLite
-driver uses cgo:
+Building from source needs Go 1.26 and a C compiler: the SQLite driver
+uses cgo, and a binary built without it cannot open its key store.
 
 ```bash
 git clone https://github.com/EthanY33/wirefan && cd wirefan
@@ -85,7 +85,7 @@ curl -s -X POST http://127.0.0.1:6060/v1/keys \
   -H "Authorization: Bearer $(cat var/admin.token)" \
   -H 'Content-Type: application/json' \
   -d '{"name":"dev"}'
-# {"id":"01K...","name":"dev","secret":"..."}
+# {"id":"01...","name":"dev","secret":"..."}
 ```
 
 Open `http://localhost:8080/?key=<id>` in two tabs to watch a message fan
@@ -93,14 +93,14 @@ out, or point any WebSocket client at `ws://localhost:8080/v1/connect?key=<id>`:
 
 ```text
 client  GET /v1/connect?key=<id>                                   (upgrade)
-server  {"type":"connected","socket_id":"01K...","version":"v1"}
+server  {"type":"connected","socket_id":"01...","version":"v1"}
 client  {"type":"subscribe","channel":"chat"}
 server  {"type":"subscribed","channel":"chat"}
 client  {"type":"publish","channel":"chat","data":{"hello":"world"}}
-server  {"type":"event","channel":"chat","data":{"hello":"world"},"id":"01K..."}
+server  {"type":"event","channel":"chat","data":{"hello":"world"},"id":"01..."}
 ```
 
-The secret is only needed for private channels. Keep it on your server.
+The secret is only needed for `private-` and `presence-` channels. Keep it on your server.
 
 ## How it works
 
@@ -132,13 +132,14 @@ A publish is rate-limited per connection and per API key, stamped with a
 ULID, and copied into the send buffer of every subscriber on the channel.
 Each connection has its own 64-message buffer and write pump, so one slow
 reader cannot delay the others: when its buffer fills it is disconnected
-with close code 1008 and everyone else keeps receiving.
+(with close code 1008 when its socket still accepts one) and everyone else
+keeps receiving.
 
 <p align="center">
   <img src="docs/img/private-channel-auth.png" alt="Sequence diagram: the browser connects and learns its socket_id, asks your app server for access, your app server calls /v1/auth/sign with the key secret, wirefan returns a token, and the browser subscribes with it" width="100%">
 </p>
 
-For private channels your app server is the gatekeeper. The browser asks it
+For `private-` and `presence-` channels your app server is the gatekeeper. The browser asks it
 for access; if your own login check passes, the app server calls
 `POST /v1/auth/sign` with the key secret, and the browser subscribes with the
 token it gets back. The token is bound to that connection's `socket_id` and
@@ -164,7 +165,7 @@ import { WirefanClient } from "@wirefan/client";
 
 const client = new WirefanClient({
   url: "wss://relay.example.com",
-  key: "01K...",
+  key: "01...",
   authorize: ({ socketId, channel }) =>
     fetch("/wirefan/token", { method: "POST", body: JSON.stringify({ socketId, channel }) })
       .then((r) => r.json())
@@ -189,8 +190,11 @@ plain JSON.
 Every number here traces to a raw output file under [`results/`](results),
 produced by `scripts/bench.sh` driving `cmd/loadtest` against the server in
 a Docker container limited to one CPU (`--cpus=1 --memory=6g`, amd64,
-Windows/WSL2 host, load generator on the host over loopback). Each row is
-the median-throughput run of three, and every run reconciles the load
+Windows/WSL2 host, load generator on the host over loopback). The runs
+were recorded on 2026-08-06 against the 0.2 server; the 1.0 changes leave
+the broadcast path alone apart from frame encoding. Each row is the
+median-throughput run of three (ties go to the highest-numbered run), and
+every run reconciles the load
 generator's sent count against the server's own
 `wirefan_messages_published_total`. Publishers are spread across a pool of
 API keys so the per-key rate limit is never what gets measured.
@@ -217,22 +221,28 @@ row:
 ```bash
 go build -o bin/loadtest ./cmd/loadtest
 docker build -f deploy/Dockerfile -t wirefan:bench .
-CONNS=500 CHANNELS=50 RATE=10 REPS=3 DURATION=30s CELLS="per-conn/sync-map" bash scripts/bench.sh
+CONNS=500 CHANNELS=50 RATE=10 REPS=3 DURATION=30s CELLS="per-conn/sync-map" RUN_TAG=-repro bash scripts/bench.sh
 ```
+
+`RUN_TAG` keeps your output next to the published files instead of
+overwriting them.
 
 Proven by the test suite rather than by a benchmark, and run under the race
 detector in CI:
 
 - **No goroutine leaks.** After 1,000 connections churn, the server returns
-  to its goroutine baseline under both fanout strategies, and again after
+  to within a small tolerance of its goroutine baseline under both fanout
+  strategies, and again after
   key revocation and shutdown close every connection
   ([`internal/server/leak_test.go`](internal/server/leak_test.go)).
 - **FIFO per subscriber.** Each connection's buffered send channel keeps
-  its order. Broadcast snapshots the subscriber set and releases the lock
-  before sending, so publishes to one channel are not serialized and total
-  order across subscribers is deliberately not promised.
-- **Graceful drain.** Shutdown closes every connection with 1001 and waits
-  for them to deregister ([`internal/server/shutdown_test.go`](internal/server/shutdown_test.go)),
+  its order. Under the default per-conn fanout, Broadcast snapshots the
+  subscriber set and releases the lock before sending, so publishes to one
+  channel are not serialized, and total order across subscribers is
+  deliberately not promised.
+- **Graceful drain.** Shutdown refuses new connections, closes every open
+  one with 1001, waits up to 30 seconds for them to deregister and then
+  force-closes the rest ([`internal/server/shutdown_test.go`](internal/server/shutdown_test.go)),
   and `/v1/health` answers 503 while draining
   ([`internal/server/health_test.go`](internal/server/health_test.go)).
 - **Idle connections stay up.** A client that only answers pings is never
@@ -240,7 +250,8 @@ detector in CI:
   stops answering is disconnected within about 40 seconds
   ([`internal/conn/pumps_test.go`](internal/conn/pumps_test.go)).
 - **Revocation is immediate.** Revoking an API key closes that key's open
-  connections with 1008 and refuses any that were mid-upgrade
+  connections with 1008, including one whose upgrade was in flight when the
+  revoke landed
   ([`internal/hub/hub_test.go`](internal/hub/hub_test.go)).
 
 ## Running it in production
@@ -274,9 +285,10 @@ proxy.
 - **SQLite, not a database server.** API keys are a small, rarely written
   table. One file, zero operations, and backups with `sqlite3 .backup`.
 - **No per-channel broadcast lock.** Broadcast snapshots subscribers and
-  releases the lock before sending, so a slow subscriber cannot hold up a
-  publish to the same channel. The cost is that there is no total order
-  across subscribers, only per subscriber.
+  releases the lock before sending, so concurrent publishes to one channel
+  are not serialized behind each other's send loops. (A slow subscriber
+  never blocks a send either way: a full buffer disconnects it.) The cost
+  is that there is no total order across subscribers, only per subscriber.
 - **A signing secret that never leaves the process.** It is generated at
   boot and held in memory, so there is no key material on disk to steal and
   a restart invalidates every outstanding token. Tokens are bound to one
@@ -300,7 +312,7 @@ proxy.
 make build        # bin/wirefan, version stamped from git describe
 make test-race    # full suite under the race detector
 make lint         # golangci-lint
-make bench        # benchmark matrix; needs Docker and bash (Git Bash works on Windows)
+make bench        # benchmark matrix; needs Docker and bash; overwrites results/ unless RUN_TAG is set
 cd clients/js && npm ci && npm test
 ```
 

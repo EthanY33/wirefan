@@ -27,9 +27,10 @@ configuration problems:
 You need a plain Linux box where a systemd service can run indefinitely.
 A single-vCPU VPS is enough to start: `docs/BENCHMARKS.md` records
 measured behavior with the server capped at one CPU of quota
-(`docker run --cpus=1`). Those runs did not
-constrain memory, so this runbook makes no memory-sizing claim; the
-smallest tier your provider sells is the natural starting point.
+(`docker run --cpus=1`). Those runs set a generous 6 GB memory limit,
+so they say nothing about how little memory wirefan needs, and this
+runbook makes no memory-sizing claim; the smallest tier your provider
+sells is the natural starting point.
 
 Three facts the whole runbook leans on:
 
@@ -283,7 +284,7 @@ curl -s -X POST http://127.0.0.1:6060/v1/keys \
     -H "Authorization: Bearer $(sudo cat /var/lib/wirefan/admin.token)" \
     -H "Content-Type: application/json" \
     -d '{"name":"production-app"}'
-# expect: {"id":"01K...","name":"production-app","secret":"<hex>"}
+# expect: {"id":"01...","name":"production-app","secret":"<hex>"}
 ```
 
 The `secret` is shown **once**; store it in your app's config. It is only
@@ -301,9 +302,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X DELETE \
 # expect: 204 (404 if no key has that id)
 ```
 
-Revocation takes effect at once: new connections with that key are
-refused with `401`, and sockets already open under it are closed with
-WebSocket close code `1008`, reason `key revoked`.
+Revocation takes effect at once: new connections and sign requests with
+that key are refused with `401`, and sockets already open under it are
+closed with WebSocket close code `1008`, reason `key revoked` (the closes
+run in the background, so they can finish just after the `204`).
 
 End-to-end pub/sub check from your laptop:
 
@@ -429,11 +431,19 @@ rsync -avz -e "ssh -i ~/.ssh/wirefan_vps" \
 ```
 
 Restore (also the full-host-loss story: provision a fresh box via steps
-1-5, then restore):
+1-5, then restore). First copy the snapshot up to the server:
 
 ```bash
+# on the backup machine
+scp -i ~/.ssh/wirefan_vps ./backups/wirefan-20260801.db ubuntu@<public-ip>:
+```
+
+Then swap it in:
+
+```bash
+# on the server
 sudo systemctl stop wirefan
-sudo cp ./backups/wirefan-20260801.db /var/lib/wirefan/wirefan.db
+sudo cp ~/wirefan-20260801.db /var/lib/wirefan/wirefan.db
 sudo rm -f /var/lib/wirefan/wirefan.db-wal /var/lib/wirefan/wirefan.db-shm
 sudo chown wirefan:wirefan /var/lib/wirefan/wirefan.db
 sudo chmod 0600 /var/lib/wirefan/wirefan.db
@@ -485,9 +495,10 @@ client:
   write). With `--fanout=sharded` it is only the handoff to a worker
   queue, so the per-subscriber work is not included.
 - `wirefan_upgrade_rejected_total{reason}` (counter): refused WebSocket
-  upgrades. Two reasons exist: `bad_key` (missing, unknown, or revoked
-  key; the client gets `401`) and `phantom_cap` (the per-IP connection
-  cap; `429`). Origin mismatches are not counted here: they get `403`
+  upgrades. Three reasons exist: `bad_key` (missing, unknown, or revoked
+  key; the client gets `401`), `phantom_cap` (the per-IP connection
+  cap; `429`) and `draining` (an upgrade attempted during shutdown;
+  `503`). Origin mismatches are not counted here: they get `403`
   and a `ws upgrade failed` warning in the log.
 - `wirefan_auth_failures_total` (counter): failed subscribe-token checks
   on `private-`/`presence-` channels.

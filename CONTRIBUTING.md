@@ -15,8 +15,9 @@ benchmark runs on hardware the repo does not cover yet are all welcome.
 ## Development setup
 
 You need Go 1.26 and a C compiler. The SQLite driver
-(`mattn/go-sqlite3`) uses cgo, so every build and test needs `CGO_ENABLED=1`
-and `gcc` or `clang` on `PATH`, not only `-race` runs. On Windows, a MinGW-w64
+(`mattn/go-sqlite3`) uses cgo: without `CGO_ENABLED=1` and `gcc` or `clang`
+on `PATH` the code still compiles, but the binary cannot open its default
+SQLite store, the store tests fail, and `-race` needs cgo anyway. On Windows, a MinGW-w64
 toolchain such as WinLibs works. The JavaScript client needs Node 22 or later.
 
 ```bash
@@ -38,14 +39,18 @@ commands. `make bench` needs Docker and bash; see
 
 - **Race-clean.** `go test -race ./...` passes.
 - **No goroutine leaks.** `internal/server/leak_test.go` proves the server
-  returns to its goroutine baseline after 1,000-connection churn. A feature
+  returns to within a small tolerance of its goroutine baseline after
+  1,000-connection churn, key revocation and shutdown. A feature
   that starts goroutines extends that test.
 - **Per-subscriber FIFO only.** Each connection's buffered send channel keeps
   its own order. Per-channel total ordering is not a guarantee, and adding a
-  broadcast-wide lock to get it would reintroduce head-of-line blocking.
-- **Connection tunables live in one place.** Send-buffer size, ping and read
-  deadlines and the per-connection channel cap are constants in
-  `internal/conn/conn.go`. Change them there, not at call sites.
+  broadcast-wide lock to get it would serialize every publish to a channel
+  behind the previous one's send loop.
+- **Connection tunables live in one place.** Send-buffer size, write
+  deadline, channel and subscriber caps and per-connection rate limits are
+  constants in `internal/conn/conn.go`; the keepalive timers `pingInterval`
+  and `pongWait` are package variables there so tests can shorten them.
+  There is no read deadline. Change them there, not at call sites.
 - **Docs follow behavior.** A change to frames, error codes or close codes
   updates [`docs/PROTOCOL.md`](docs/PROTOCOL.md). A new package updates the
   repo map in [`ARCHITECTURE.md`](ARCHITECTURE.md). A performance claim links
