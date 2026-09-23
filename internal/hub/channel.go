@@ -19,7 +19,7 @@ var ErrChannelDeleted = errors.New("channel deleted")
 // Subscribe adds s to c. Returns ErrTooManySubs if the channel already has max
 // subscribers, or ErrChannelDeleted if the channel was swept between lookup
 // and this call. The caller-supplied max enforces the per-channel cap (spec:
-// 10000 — hardcoded at call sites until flag wiring lands).
+// 10000, hardcoded at call sites until flag wiring lands).
 func Subscribe(c *registry.Channel, s registry.Subscriber, max int) error {
 	c.SubsMu.Lock()
 	defer c.SubsMu.Unlock()
@@ -45,9 +45,10 @@ func Unsubscribe(c *registry.Channel, s registry.Subscriber) {
 // lock. Per-subscriber FIFO ordering is preserved by the buffered send chan
 // inside each Conn (Go guarantees chan-send order = chan-receive order). The
 // stronger "every subscriber sees publish A before publish B" guarantee is
-// not part of the protocol contract — and serializing here turned a single
-// slow consumer into a head-of-line block for the entire channel under
-// PolicyDisconnect's writeDeadline.
+// not part of the protocol contract, and a per-channel lock would make every
+// publish to a channel wait for the previous one's whole send loop. (Send
+// itself never waits on a peer: under PolicyDisconnect a full buffer
+// disconnects the subscriber instead of blocking.)
 func Broadcast(c *registry.Channel, msg []byte) {
 	c.SubsMu.RLock()
 	subs := make([]registry.Subscriber, 0, len(c.Subscribers))
