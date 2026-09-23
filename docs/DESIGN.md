@@ -139,8 +139,14 @@ func Broadcast(c *registry.Channel, msg []byte) {
 ```
 
 `SubsMu` is an `RWMutex` so subscribe/unsubscribe (writers) don't
-fight with the snapshot read inside `Broadcast`. Nothing serialises
-two concurrent `Broadcast` calls on the same channel.
+fight with the snapshot read inside `Broadcast`, and it is released
+before the first `Send`. Nothing serialises two concurrent `Broadcast`
+calls on the same channel. The only lock a send takes is the
+receiving connection's own `sendMu` in `Conn.Send`
+(`internal/conn/handler.go`), held just for the policy's non-blocking
+enqueue; under `PolicyDisconnect` a full buffer returns
+`ErrSlowConsumer` at once and signals that connection to close with
+1008 (§9).
 
 **What ordering survives.** Every `Send` pushes onto that
 subscriber's buffered `chan []byte`, and Go guarantees chan-send
@@ -164,11 +170,13 @@ authoritative user-visible statement.
 
 **Why the lock was removed.** Early versions held a per-channel
 broadcast mutex for the whole send loop, which upgraded the guarantee
-to channel-wide total ordering. It was removed in commit `22fd26d`.
-The reason given there, and still in the comment on `hub.Broadcast`,
-is that a stalled subscriber could pin a `Send` for up to the 10 s
-write deadline and, with the lock held, freeze the channel. That was
-never the mechanism: `Send` does not wait on the peer.
+to channel-wide total ordering. That lock (`BroadcastMu`) was removed in commit `22fd26d`; the
+`SubsMu.RLock` snapshot and the send loop were already there and are
+unchanged. The commit message's stated reason is that a stalled
+subscriber could pin a `Send` for up to the 10 s write deadline and,
+with the lock held, freeze the channel. That was never the mechanism
+(the comment on `hub.Broadcast` was corrected in `0db27fc`): `Send`
+does not wait on the peer.
 `PolicyDisconnect.Apply` is a non-blocking select (it already was at
 `22fd26d`), and the write deadline applies only inside the
 subscriber's own `writePump`. A stalled subscriber fills its own send
