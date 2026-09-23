@@ -133,6 +133,29 @@ describe("subscribe / events / unsubscribe", () => {
     c.close();
   });
 
+  it("rejects a channel name over 128 UTF-8 bytes without sending a frame", async () => {
+    // The server omits "channel" from errors about such names (it cannot be
+    // a real channel), so the client could not match the refusal to the
+    // pending subscribe. It refuses them locally instead.
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h);
+    await c.connect();
+    const before = h.current.sent.length;
+    const tooLong = "€".repeat(43); // 43 x 3 bytes = 129 bytes, 43 chars
+    const err = await c.subscribe(tooLong).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WirefanError);
+    expect((err as WirefanError).code).toBe("BAD_CHANNEL");
+    expect(() => c.publish("x".repeat(129), 1)).toThrow(WirefanError);
+    expect(h.current.sent.length).toBe(before);
+
+    const ok = c.subscribe("x".repeat(128));
+    await until(() => h.current.sent.length > before);
+    h.current.serverSend({ type: "subscribed", channel: "x".repeat(128) });
+    await ok;
+    c.close();
+  });
+
   it("events for unsubscribed channels are ignored", async () => {
     const h = new FakeWSHarness();
     h.onDial = (ws) => autoAccept(ws, "S");
