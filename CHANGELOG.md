@@ -14,7 +14,7 @@ exactly what that covers.
 1.0.0 is the stability release. The wire protocol (`v1`), the HTTP API,
 the command-line flags, the environment variables, the metric names and the
 on-disk key database are now covered by Semantic Versioning, as listed in
-[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md). Getting there meant a
+[`docs/COMPATIBILITY.md`](https://github.com/EthanY33/wirefan/blob/v1.0.0/docs/COMPATIBILITY.md). Getting there meant a
 release pipeline, a client library, an operations story, and an audit of
 the whole codebase that found and fixed two serious bugs before they could
 reach a 1.x user: healthy idle connections were dropped every 60 seconds,
@@ -48,10 +48,15 @@ private channel.
   fanout copies it. Events, acks and errors are now encoded without HTML
   escaping, and an error frame no longer echoes a channel name too long to
   be valid.
+- A publish whose payload was not valid UTF-8 was relayed inside text
+  frames, which RFC 6455 requires browsers to treat as fatal, so one such
+  publish from a non-browser client disconnected every browser on the
+  channel. Frames that are not valid UTF-8 now get `BAD_JSON` and are not
+  relayed.
 - The per-IP connection cap counts an IPv6 client by its /64 prefix, so
   rotating addresses within one allocation no longer avoids it.
-- Go toolchain 1.26.8, which fixes six standard-library vulnerabilities
-  reachable from wirefan. Removing the OpenTelemetry hook (see Removed)
+- Go toolchain 1.26.8, which fixes standard-library vulnerabilities that
+  `govulncheck` reported as reachable from wirefan on 1.26.5. Removing the OpenTelemetry hook (see Removed)
   drops gRPC and with it the last reachable advisory. CI now runs
   `govulncheck` on every change.
 
@@ -126,7 +131,10 @@ private channel.
   seconds per unresponsive peer, well past the 30 second drain window.
   Connections are now closed concurrently and force-closed when the window
   ends. A peer that stalls in the middle of a frame can no longer wedge a
-  close handshake and keep its socket open.
+  close handshake and keep its socket open. New connections are refused
+  once shutdown starts (`/v1/connect` answers 503), so clients that redial
+  right after the 1001 no longer hold every shutdown open for the full 30
+  seconds.
 - A subscribe that raced the channel sweeper could fail with
   `SUBSCRIBE_FAILED`; channels are now removed from the registry in the
   same step that marks them deleted.
