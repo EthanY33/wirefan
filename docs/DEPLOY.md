@@ -52,7 +52,11 @@ Three facts the whole runbook leans on:
   above), amd64 or arm64, public IPv4, SSH key auth. Examples that fit:
   Hetzner CX22,
   DigitalOcean Basic Droplet, Oracle Always Free A1, Lightsail 1 GB,
-  Vultr Cloud Compute.
+  Vultr Cloud Compute, Google Cloud e2-micro (the live demo runs on one).
+  On the e2-micro, Google's free tier covers one instance in `us-west1`,
+  `us-central1` or `us-east1` with a **Standard** persistent disk of up to
+  30 GB; the console's default "Balanced" disk is billed. The demo box
+  also carries a 1 GB swap file as headroom next to its 1 GB of RAM.
 - **A domain** (or a subdomain on one you own). Caddy gets a free
   Let's Encrypt certificate for it automatically; no cert purchase.
 

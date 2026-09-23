@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="https://wirefan.ethanyucetepe.dev/?key=01M37HTPXNY8VGT3ZJP1ENRPEA"><strong>Live demo</strong></a> &nbsp;&middot;&nbsp;
   <a href="#install">Install</a> &nbsp;&middot;&nbsp;
   <a href="#quickstart">Quickstart</a> &nbsp;&middot;&nbsp;
   <a href="#how-it-works">How it works</a> &nbsp;&middot;&nbsp;
@@ -41,6 +42,11 @@ UI, or several transports.
 
 <p align="center">
   <img src="docs/demo.gif" alt="Two browser tabs exchanging messages through wirefan, with live server stats" width="100%">
+</p>
+
+<p align="center">
+  Try it live at <a href="https://wirefan.ethanyucetepe.dev/?key=01M37HTPXNY8VGT3ZJP1ENRPEA">wirefan.ethanyucetepe.dev</a>
+  (open it in two tabs).
 </p>
 
 ## Install
@@ -269,7 +275,8 @@ and metrics. Upgrades go through `deploy/deploy.sh`, which verifies the new
 binary against `SHA256SUMS`, keeps the previous binary and database, and puts
 them back if the health check fails. Appendices cover Docker, a Cloudflare
 Tunnel for machines without a public IP, and running behind Cloudflare's
-proxy.
+proxy. The [live demo](https://wirefan.ethanyucetepe.dev/?key=01M37HTPXNY8VGT3ZJP1ENRPEA)
+runs exactly this setup on a Google Cloud e2-micro (2 shared vCPUs, 1 GB RAM).
 
 <details>
 <summary><b>How a release is built</b></summary>

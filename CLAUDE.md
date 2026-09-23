@@ -1,6 +1,6 @@
 # wirefan
 
-Single-binary Go WebSocket fanout server: channel pub/sub, HMAC-signed subscribe tokens. Targets a single small Ubuntu 24.04 VPS from any provider. Repo: https://github.com/EthanY33/wirefan. Demo: TBD post-deploy.
+Single-binary Go WebSocket fanout server: channel pub/sub, HMAC-signed subscribe tokens. Targets a single small Ubuntu 24.04 VPS from any provider. Repo: https://github.com/EthanY33/wirefan. Demo: https://wirefan.ethanyucetepe.dev/?key=01M37HTPXNY8VGT3ZJP1ENRPEA (GCP e2-micro in project `wirefan-demo-ey`, us-east1-b; SSH `ethan@` with `~/.ssh/wirefan_vps`; upgrade with `deploy/deploy.sh`).
 
 ## Build / test
 CGO is required for a working binary (the default SQLite store) and for the full test suite, not just `-race` (`internal/store/sqlite.go` uses `mattn/go-sqlite3`); with `CGO_ENABLED=0` the build succeeds but the SQLite store fails at startup. Go (`C:\Program Files\Go\bin`) and mingw gcc (WinLibs) are often not on PATH in spawned shells; prepend at session start:
