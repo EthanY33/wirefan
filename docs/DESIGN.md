@@ -318,25 +318,29 @@ both listeners and closes the fanout:
 ```go
 // internal/server/server.go
 s.health.SetDraining(true)
-shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-defer cancel()
-s.hub.Drain(shutdownCtx, 30*time.Second)
+s.hub.Drain(context.Background(), s.drainGrace) // 30 s
 if s.adminSrv != nil {
-    _ = s.adminSrv.Shutdown(shutdownCtx)
+    _ = s.shutdownListener(s.adminSrv) // its own 5 s budget
 }
-err := s.srv.Shutdown(shutdownCtx)
+err := s.shutdownListener(s.srv)
 if s.fan != nil {
     _ = s.fan.Close()
 }
 return err
 ```
 
+Each listener gets its own 5 s budget after the drain, and running out
+of it closes whatever HTTP connections remain instead of failing: when
+the drain and the listeners shared one 30 s context, a drain that used
+the whole window left `Shutdown` an expired context, `Run` returned
+`context.DeadlineExceeded`, and `main` exited 1 on an ordinary stop
+(`TestRunShutdownIsBoundedAndNotFatal`).
+
 The fanout closes last because a conn that `Drain` force-closed can
 still be inside a publish until its pumps exit. Closing the
 `ShardedPool` earlier would let that publish land in a pool whose
 `Broadcast` is a silent no-op after `Close`, while the publish is
-still counted. `Drain` and both `Shutdown` calls share the one
-30 s context.
+still counted.
 
 **Key revocation.** `Hub.CloseKey(keyID, code, reason)` closes every
 tracked conn opened with `keyID`, each handshake in its own goroutine
