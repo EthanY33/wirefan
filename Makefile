@@ -45,7 +45,7 @@ bench: loadtest bench-image
 	bash scripts/bench.sh
 
 # Linux release binaries (amd64 + arm64) + SHA256SUMS into dist/, built
-# inside golang:1.26-bookworm. CGO is required (mattn/go-sqlite3), so the
+# inside golang:1.26.8-bookworm. CGO is required (mattn/go-sqlite3), so the
 # arm64 build uses the gcc-aarch64-linux-gnu cross compiler. Bookworm's
 # glibc (2.36) is older than Ubuntu 24.04's (2.39), so these binaries run
 # on Ubuntu 24.04 targets. CI (.github/workflows/release.yml) builds the
@@ -60,7 +60,7 @@ bench: loadtest bench-image
 # Direct: see the docker run command below; works from Git Bash on Windows
 # (MSYS_NO_PATHCONV=1 may be needed for the volume mount).
 release-local:
-	docker run --rm -v "$(CURDIR)":/src -w /src golang:1.26-bookworm bash -c '\
+	docker run --rm -v "$(CURDIR)":/src -w /src golang:1.26.8-bookworm bash -c '\
 		set -euo pipefail; \
 		git config --global --add safe.directory /src; \
 		apt-get update -qq && apt-get install -y -qq gcc gcc-aarch64-linux-gnu >/dev/null; \

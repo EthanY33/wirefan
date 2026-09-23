@@ -9,7 +9,7 @@
 # (uid 65532), which cannot write /var. The state dir (admin token + SQLite
 # db) therefore lives at /var/lib/wirefan, created below and owned by
 # nonroot, and exported via WIREFAN_STATE_DIR.
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.26.8-bookworm AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc6-dev \
