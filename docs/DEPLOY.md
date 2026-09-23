@@ -151,9 +151,10 @@ VER=v1.0.0    # the release tag you are deploying
 ARCH=amd64    # the SERVER's arch: amd64 if its `uname -m` prints x86_64, arm64 if aarch64
 ```
 
-**Option A: download from a GitHub release** (on the server). Releases
-exist from the first `v1.x` tag onward; until that tag is pushed these
-URLs return 404 and Option B is the path:
+**Option A: download from a GitHub release** (on the server). Binaries
+are attached from `v1.0.0` onward; the `v0.1.0` and `v0.2.0` releases
+carry none, so for those tags these URLs return 404 and Option B is the
+path:
 
 ```bash
 cd ~

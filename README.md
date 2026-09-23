@@ -46,8 +46,9 @@ UI, or several transports.
 ## Install
 
 Linux binaries for amd64 and arm64 are attached to every
-[release](https://github.com/EthanY33/wirefan/releases), next to a
-`SHA256SUMS` file. The release notes list the minimum glibc each binary
+[release](https://github.com/EthanY33/wirefan/releases) from v1.0.0 on,
+next to a `SHA256SUMS` file (the v0.1.0 and v0.2.0 releases carry no
+binaries). The release notes list the minimum glibc each binary
 needs.
 
 ```bash
