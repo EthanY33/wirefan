@@ -13,14 +13,25 @@ exactly what that covers.
 
 - The demo page at `/` leads with a live fanout diagram instead of a
   three-panel console. With `?key=` in the URL it connects and subscribes on
-  load; "Send a pulse" animates each publish from its sender into the hub and
-  out to every connected tab, and "Open a second tab" invites the two-tab
-  test. Peers are drawn from the `_wirefan-stats` connection count and the
-  `_from` field on events. Pulses are capped at 4 per second per tab and
-  nothing is published on a timer, since every visitor shares the demo key.
-  The socket id, endpoint, raw frames (tapped from the socket), server stats,
-  limits, custom publish and the capped stress button moved into a
-  collapsed "Under the hood" panel.
+  load, retrying a subscribe the shared key briefly refuses with jittered
+  backoff. "Send a pulse" animates each publish from its sender into the hub
+  and out to every tab confirmed on the channel; "Open a second tab" and
+  "Copy link" (the share sheet on touch devices) invite the two-tab test, and
+  a three-step line ends in "That was a fanout". Tabs in the same browser
+  find each other over BroadcastChannel with no publishes, other tabs are
+  placed by the `_from` of their pulses, and the rest of the server's
+  `_wirefan-stats` count is drawn dimmed as "counted by the server", never
+  as a delivery. Only validated pulses reach the first screen: any other
+  payload shows as "Custom message from ·XXXX", its text kept to the raw
+  frames. A key the server refuses gets its own message (one
+  `GET /v1/connect` after a failed first dial tells a 401 from the per-IP
+  cap, a restart or a server that is down). Pulses are capped at 4 per
+  second per tab and nothing is published on a timer, since every visitor
+  shares the demo key. The socket id, endpoint, raw frames with sizes and
+  close codes, the `@wirefan/client` calls the page made, server stats with
+  a publishes-per-second sparkline, limits and a custom publish form moved
+  into a tabbed "Under the hood" panel; the 50-socket stress button now
+  needs `&dev=1`.
 
 ## [1.0.0] - 2026-09-23
 
