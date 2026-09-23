@@ -1,10 +1,11 @@
 # wirefan benchmarks
 
-Every number in this document comes from a committed raw file under
+Every number in the result tables comes from a committed raw file under
 [`results/`](../results/). Each results row links the exact file it was read
-from. Nothing here is estimated, extrapolated, or rounded up. If a
-configuration is not in the tables, it did not produce a clean run and was
-not published.
+from. Nothing in the tables is estimated or extrapolated; values are rounded
+to the precision shown. The Environment table is different: the Docker, Go
+and host details in it were recorded by hand, and no raw file records them
+or the server's git commit.
 
 ## Environment
 
@@ -17,11 +18,25 @@ not published.
 | Store | `--store=memory` (hermetic; fresh state per cell) |
 | Per-IP cap | `WIREFAN_IP_CAP=20000` (all load-generator conns share one source IP) |
 
-The server is pinned to 1 CPU to model the smallest practical deployment
-target. The load generator runs on the same machine, so traffic crosses
-loopback plus the Docker Desktop port proxy. There is no real network RTT
-in any latency figure below; treat latencies as server-processing plus
-local-stack time, not as end-to-end WAN numbers.
+The server container is limited to 1 CPU of quota (`--cpus=1` sets a CFS
+quota; it does not pin the container to a core) to model the smallest
+practical deployment target. The load generator runs on the same machine,
+so traffic crosses loopback plus the Docker Desktop port proxy. There is no
+real network RTT in any latency figure below; treat latencies as
+server-processing plus local-stack time, not as end-to-end WAN numbers.
+
+These measurements predate 1.0: every raw file is dated 2026-08-06, and the
+server under test was the v0.2.0-era code, so no number here was measured
+on a 1.0 build. The 1.0 changes on the measured publish path are that event
+frames are now encoded by `marshalFrame` without HTML escaping (the load
+generator's `{"t":<unix ns>}` payload has no characters that were escaped,
+so its frames are byte-identical), that the per-connection publish limit is
+now checked before the per-key one (both still run on every accepted
+publish), and that `readPump` no longer creates a timeout context for each
+read; `hub.Broadcast` and both fanout implementations are unchanged. The Go
+toolchain changed too: `go.mod` named `toolchain go1.26.5` when these runs
+were made and now requires at least go1.26.8, so a 1.0 build has a newer
+compiler, runtime and standard library.
 
 ## Methodology
 
@@ -32,10 +47,12 @@ The matrix exercises the two flag-selectable axes:
 | `--fanout` | `per-conn` (default), `sharded` (worker pool sized to GOMAXPROCS) |
 | `--registry` | `sync-map` (default), `sharded` (16 shards, RWMutex+map) |
 
-Note on GOMAXPROCS: the Go runtime rounds the container's `--cpus` quota
-up, so the 1-vCPU container runs with GOMAXPROCS=2 (recorded as
-`GOMAXPROCS 2` in the [verification rep raw files](../results/)). Every
-`sharded` fanout cell therefore ran a 2-worker pool.
+Note on GOMAXPROCS: the Go runtime sets the default GOMAXPROCS to
+min(host CPUs, max(ceil(CPU quota), 2)). ceil(1) is 1, so it is the floor
+of 2, not rounding, that makes the 1-CPU container run with GOMAXPROCS=2
+(recorded as `GOMAXPROCS 2` in the
+[verification rep raw files](../results/)). Every `sharded` fanout cell
+therefore ran a 2-worker pool.
 
 Each cell:
 
@@ -48,8 +65,16 @@ Each cell:
 3. Opens N WebSocket clients over a ramp-up, distributed across K channels
    (10 subscribers per channel at every scale). Half of the connections
    publish at a fixed per-connection rate for 30 seconds.
-4. Repeats 3 times. The published row is the median-throughput repetition
-   and every figure in the row comes from that single repetition's raw file.
+4. Repeats 3 times. The published row is the median repetition by
+   delivered msg/s, and every figure in the row comes from that single
+   repetition's raw file. Delivered msg/s is a whole number, and in 10 of
+   the 13 cells two or three repetitions tie at the median. Those ties
+   were not broken by a finer measure such as the raw `recv` count: in
+   every tied cell the published row is the highest-numbered of the tied
+   repetitions. In four cells the published repetition is therefore not
+   the median by raw `recv`, by 2 to 4 messages: sharded/sharded at 100
+   connections, per-conn/sync-map and sharded/sharded at 1,000, and
+   sharded/sync-map at 5,000.
 
 A run only counts as clean if every connection dialed and subscribed,
 no publishing connection died before the duration elapsed, and the
@@ -59,11 +84,11 @@ ran, the mid-run survival check covered publishing connections only;
 the current harness also fails a run when a subscriber-only socket dies
 early, and the per-scale verification reps below ran with that check
 active (`died_early=0` in all four).
-Cells that aborted on a transient dial or subscribe failure were rerun in
-full; only fully clean 3-repetition cells appear here. Per-connection
-publish rates were chosen per scale so the aggregate offered load stays
-within what the 1-vCPU container sustains cleanly; probe runs above these
-rates failed that bar and are not published.
+Every published cell has all 3 repetitions, and each of the 39 raw files
+records `dial_failed=0 sub_failed=0 died_early=0 server_errors=0`.
+Per-connection publish rates differ by scale (see each table heading).
+Each cell ran clean at its rate; no higher-rate run is committed, so the
+tables do not show where a cell stops running clean.
 
 Three independent honesty checks back the tables:
 
@@ -108,8 +133,9 @@ it covers handoff to the worker pool, which is why it reads lower.
 ## Results
 
 Scales were stepped 100 to 1,000 to 5,000 connections; all three completed
-cleanly (5,000 was the largest scale attempted). 50% of connections
-publish. Median repetition of 3; each row links its raw file, which
+cleanly. No larger scale is in `results/`, so 5,000 is not a measured
+limit. 50% of connections publish. Median repetition of 3; each row links
+its raw file, which
 includes the exact docker invocation.
 
 ### 100 connections, 10 channels, 10 msg/s per publisher
@@ -145,9 +171,9 @@ includes the exact docker invocation.
 |---|---|---|---|---|---|---|
 | 74,982 | 707,039 | 23,568 | 1.06 ms | 6.68 ms | 20.5 us | [raw](../results/per-conn-sync-map-c500-rep3.txt) |
 
-23,568 delivered msg/s is the highest clean sustained rate measured on 1
-vCPU with this harness. It is load-bound at 10 subscribers per channel;
-different channel shapes will produce different ceilings.
+23,568 delivered msg/s is the highest delivered rate in the committed
+results (1 vCPU, this harness). It is load-bound at 10 subscribers per
+channel; different channel shapes will produce different ceilings.
 
 ## Reading the matrix
 
@@ -158,10 +184,11 @@ different channel shapes will produce different ceilings.
   here. They differentiate on where time is spent.
 - `sharded` fanout roughly halves the time the publisher spends in the
   broadcast call (7.0 to 14.1 us vs 16.9 to 25.4 us across the table
-  rows) because it hands the write
-  work to a worker pool instead of enqueueing every subscriber inline. On
-  a 1-CPU container that does not translate into more delivered
-  throughput; the same core still does the socket writes.
+  rows) because the publisher only queues the broadcast for a pool
+  worker, which then enqueues to every subscriber, instead of enqueueing
+  every subscriber inline. On a 1-CPU container that does not translate
+  into more delivered throughput; the same core still does the
+  enqueueing, and each conn's `writePump` still does the socket writes.
 - The registry axis is not visible at this channel-churn rate: channels are
   created once and then only read. A subscribe/unsubscribe-heavy workload
   would be needed to separate `sync-map` from `sharded`.
@@ -191,8 +218,12 @@ Raw protobuf profiles: [`results/per-conn-sync-map-c500-cpu.pb.gz`](../results/p
 ```
 go build -o bin/loadtest ./cmd/loadtest        # bin/loadtest.exe on Windows
 docker build -f deploy/Dockerfile -t wirefan:bench .
-bash scripts/bench.sh                          # full matrix at CONNS=1000
+bash scripts/bench.sh                          # defaults: CONNS=1000 CHANNELS=100 RATE=10, all four cells
 ```
+
+`make bench` runs the same three steps. The bare command's defaults are not
+a published cell (the published 1,000-connection rows used `RATE=3`), so
+use the per-scale invocations below to reproduce the tables.
 
 Per-scale invocations used for the tables above:
 
@@ -212,5 +243,5 @@ file; the drop-counter and GOMAXPROCS lines appear in files produced by
 the current harness, including the four `*-dropcheck-rep1.txt`
 verification files that cover every published scale.
 
-An ARM row (Ampere A1, the intended production target) may be added later;
-no ARM numbers exist yet.
+Release binaries are also built for linux/arm64, but no ARM numbers exist
+yet; an ARM row may be added later.
