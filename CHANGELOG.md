@@ -9,7 +9,7 @@ exactly what that covers.
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-09-22
+## [1.0.0] - 2026-09-23
 
 1.0.0 is the stability release. The wire protocol (`v1`), the HTTP API,
 the command-line flags, the environment variables, the metric names and the
