@@ -106,6 +106,19 @@ const DEFAULT_RECONNECT = {
 function needsToken(channel) {
     return channel.startsWith("private-") || channel.startsWith("presence-");
 }
+/**
+ * Longest channel name the server accepts, in UTF-8 bytes. The server leaves
+ * "channel" out of errors about longer names (they cannot be real channels),
+ * so a refusal could not be matched to its request; the client refuses them
+ * before sending instead.
+ */
+const MAX_CHANNEL_BYTES = 128;
+const utf8Encoder = new TextEncoder();
+function checkChannelLength(op, channel) {
+    if (utf8Encoder.encode(channel).length > MAX_CHANNEL_BYTES) {
+        throw new WirefanError("BAD_CHANNEL", `channel name exceeds ${MAX_CHANNEL_BYTES} bytes`, { op, channel });
+    }
+}
 function buildUrl(raw, key) {
     let url = raw;
     if (url.startsWith("https://"))
@@ -267,6 +280,7 @@ export class WirefanClient {
         if (__classPrivateFieldGet(this, _WirefanClient_state, "f") !== "connected") {
             throw new ConnectionClosedError(`cannot subscribe while ${__classPrivateFieldGet(this, _WirefanClient_state, "f")}; await connect() first`);
         }
+        checkChannelLength("subscribe", channel);
         if (needsToken(channel) && !__classPrivateFieldGet(this, _WirefanClient_authorize, "f")) {
             throw new ConfigurationError(`channel "${channel}" requires a token: pass an authorize() callback in WirefanClientOptions`);
         }
@@ -365,6 +379,7 @@ export class WirefanClient {
         if (__classPrivateFieldGet(this, _WirefanClient_state, "f") !== "connected" || !__classPrivateFieldGet(this, _WirefanClient_ws, "f") || __classPrivateFieldGet(this, _WirefanClient_ws, "f").readyState !== WS_OPEN) {
             throw new ConnectionClosedError(`cannot publish while ${__classPrivateFieldGet(this, _WirefanClient_state, "f")}`);
         }
+        checkChannelLength("publish", channel);
         __classPrivateFieldGet(this, _WirefanClient_ws, "f").send(JSON.stringify({ type: "publish", channel, data }));
     }
 }

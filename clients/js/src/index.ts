@@ -50,7 +50,8 @@ export interface ErrorFrame {
   op?: "subscribe" | "unsubscribe" | "publish" | (string & {});
   /**
    * The channel exactly as the client sent it in that frame. Optional:
-   * omitted by older servers and when the frame had none.
+   * omitted by older servers, when the frame had none, and when the name was
+   * longer than 128 bytes (which this client refuses before sending).
    */
   channel?: string;
 }
@@ -359,6 +360,25 @@ const DEFAULT_RECONNECT: Required<ReconnectOptions> = {
 
 function needsToken(channel: string): boolean {
   return channel.startsWith("private-") || channel.startsWith("presence-");
+}
+
+/**
+ * Longest channel name the server accepts, in UTF-8 bytes. The server leaves
+ * "channel" out of errors about longer names (they cannot be real channels),
+ * so a refusal could not be matched to its request; the client refuses them
+ * before sending instead.
+ */
+const MAX_CHANNEL_BYTES = 128;
+const utf8Encoder = new TextEncoder();
+
+function checkChannelLength(op: "subscribe" | "publish", channel: string): void {
+  if (utf8Encoder.encode(channel).length > MAX_CHANNEL_BYTES) {
+    throw new WirefanError(
+      "BAD_CHANNEL",
+      `channel name exceeds ${MAX_CHANNEL_BYTES} bytes`,
+      { op, channel },
+    );
+  }
 }
 
 function buildUrl(raw: string, key: string): string {
@@ -942,6 +962,7 @@ export class WirefanClient {
         `cannot subscribe while ${this.#state}; await connect() first`,
       );
     }
+    checkChannelLength("subscribe", channel);
     if (needsToken(channel) && !this.#authorize) {
       throw new ConfigurationError(
         `channel "${channel}" requires a token: pass an authorize() callback in WirefanClientOptions`,
@@ -1043,6 +1064,7 @@ export class WirefanClient {
         `cannot publish while ${this.#state}`,
       );
     }
+    checkChannelLength("publish", channel);
     this.#ws.send(JSON.stringify({ type: "publish", channel, data }));
   }
 

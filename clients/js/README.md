@@ -23,7 +23,7 @@ import { WirefanClient } from "@wirefan/client";
 
 const client = new WirefanClient({
   url: "wss://relay.example.com",   // path defaults to /v1/connect
-  key: "01K...",                    // API key id from POST /v1/keys
+  key: "01...",                    // API key id from POST /v1/keys
 });
 
 await client.connect();
@@ -60,7 +60,7 @@ Subscribing to `private-*` or `presence-*` requires a token your app server obta
 ```js
 const client = new WirefanClient({
   url: "wss://relay.example.com",
-  key: "01K...",
+  key: "01...",
   authorize: async ({ socketId, channel }) => {
     const res = await fetch("/my-backend/wirefan-auth", {
       method: "POST",
@@ -95,7 +95,7 @@ Failures are typed: `WirefanError` (a server `error` frame; `.code` carries the 
 
 Error routing depends on the server:
 
-- Servers that name the frame an error answers (the optional `op` and `channel` fields on `error` frames) are routed exactly: the error settles the pending `subscribe` or `unsubscribe` for that channel, and anything else (every publish rejection, or an operation that is no longer pending) goes to the `error` event. `WirefanError.op` and `WirefanError.channel` carry those fields, so you can tell which publish was refused.
+- Servers that name the frame an error answers (the optional `op` and `channel` fields on `error` frames) are routed exactly: the error settles the pending `subscribe` or `unsubscribe` for that channel, and anything else (every publish rejection, or an operation that is no longer pending) goes to the `error` event. `WirefanError.op` and `WirefanError.channel` carry those fields, so you can tell which publish was refused. Channel names longer than 128 UTF-8 bytes are refused before anything is sent: `subscribe()` rejects and `publish()` throws a `WirefanError` with code `BAD_CHANNEL`, because the server leaves such names out of its error frames.
 - Older servers send neither field. The client then falls back to attributing subscribe-class codes to the oldest in-flight subscribe; with many concurrent subscribes racing publishes, that attribution is heuristic (see `SUBSCRIBE_ERROR_CODES` in `src/index.ts`), and an unsubscribe the server refuses waits for its ack timeout.
 
 Two consequences worth knowing:
