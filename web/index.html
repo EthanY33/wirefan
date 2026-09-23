@@ -4,129 +4,234 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>wirefan live demo</title>
+  <meta name="description" content="Live demo of wirefan, a WebSocket fanout server in one Go binary. Send a pulse and watch it reach every open tab.">
+  <meta name="theme-color" content="#000000">
   <link rel="icon" type="image/svg+xml" href="/mark.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400..700&display=swap">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="masthead">
-    <div class="masthead-row">
+  <a class="skip" href="#main">Skip to the demo</a>
+
+  <header class="topbar">
+    <div class="topbar-in">
       <div class="brand">
-        <img class="brand-mark" src="/mark.svg" alt="" width="28" height="28">
+        <img class="brand-mark" src="/mark.svg" alt="" width="30" height="30">
         <span class="brand-name">wirefan</span>
-        <span class="brand-sub">/ a small WebSocket fanout server</span>
+        <span class="brand-tag">WebSocket fanout in one Go binary</span>
       </div>
-      <span class="peer-badge" id="peerBadge">
-        this tab <span id="peerBadgeId"></span>
-      </span>
-      <div class="masthead-meta">
-        <span class="meta-pill"><a href="https://github.com/EthanY33/wirefan">source &rarr;</a></span>
+      <div class="topbar-right">
+        <span class="status" id="status" data-state="idle" role="status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="statusText">Offline</span>
+        </span>
+        <a class="toplink" href="https://github.com/EthanY33/wirefan">
+          Source
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M5 11 11 5M6 5h5v5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
       </div>
-    </div>
-    <div class="masthead-rule"></div>
-    <div class="masthead-row tagline-row">
-      <p class="tagline">
-        Single-binary Go relay. Publish to a channel from one tab,
-        watch it arrive in another. Open this page in
-        <strong>two tabs</strong> to see the fanout.
-      </p>
-      <p class="tagline-arrow" aria-hidden="true">&larr; open in two tabs</p>
     </div>
   </header>
 
-  <main class="grid">
-    <!-- Connection panel -->
-    <section class="panel panel-conn" aria-labelledby="conn-h">
-      <div class="panel-head">
-        <span class="panel-num">01</span>
-        <h2 id="conn-h" class="panel-title">Connection</h2>
-        <span class="panel-status" id="status-pill" data-state="idle">idle</span>
+  <main id="main" class="hero">
+    <section class="intro" aria-labelledby="hero-h">
+      <p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>Live demo on a real server</p>
+      <h1 id="hero-h"><span class="h1-line">Send once.</span> <span class="h1-line">Every tab gets it.</span></h1>
+      <p class="lede">
+        This page keeps a WebSocket open to a wirefan server. Send a pulse and
+        it travels into the hub, which copies it to every tab connected right
+        now, including other people looking at this page.
+      </p>
+    </section>
+
+    <section class="stage" id="stage" aria-labelledby="stage-h">
+      <h2 id="stage-h" class="visually-hidden">Live fanout diagram</h2>
+      <div class="stage-top">
+        <span class="stage-chip"><span class="stage-live" aria-hidden="true"></span>channel <b id="stageChannel">demo</b></span>
+        <span class="stage-note" id="stageCount">waiting for server stats</span>
       </div>
-      <div class="panel-body">
-        <label class="field">
-          <span class="field-label">api key</span>
-          <input type="text" id="apiKey" autocomplete="off" spellcheck="false"
-                 placeholder="paste a key, or pass ?key= in URL">
-        </label>
-        <div class="row">
-          <button id="btnConnect" class="btn btn-primary" type="button">connect</button>
-          <button id="btnDisconnect" class="btn btn-ghost" type="button" disabled>disconnect</button>
-        </div>
-        <dl class="kv">
-          <dt>socket_id</dt><dd id="socketId" class="mono">&ndash;</dd>
-          <dt>endpoint</dt><dd id="wsEndpoint" class="mono">&ndash;</dd>
-          <dt>subscribed</dt><dd id="subList" class="mono">&ndash;</dd>
-        </dl>
+      <svg id="wire" class="wire-svg" role="img" aria-labelledby="wire-title wire-desc" focusable="false">
+        <title id="wire-title">Fanout diagram</title>
+        <desc id="wire-desc">This tab is wired to the wirefan hub.</desc>
+      </svg>
+      <div class="stage-overlay" id="stageOverlay" hidden>
+        <p class="overlay-title" id="overlayTitle">Connecting</p>
+        <p class="overlay-body" id="overlayBody"></p>
+        <button class="btn btn-secondary btn-sm" id="overlayAction" type="button" hidden>Reconnect</button>
+      </div>
+      <p class="stage-legend" aria-hidden="true">
+        <span class="lg-item"><span class="lg lg-me"></span>this tab</span>
+        <span class="lg-item"><span class="lg lg-peer"></span>another connection</span>
+        <span class="lg-item"><span class="lg lg-slot"></span>open slot</span>
+      </p>
+      <p class="stage-last" id="stageLast" aria-hidden="true"></p>
+    </section>
+
+    <section class="actions" aria-label="Try it">
+      <div class="action-row">
+        <button id="btnPulse" class="btn btn-primary btn-lg" type="button" aria-describedby="hint" disabled>
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+            <path d="M2 10h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M7 10c4 0 5-5 9-5M7 10h9M7 10c4 0 5 5 9 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <circle cx="7" cy="10" r="2.2" fill="currentColor"/>
+          </svg>
+          Send a pulse
+        </button>
+        <a id="btnTab" class="btn btn-secondary btn-lg" href="" target="_blank" rel="noopener">
+          Open a second tab
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5 11 11 5M6 5h5v5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+      </div>
+      <div class="say">
+        <p class="hint" id="hint">Connecting to the server&hellip;</p>
+        <p class="notice" id="notice" role="status" aria-live="polite"></p>
       </div>
     </section>
 
-    <!-- Messages panel -->
-    <section class="panel panel-msg" aria-labelledby="msg-h">
-      <div class="panel-head">
-        <span class="panel-num">02</span>
-        <h2 id="msg-h" class="panel-title">Messages</h2>
-        <span class="panel-status mono" id="msgCount">0 received</span>
+    <dl class="stats" aria-label="Live numbers">
+      <div class="stat">
+        <dt>Connections</dt>
+        <dd id="statConns">&ndash;</dd>
       </div>
-      <div class="panel-body">
-        <div class="row">
-          <label class="field grow">
-            <span class="field-label">channel</span>
-            <input type="text" id="channelName" value="demo" autocomplete="off" spellcheck="false">
-          </label>
-          <button id="btnSubscribe" class="btn btn-ghost" type="button" disabled>subscribe</button>
-        </div>
-        <label class="field">
-          <span class="field-label">payload <span class="dim">(_from added automatically)</span></span>
-          <textarea id="msgBody" rows="3" spellcheck="false">{"hello":"world"}</textarea>
-        </label>
-        <div class="row">
-          <button id="btnPublish" class="btn btn-primary" type="button" disabled>publish</button>
-          <button id="btnStress" class="btn btn-warn" type="button" disabled>
-            stress: open 50 phantom conns
-          </button>
-          <span id="stressStatus" class="mono dim">&ndash;</span>
-        </div>
-        <div class="log" id="log" aria-live="polite">
-          <div class="log-empty">no frames yet. subscribe and publish to see a fanout.</div>
-        </div>
+      <div class="stat">
+        <dt>Msgs / sec</dt>
+        <dd id="statRate">0</dd>
+      </div>
+      <div class="stat">
+        <dt>Received</dt>
+        <dd id="statRecv">0</dd>
+      </div>
+      <div class="stat">
+        <dt>Round trip</dt>
+        <dd id="statRtt">&ndash;</dd>
+      </div>
+    </dl>
+
+    <section class="feed" aria-labelledby="feed-h">
+      <div class="feed-inner">
+        <h2 id="feed-h" class="section-label">Arrivals on this tab</h2>
+        <ol class="feed-list" id="feed">
+          <li class="feed-empty">Nothing yet. Send a pulse, or open a second tab and send one from there.</li>
+        </ol>
       </div>
     </section>
-
-    <!-- Stats panel -->
-    <aside class="panel panel-stats" aria-labelledby="stats-h">
-      <div class="panel-head">
-        <span class="panel-num">03</span>
-        <h2 id="stats-h" class="panel-title">Live stats</h2>
-        <span class="panel-status mono" id="statsAge">&ndash;</span>
-      </div>
-      <div class="panel-body">
-        <p class="caption" id="statsCaption">published to the <span class="mono">_wirefan-stats</span> system channel.</p>
-        <div class="stats-grid" id="statsGrid">
-          <div class="stat">
-            <div class="stat-label">connections</div>
-            <div class="stat-value mono" data-stat="connections">&ndash;</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">channels</div>
-            <div class="stat-value mono" data-stat="channels">&ndash;</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">published</div>
-            <div class="stat-value mono" data-stat="published">&ndash;</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">dropped</div>
-            <div class="stat-value mono" data-stat="dropped">&ndash;</div>
-          </div>
-        </div>
-        <pre class="raw" id="statsRaw">awaiting first snapshot&hellip;</pre>
-      </div>
-    </aside>
   </main>
 
+  <p class="visually-hidden" id="announcer" aria-live="polite"></p>
+
+  <div class="hood-wrap">
+    <details class="hood" id="hood">
+      <summary>
+        <span class="hood-head">
+          <span class="hood-title">Under the hood</span>
+          <span class="hood-sub">socket, raw frames, server stats, limits</span>
+        </span>
+        <svg class="hood-chev" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </summary>
+
+      <div class="hood-grid">
+        <section class="card card-conn" aria-labelledby="conn-h">
+          <h3 id="conn-h" class="card-title">Connection</h3>
+          <dl class="kv">
+            <dt>state</dt><dd id="kvState" class="mono">idle</dd>
+            <dt>socket_id</dt><dd id="kvSocket" class="mono">&ndash;</dd>
+            <dt>endpoint</dt><dd id="kvEndpoint" class="mono">&ndash;</dd>
+            <dt>protocol</dt><dd id="kvProto" class="mono">&ndash;</dd>
+            <dt>subscribed</dt><dd id="kvSubs" class="mono">&ndash;</dd>
+            <dt>reconnects</dt><dd id="kvReconnects" class="mono">0</dd>
+          </dl>
+          <form class="keyform" id="keyForm" autocomplete="off">
+            <label class="field">
+              <span class="field-label">API key id</span>
+              <input type="text" id="apiKey" spellcheck="false" placeholder="01... from POST /v1/keys">
+            </label>
+            <div class="row">
+              <button id="btnConnect" class="btn btn-secondary btn-sm" type="submit">Connect</button>
+              <button id="btnDisconnect" class="btn btn-ghost btn-sm" type="button" disabled>Disconnect</button>
+            </div>
+            <p class="small dim">The key id is public (it travels in the page URL). The key secret never reaches a browser.</p>
+          </form>
+        </section>
+
+        <section class="card card-frames" aria-labelledby="frames-h">
+          <div class="card-head">
+            <h3 id="frames-h" class="card-title">Raw frames</h3>
+            <label class="check">
+              <input type="checkbox" id="showStats">
+              <span>show <span class="mono">_wirefan-stats</span></span>
+            </label>
+            <button class="btn btn-ghost btn-xs" id="btnClearFrames" type="button">Clear</button>
+          </div>
+          <p class="small dim">Tapped from the socket itself: every JSON frame this tab sends (out) and receives (in), newest first.</p>
+          <ol class="frames" id="frames">
+            <li class="frames-empty">No frames yet.</li>
+          </ol>
+        </section>
+
+        <section class="card card-publish" aria-labelledby="pub-h">
+          <h3 id="pub-h" class="card-title">Publish a custom payload</h3>
+          <form id="pubForm" autocomplete="off">
+            <label class="field">
+              <span class="field-label">data (JSON, or plain text) to <span class="mono" id="pubChannel">demo</span></span>
+              <textarea id="pubBody" rows="3" spellcheck="false">{"hello":"world"}</textarea>
+            </label>
+            <div class="row">
+              <button id="btnPublish" class="btn btn-secondary btn-sm" type="submit" disabled>Publish</button>
+              <span class="small dim">Object payloads get a <span class="mono">_from</span> field with this socket_id, which is how other tabs place the sender.</span>
+            </div>
+          </form>
+          <p class="small dim">Want a quiet room? Add <span class="mono">&amp;channel=any-name</span> to the URL and share that link.</p>
+        </section>
+
+        <section class="card card-stats" aria-labelledby="stats-h">
+          <div class="card-head">
+            <h3 id="stats-h" class="card-title">Server stats</h3>
+            <span class="small dim mono" id="statsAge">&ndash;</span>
+          </div>
+          <p class="small dim" id="statsCaption">Broadcast every 5 s on the read-only <span class="mono">_wirefan-stats</span> system channel. Counts cover the whole server, every key.</p>
+          <div class="tiles" id="statsGrid">
+            <div class="tile"><span class="tile-label">connections</span><span class="tile-value mono" data-stat="connections">&ndash;</span></div>
+            <div class="tile"><span class="tile-label">channels</span><span class="tile-value mono" data-stat="channels">&ndash;</span></div>
+            <div class="tile"><span class="tile-label">published</span><span class="tile-value mono" data-stat="published">&ndash;</span></div>
+            <div class="tile"><span class="tile-label">dropped</span><span class="tile-value mono" data-stat="dropped">&ndash;</span></div>
+            <div class="tile tile-wide"><span class="tile-label">publishes / s, server-wide</span><span class="tile-value mono" id="serverRate">&ndash;</span></div>
+          </div>
+          <pre class="raw" id="statsRaw">awaiting first snapshot</pre>
+        </section>
+
+        <section class="card card-limits" aria-labelledby="limits-h">
+          <h3 id="limits-h" class="card-title">Limits</h3>
+          <table class="limits">
+            <caption class="visually-hidden">Rate limits and caps</caption>
+            <tbody>
+              <tr><th scope="row">Per API key, shared by every visitor</th><td class="mono">100 / s, burst 200</td></tr>
+              <tr><th scope="row">Publish, per connection</th><td class="mono">50 / s, burst 100</td></tr>
+              <tr><th scope="row">Subscribe + unsubscribe, per connection</th><td class="mono">20 / s, burst 64</td></tr>
+              <tr><th scope="row">Connections per source IP</th><td class="mono">200</td></tr>
+              <tr><th scope="row">This page</th><td class="mono">4 pulses / s per tab, never on a timer</td></tr>
+            </tbody>
+          </table>
+          <div class="stress">
+            <button id="btnStress" class="btn btn-ghost btn-sm" type="button" disabled>Open 50 idle sockets for 10 s</button>
+            <span class="small dim mono" id="stressStatus"></span>
+          </div>
+          <p class="small dim">Raw WebSockets with no subscriptions: they only raise the connection count, for every viewer, until they close.</p>
+        </section>
+      </div>
+    </details>
+  </div>
+
   <footer class="footer">
-    <div class="footer-row">
-      <span class="mono">built on <a href="https://github.com/EthanY33/wirefan/tree/main/clients/js">@wirefan/client</a> (vendored, no bundler). <a href="/client.js">view source &rarr;</a></span>
-      <span class="mono dim">a portfolio piece by ethan</span>
+    <div class="footer-in">
+      <span>Built by Ethan Yucetepe.</span>
+      <nav class="footer-links" aria-label="Project links">
+        <a href="https://github.com/EthanY33/wirefan">Source on GitHub</a>
+        <a href="https://github.com/EthanY33/wirefan/blob/main/docs/PROTOCOL.md">Wire protocol</a>
+        <a href="https://github.com/EthanY33/wirefan/tree/main/clients/js">JS client</a>
+        <a href="/client.js">This page's code</a>
+      </nav>
     </div>
   </footer>
 
