@@ -168,3 +168,38 @@ func TestDrainGraceBoundsWait(t *testing.T) {
 		t.Error("conn was not force-closed at the end of grace")
 	}
 }
+
+// TestAddRefusedWhileDraining: a conn that reaches Add after Drain has taken
+// its snapshot was never sent a GoingAway, so it would hold Drain open until
+// the grace ran out and then be force-closed. Clients reconnect within a
+// second of a GoingAway, so without this every shutdown took the full grace.
+// Drain must bar Add in the same critical section as its snapshot.
+func TestAddRefusedWhileDraining(t *testing.T) {
+	h := New()
+	stuck := newStuckConn(h)
+	done := make(chan struct{})
+	go func() {
+		h.Drain(context.Background(), 2*time.Second)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for stuck.frames.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	late := &stuckConn{h: h, key: "key", forced: make(chan struct{})}
+	ce, ok := h.Add(late)
+	if ok {
+		t.Fatal("Add tracked a conn while Drain was running")
+	}
+	if ce.Code != websocket.StatusGoingAway {
+		t.Fatalf("want 1001 for a conn refused during drain, got %d %q", ce.Code, ce.Reason)
+	}
+
+	stuck.CloseNow()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Drain did not return once its only conn deregistered")
+	}
+}

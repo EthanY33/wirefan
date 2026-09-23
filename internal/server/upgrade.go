@@ -89,6 +89,9 @@ type UpgradeDeps struct {
 	RateLimit      *ratelimit.Limiter
 	Policy         conn.Policy
 	Hub            *hub.Hub
+	// Draining reports whether shutdown has started; nil means never. While
+	// it is true, upgrades get a 503 before any other check.
+	Draining func() bool
 }
 
 type UpgradeHandler struct {
@@ -246,6 +249,11 @@ func clientIP(r *http.Request, trustedProxies []netip.Prefix) string {
 }
 
 func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Draining != nil && h.deps.Draining() {
+		metrics.UpgradeRej.WithLabelValues("draining").Inc()
+		http.Error(w, "draining", http.StatusServiceUnavailable)
+		return
+	}
 	keyID := r.URL.Query().Get("key")
 	if keyID == "" {
 		metrics.UpgradeRej.WithLabelValues("bad_key").Inc()

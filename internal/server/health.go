@@ -13,6 +13,9 @@ func NewHealthHandler() *HealthHandler { return &HealthHandler{} }
 
 func (h *HealthHandler) SetDraining(d bool) { h.draining.Store(d) }
 
+// Draining reports whether SetDraining(true) has been called.
+func (h *HealthHandler) Draining() bool { return h.draining.Load() }
+
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.draining.Load() {
 		http.Error(w, "draining", http.StatusServiceUnavailable)
