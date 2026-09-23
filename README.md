@@ -41,7 +41,7 @@ UI, or several transports.
 | **Stability** | [SemVer from 1.0](docs/COMPATIBILITY.md): protocol, HTTP API, flags and metric names are stable across 1.x |
 
 <p align="center">
-  <img src="docs/demo.gif" alt="Two browser tabs exchanging messages through wirefan, with live server stats" width="100%">
+  <img src="docs/demo.gif" alt="Two browser tabs of the wirefan live demo side by side: a pulse sent from either tab travels into the hub and fans out to both, each tab naming the other" width="100%">
 </p>
 
 <p align="center">
