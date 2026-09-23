@@ -365,7 +365,7 @@ Make targets:
 | `make loadtest` | builds `bin/loadtest`                                    |
 | `make bench-image` | `docker build -f deploy/Dockerfile -t wirefan:bench .` |
 | `make bench`    | builds `bin/loadtest` and the `wirefan:bench` image, then runs `scripts/bench.sh` (needs Docker and bash) |
-| `make release-local` | in a `golang:1.26-bookworm` container, builds `dist/wirefan_$(VERSION)_linux_amd64` and `_linux_arm64` (cgo, arm64 cross-compiled) plus `dist/SHA256SUMS`; pass `VERSION=vX.Y.Z` for release names |
+| `make release-local` | in a `golang:1.26.8-bookworm` container, builds `dist/wirefan_$(VERSION)_linux_amd64` and `_linux_arm64` (cgo, arm64 cross-compiled) plus `dist/SHA256SUMS`; pass `VERSION=vX.Y.Z` for release names |
 | `make docs-sync`| prints reminders to keep ARCHITECTURE / DESIGN / PROTOCOL aligned |
 
 Published release binaries come from `.github/workflows/release.yml`
