@@ -208,7 +208,8 @@ numbers do not).
     `shutdown` to every tracked conn concurrently,
     waits for them to deregister, and force-closes (no close frame) any
     still open when the limit passes. Run then shuts down the admin
-    listener, then the public one, closes the fanout (the sharded pool
+    listener, then the public one (5 s each; whatever HTTP requests are
+    still open then are closed, not reported as an error), closes the fanout (the sharded pool
     finishes its queued broadcasts), and returns. `run`'s deferred calls
     then close the rate limiter and the store.
 

@@ -57,6 +57,12 @@ type Server struct {
 	hub         *hub.Hub
 	fan         fanout.Fanout
 	replayCache *auth.ReplayCache
+	// drainGrace bounds Hub.Drain on shutdown, and listenerGrace bounds each
+	// listener's Shutdown after it. They are separate so a drain that uses
+	// its whole window cannot leave the listeners an expired context.
+	// Fields rather than constants so tests can shorten them.
+	drainGrace    time.Duration
+	listenerGrace time.Duration
 }
 
 // New builds the public and admin muxes. The admin listener is created
@@ -72,6 +78,9 @@ func New(cfg Config, deps Deps) *Server {
 		hub:         deps.Hub,
 		fan:         deps.Fanout,
 		replayCache: rc,
+
+		drainGrace:    30 * time.Second,
+		listenerGrace: 5 * time.Second,
 	}
 
 	rest := NewRestHandler(deps.Store, deps.AdminToken, deps.SigningSecret, deps.Hub)
@@ -164,13 +173,11 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	s.health.SetDraining(true)
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	s.hub.Drain(shutdownCtx, 30*time.Second)
+	s.hub.Drain(context.Background(), s.drainGrace)
 	if s.adminSrv != nil {
-		_ = s.adminSrv.Shutdown(shutdownCtx)
+		_ = s.shutdownListener(s.adminSrv)
 	}
-	err := s.srv.Shutdown(shutdownCtx)
+	err := s.shutdownListener(s.srv)
 	// Stop fanout workers last. From SetDraining on, /v1/connect answers 503
 	// and Hub.Add refuses conns, but a conn Drain force-closed can still be
 	// inside a publish until its pumps exit, and ShardedPool's Broadcast is
@@ -180,6 +187,21 @@ func (s *Server) Run(ctx context.Context) error {
 	// goroutine-leak invariant still holds.
 	if s.fan != nil {
 		_ = s.fan.Close()
+	}
+	return err
+}
+
+// shutdownListener stops srv, giving in-flight HTTP requests listenerGrace
+// to finish. Running out of time is not a failure: whatever is still open
+// is closed, and the process is stopping anyway. (WebSocket conns are
+// hijacked, so net/http no longer tracks them; Drain has handled those.)
+func (s *Server) shutdownListener(srv *http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), s.listenerGrace)
+	defer cancel()
+	err := srv.Shutdown(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		slog.Warn("listener shutdown timed out; closing its remaining connections", "addr", srv.Addr)
+		return srv.Close()
 	}
 	return err
 }

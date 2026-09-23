@@ -134,7 +134,8 @@ private channel.
   close handshake and keep its socket open. New connections are refused
   once shutdown starts (`/v1/connect` answers 503), so clients that redial
   right after the 1001 no longer hold every shutdown open for the full 30
-  seconds.
+  seconds, and a slow drain can no longer make an ordinary stop exit with
+  status 1.
 - A subscribe that raced the channel sweeper could fail with
   `SUBSCRIBE_FAILED`; channels are now removed from the registry in the
   same step that marks them deleted.

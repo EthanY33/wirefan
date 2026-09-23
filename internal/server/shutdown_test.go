@@ -263,3 +263,72 @@ func TestDrainFreesSocketOfPeerStalledMidFrame(t *testing.T) {
 	}
 	<-drained
 }
+
+// TestRunShutdownIsBoundedAndNotFatal: the listeners get their own shutdown
+// budget, and running out of it is not an error. Before, Drain and both
+// listener Shutdowns shared one 30 s context, so a slow peer that used up
+// the drain window left srv.Shutdown an expired context; any HTTP request
+// still in flight then made Run return context.DeadlineExceeded, which main
+// logs as fatal and exits 1 on, so systemd recorded every such stop as a
+// failure. Here a request that never finishes its headers stays active past
+// the listener budget: Run must still return nil, and promptly.
+func TestRunShutdownIsBoundedAndNotFatal(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	s := New(Config{Addr: addr, AllowedOrigins: []string{"*"}}, Deps{
+		Store:         store.NewMemory(),
+		AdminToken:    "admin-tok",
+		Registry:      registry.NewSyncMap(),
+		SigningSecret: "test-secret",
+		Fanout:        fanout.NewPerConn(),
+		RateLimit:     rl,
+		Policy:        conn.PolicyDisconnect{},
+		Hub:           hub.New(),
+	})
+	s.drainGrace = 200 * time.Millisecond
+	s.listenerGrace = 200 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	var nc net.Conn
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		if nc, err = net.Dial("tcp", addr); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server never listened: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Cleanup(func() { _ = nc.Close() })
+	// Half a request: the conn is active, and ReadHeaderTimeout (10 s) is
+	// far longer than the listener budget.
+	if _, err := io.WriteString(nc, "GET /v1/health HTTP/1.1\r\nHost: x\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v on a normal shutdown; want nil", err)
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Fatalf("Run took %v to shut down; the budgets are 200 ms each", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5 s of cancel")
+	}
+}
