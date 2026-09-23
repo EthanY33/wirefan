@@ -36,7 +36,7 @@ func TestShardedPoolFanout(t *testing.T) {
 // here, where the pool's goroutines are created and destroyed inside the
 // measurement window.
 func TestShardedPoolWorkersExitOnClose(t *testing.T) {
-	base := runtime.NumGoroutine()
+	base := settledGoroutines()
 	f := NewShardedPool(8)
 	if n := runtime.NumGoroutine(); n < base+8 {
 		t.Fatalf("expected >= 8 worker goroutines after construction: base=%d now=%d", base, n)
@@ -54,6 +54,25 @@ func TestShardedPoolWorkersExitOnClose(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("workers did not exit after Close: base=%d now=%d", base, runtime.NumGoroutine())
+}
+
+// settledGoroutines returns runtime.NumGoroutine once it has held steady for
+// a few samples. Workers of a pool an earlier test closed can still be
+// unwinding when the next test starts (Close returns when each worker has run
+// its deferred Done, a moment before the goroutine is gone); counting them in
+// a baseline made the construction check flaky on CI and would let the exit
+// check pass against an inflated number.
+func settledGoroutines() int {
+	n, steady := runtime.NumGoroutine(), 0
+	for deadline := time.Now().Add(2 * time.Second); steady < 5 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		if m := runtime.NumGoroutine(); m == n {
+			steady++
+		} else {
+			n, steady = m, 0
+		}
+	}
+	return n
 }
 
 // TestShardedPoolBroadcastCloseRace hammers Broadcast from many goroutines
