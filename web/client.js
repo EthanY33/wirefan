@@ -829,10 +829,16 @@ function renderStageCount() {
   const waiting = statsPending();
   if (waiting && p === 0) { el.append(node('span', 'counting', 'counting connections')); return; }
   el.append(node('b', null, p === 0 ? 'only this tab' : plural(p, 'other tab')));
-  if (counted > 0) el.append(node('span', 'note-more', ` + ${counted.toLocaleString()} more on the server`));
-  else if (waiting) el.append(node('span', 'note-more counting', ', counting the rest'));
+  // Phones get the short form; either way the count names every kind of
+  // terminal the diagram draws.
+  if (counted > 0) {
+    el.append(
+      node('span', 'note-long', ` + ${counted.toLocaleString()} more on the server`),
+      node('span', 'note-short', ` +${counted.toLocaleString()} counted`),
+    );
+  } else if (waiting) el.append(node('span', 'note-more counting', ', counting the rest'));
   const { peers: dp, counted: dc } = diagram.drawn;
-  if (dp + dc < p + counted) el.append(node('span', 'note-more', `, ${dp + dc} drawn`));
+  if (dp + dc < p + counted) el.append(node('span', 'note-drawn', `, ${dp + dc} drawn`));
 }
 
 function renderHint() {
