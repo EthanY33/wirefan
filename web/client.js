@@ -129,8 +129,9 @@ const recvTimes = [];
 let pulseSeq = 0;
 const ownPending = new Map(); // pulse n -> { t0, hubAt, peers }
 const rtts = [];
-// Other tabs on this channel: sid -> { bc, heard } (Date.now() of the last
-// BroadcastChannel word from it, and of the last pulse it sent here).
+// Other tabs on this channel: sid -> { bc, heard, bcSince } (Date.now() of
+// the last BroadcastChannel word from it, of the last pulse it sent here, and
+// of the first BroadcastChannel word in its current run).
 const peers = new Map();
 let peerView = { list: [], peers: 0, counted: 0 };
 const progress = { peer: false, fanout: false };
@@ -902,11 +903,14 @@ function refreshPeers() {
   const statOthers = othersCount();
   // A tab heard from minutes ago may have left: keep only as many as the
   // server's count can still account for, plus any that pulsed just now
-  // (the next 5 s snapshot may not count them yet).
+  // (the next 5 s snapshot may not count them yet). Tabs in this browser that
+  // appeared after that snapshot are not in its count either, so they do not
+  // use up its room.
+  const bcNew = bcSinceSnapshot();
   let room = heardOnly.length;
   if (statOthers !== null) {
     const fresh = heardOnly.filter(([, p]) => now - p.heard < FRESH_MS).length;
-    room = Math.min(heardOnly.length, Math.max(fresh, statOthers - viaBc.length, 0));
+    room = Math.min(heardOnly.length, Math.max(fresh, statOthers - (viaBc.length - bcNew), 0));
   }
   const on = !!client;
   const list = on
@@ -914,7 +918,10 @@ function refreshPeers() {
       .sort((a, b) => Math.max(b[1].bc, b[1].heard) - Math.max(a[1].bc, a[1].heard))
       .map(([sid]) => ({ sid, label: `·${short(sid)}` }))
     : [];
-  const counted = on && IS_DEFAULT_CHANNEL && statOthers !== null ? Math.max(0, statOthers - list.length) : 0;
+  // The same goes for the rest of the count: a new tab in this browser is
+  // drawn as a peer without taking a "counted" terminal away.
+  const counted = on && IS_DEFAULT_CHANNEL && statOthers !== null
+    ? Math.max(0, statOthers - (list.length - bcNew)) : 0;
   peerView = { list, peers: list.length, counted };
   if (list.length > 0) progress.peer = true;
   diagram.setPeers(list, counted);
@@ -948,7 +955,8 @@ if (bc) {
     }
     if (m.key !== activeKey || m.channel !== CHANNEL) return;
     if (m.type !== 'hello' && m.type !== 'here') return;
-    const p = peers.get(m.sid) || { bc: 0, heard: 0 };
+    const p = peers.get(m.sid) || { bc: 0, heard: 0, bcSince: 0 };
+    if (!p.bc) p.bcSince = Date.now();
     p.bc = Date.now();
     peers.set(m.sid, p);
     if (m.type === 'hello' && connState === 'live' && mySid) bcPost('here');
@@ -1010,7 +1018,7 @@ function onChannelEvent(ev) {
   if (pulse && !mine) {
     // A pulse is sent only by this page, and only once it is subscribed,
     // so its sender is a tab on this channel.
-    const p = peers.get(from) || { bc: 0, heard: 0 };
+    const p = peers.get(from) || { bc: 0, heard: 0, bcSince: 0 };
     p.heard = Date.now();
     peers.set(from, p);
     refreshPeers();
@@ -1109,14 +1117,22 @@ function onStats(ev) {
 
 const fmtRate = (r) => (r === 0 ? '0' : r < 10 ? r.toFixed(1) : Math.round(r).toLocaleString());
 
-// The server's count, or more when this browser can already see more live
-// tabs on this key than the last 5 s snapshot counted (a tab that just
-// opened). The hood's stats tiles keep the raw snapshot.
+// Tabs in this browser, on this channel, first heard from after the latest
+// stats snapshot arrived: the snapshot cannot have counted them yet.
+function bcSinceSnapshot() {
+  let n = 0;
+  for (const p of peers.values()) if (p.bc && p.bcSince > lastStatsAt) n += 1;
+  return n;
+}
+
+// The server's count, plus the tabs in this browser that opened after the
+// last 5 s snapshot, and never fewer than the live tabs this browser can see.
+// The hood's stats tiles keep the raw snapshot.
 function connectionsShown() {
   if (connections === null) return null;
   let local = 0;
   for (const p of peers.values()) if (p.bc) local += 1;
-  return Math.max(connections, (mySid ? 1 : 0) + local);
+  return Math.max(connections + bcSinceSnapshot(), (mySid ? 1 : 0) + local);
 }
 
 // The Connections number and the plain-English sentence under the strip.
