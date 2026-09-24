@@ -411,6 +411,10 @@ async function connect(key) {
     bcPost('bye');
     demoSubscribed = false;
     if (!willReconnect || !everConnected) return;
+    // The last snapshot described a connection that is gone; the count
+    // starts again from the first snapshot after the reconnect.
+    connections = null;
+    prevPublished = null;
     code([`// connection dropped (close ${closeCode ?? 'code unknown'}); the client reconnects with backoff`], 'event');
     setConnState('reconnecting', { attempt: 0 });
   });
@@ -660,6 +664,8 @@ function renderChrome() {
   else if (connState === 'closed') { text = 'Offline: server not answering'; tone = 'off'; }
   else if (connState === 'error') { text = 'Offline: could not join'; tone = 'off'; }
   else if (connState === 'idle') { text = userClosed ? 'Offline: disconnected' : 'Offline'; tone = 'off'; }
+  else if (connState === 'reconnecting') { text = 'Connection lost: reconnecting'; tone = 'wait'; }
+  else if (serverSilent()) { text = 'Waiting for the server'; tone = 'wait'; }
   els.eyebrowText.textContent = text;
   els.eyebrow.dataset.tone = tone;
 }
@@ -796,6 +802,12 @@ function renderOverlay() {
   const quiet = !d.phase || d.phase === 'restoring';
   if (connState === 'connecting' && els.overlay.hidden && quiet) overlayTimer = setTimeout(paint, 700);
   else paint();
+}
+
+// The first dial failed and the client is still retrying: no server has
+// answered this tab yet.
+function serverSilent() {
+  return connState === 'connecting' && !!connDetail && connDetail.phase === 'dial';
 }
 
 function othersCount() {
@@ -1111,6 +1123,14 @@ function connectionsShown() {
 function renderStatNumbers() {
   const dd = els.statConns;
   const say = els.statsSay;
+  // No live socket: a count would be a leftover from before the drop.
+  if (client && (connState === 'reconnecting' || serverSilent())) {
+    dd.textContent = '–';
+    say.textContent = connState === 'reconnecting'
+      ? 'The connection dropped, so the server count is on hold. It comes back once this tab reconnects.'
+      : 'Server numbers appear once this tab is connected.';
+    return;
+  }
   const pending = !!client && statsPending();
   const shown = connectionsShown();
   if (shown !== null && client) {

@@ -172,6 +172,8 @@ a:hover { color: var(--accent-hi); text-decoration-color: currentColor; }
 }
 .eyebrow[data-tone="off"] { color: var(--dim); }
 .eyebrow[data-tone="off"] .eyebrow-dot { background: var(--frame); box-shadow: none; }
+.eyebrow[data-tone="wait"] { color: var(--warn); }
+.eyebrow[data-tone="wait"] .eyebrow-dot { background: var(--warn); box-shadow: none; animation: blink 1.2s ease-in-out infinite; }
 h1 {
   margin: 0;
   font-size: clamp(40px, min(4.5vw, 6.9vh), 64px);
