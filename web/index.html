@@ -252,7 +252,7 @@
                   <tr><th scope="row">Publish, per connection</th><td class="mono">50 / s, burst 100</td></tr>
                   <tr><th scope="row">Subscribe + unsubscribe, per connection</th><td class="mono">20 / s, burst 64</td></tr>
                   <tr><th scope="row">Connections per source IP</th><td class="mono">200</td></tr>
-                  <tr><th scope="row">This page</th><td class="mono">4 pulses / s per tab, never on a timer</td></tr>
+                  <tr><th scope="row">This page</th><td class="mono">4 publishes in any 1 s per tab, never on a timer</td></tr>
                 </tbody>
               </table>
               <p class="small dim">A refused subscribe on load (the shared key is busy) is retried with jittered backoff. Other tabs in this browser are found with BroadcastChannel, which never touches the server.</p>
