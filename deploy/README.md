@@ -21,7 +21,9 @@ sudo ./provision.sh --domain wirefan.example.com --binary ~/wirefan_v1.0.0_linux
 | `provision.sh` | Idempotent fresh-box setup: service user, state dir (0700), env file, Caddy install, unit + Caddyfile with your domain substituted, enable + start |
 | `deploy.sh` | Upgrade: SHA-256-verify a new binary, stop, snapshot `/var/lib/wirefan/wirefan.db` (and any `-wal`/`-shm`) to `.prev`, swap, start, health-check `/v1/health`; on failure restore the database snapshot and the kept previous binary |
 | `wirefan.service` | systemd unit with hardening flags; runs `/usr/local/bin/wirefan` as the `wirefan` user |
-| `Caddyfile` | Reverse proxy to `127.0.0.1:8080` with auto-Let's Encrypt TLS and WS-friendly flushing. Leaves `X-Forwarded-For` to Caddy's defaults: a client-sent value is discarded and replaced with the client address, which wirefan reads because `WIREFAN_TRUSTED_PROXIES=127.0.0.1`. Behind Cloudflare, see `docs/DEPLOY.md` Appendix C |
+| `Caddyfile` | Reverse proxy to `127.0.0.1:8080` with auto-Let's Encrypt TLS and WS-friendly flushing; Caddy's admin API on a private unix socket instead of `127.0.0.1:2019`. Leaves `X-Forwarded-For` to Caddy's defaults: a client-sent value is discarded and replaced with the client address, which wirefan reads because `WIREFAN_TRUSTED_PROXIES=127.0.0.1`. Behind Cloudflare, see `docs/DEPLOY.md` Appendix C |
+| `caddy-hardening.conf` | Drop-in for the apt-installed `caddy.service` (installed as `caddy.service.d/harden.conf`): only `CAP_NET_BIND_SERVICE`, read-only system, and the runtime directory for the admin socket |
+| `demo/` | Extras the public demo runs because its API key is public: an egress rate cap and a monthly egress backstop. See `demo/README.md` |
 | `.env.example` | Template for `/etc/wirefan/env` (sourced by systemd); documents `WIREFAN_TRUSTED_PROXIES` and friends |
 | `Dockerfile` | Optional container path: multi-stage build, Debian Bookworm builder + distroless runtime, cgo-enabled for sqlite3. Also used by the benchmark harness (`make bench-image`) |
 

@@ -251,14 +251,17 @@ It:
 4. installs Caddy from its official apt repo
 5. writes `/etc/caddy/Caddyfile` and `/etc/systemd/system/wirefan.service`
    with your domain substituted (public listener `127.0.0.1:8080`, which
-   Caddy proxies to; admin listener `127.0.0.1:6060`)
+   Caddy proxies to; admin listener `127.0.0.1:6060`), plus
+   `/etc/systemd/system/caddy.service.d/harden.conf`, which drops the stock
+   unit's `CAP_NET_ADMIN` and gives Caddy's admin API a private unix socket
+   instead of `127.0.0.1:2019`
 6. installs the binary at `/usr/local/bin/wirefan`
 7. `systemctl enable wirefan`, restarts it if a binary is installed, and
-   reloads Caddy either way so the new Caddyfile replaces Caddy's stock
-   config
+   restarts Caddy either way so the new Caddyfile and drop-in replace
+   Caddy's stock setup
 
 It generates and prints no secrets. Caddy requests the Let's Encrypt
-certificate as soon as it loads the new Caddyfile (the reload at the end
+certificate as soon as it loads the new Caddyfile (the restart at the end
 of the script), typically done well under a minute later, provided DNS
 (step 2) and the firewall (step 3) are done; check with
 `sudo journalctl -u caddy -n 50 --no-pager` and look for
@@ -799,12 +802,26 @@ start dying quietly during quiet periods.
 
 ---
 
+## Appendix D: a public demo
+
+A deployment whose API key is public, like the live demo, lets anyone make
+the server fan out traffic, and cloud egress is billed per byte. The demo
+runs on a Google Cloud e2-micro on the Standard network tier (200 GB of
+egress free per month per region), with a reserved static IP and no
+service account, and adds the two controls in
+[`deploy/demo/`](../deploy/demo/README.md): a 550 kbit/s egress rate cap,
+which bounds a month's egress under that free allowance, and a backstop
+that restores the cap if it disappears and stops Caddy and wirefan if a
+month's egress still passes a limit. It also sets `WIREFAN_IP_CAP=60`.
+
 ## Cross-references
 
 - `deploy/provision.sh`: the fresh-box script (step 5).
 - `deploy/deploy.sh`: the upgrade/rollback script (step 7).
 - `deploy/wirefan.service`: systemd unit with hardening flags.
 - `deploy/Caddyfile`: reverse-proxy + auto-TLS config.
+- `deploy/caddy-hardening.conf`: drop-in that tightens Caddy's own unit.
+- `deploy/demo/`: the public demo's egress controls (Appendix D).
 - `deploy/.env.example`: documents `WIREFAN_TRUSTED_PROXIES`,
   `WIREFAN_STATE_DIR`, `WIREFAN_IP_CAP`, `WIREFAN_ADMIN_TOKEN`.
 - `.github/workflows/release.yml`: builds the release binaries on tag push.

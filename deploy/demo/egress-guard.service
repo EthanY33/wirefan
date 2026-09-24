@@ -1,0 +1,6 @@
+[Unit]
+Description=Backstop for the demo's egress bill (see egress-guard)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/egress-guard

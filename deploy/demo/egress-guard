@@ -1,0 +1,78 @@
+#!/bin/bash
+# egress-guard: backstop for the public demo's egress bill. Runs every 15 s
+# from egress-guard.timer.
+#
+# The primary bound is stateless: egress-shape.service caps ens4 at 550 kbit/s,
+# which is at most ~184 GB in a 31-day month, under the 200 GB of Standard Tier
+# egress Google gives free each month in us-east1. While that cap is in place
+# this guard never trips. It exists for the case where the cap is gone:
+#   1. every run, it puts the 550 kbit/s qdisc back if it is missing;
+#   2. once this billing month's egress (Pacific time, as Google bills) passes
+#      the cap (metadata attribute egress-cap-gb, default 175 GiB), it stops
+#      caddy and wirefan until the next month. The VM stays up and keeps its
+#      static IP, so SSH still works and nothing needs repointing.
+# Reopen early: sudo rm /var/lib/egress-guard/stopped-*; sudo systemctl start caddy wirefan
+set -u
+
+IFACE=ens4
+RATE=550Kbit
+STATE=/var/lib/egress-guard
+DEFAULT_CAP_GB=175
+MAX_CAP_GB=180
+
+# 1. Self-heal the rate cap.
+if ! tc qdisc show dev "$IFACE" 2>/dev/null | grep -q "tbf .*rate $RATE"; then
+    logger -t egress-guard "rate cap missing on $IFACE; restoring"
+    systemctl restart egress-shape.service || true
+fi
+
+# 2. Monthly volume check.
+cap_gb=$(curl -fsS --max-time 2 -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/instance/attributes/egress-cap-gb" 2>/dev/null || true)
+case "$cap_gb" in
+    ''|*[!0-9]*) cap_gb=$DEFAULT_CAP_GB ;;
+    *) cap_gb=$((10#$cap_gb)) ;;
+esac
+if [ "$cap_gb" -lt 1 ] || [ "$cap_gb" -gt "$MAX_CAP_GB" ]; then cap_gb=$DEFAULT_CAP_GB; fi
+cap_bytes=$((cap_gb * 1024 * 1024 * 1024))
+
+month=$(TZ=America/Los_Angeles date +%Y-%m)
+boot=$(cat /proc/sys/kernel/random/boot_id)
+tx=$(cat "/sys/class/net/$IFACE/statistics/tx_bytes")
+f="$STATE/$month"
+mkdir -p "$STATE"
+
+# State line: banked offset boot_id last_tx
+#   banked: bytes sent in earlier boots this month
+#   offset: tx counter value when counting started in this boot
+if [ ! -e "$f" ]; then
+    banked=0; offset=$tx; bid=$boot; last=$tx          # new month: count from now
+else
+    read -r b o i l < "$f" 2>/dev/null || true
+    case "${b:-x}${o:-x}${l:-x}" in
+        *[!0-9]*) banked=0; offset=0; bid=$boot; last=$tx   # unreadable: count everything since boot
+                  logger -t egress-guard "state $f unreadable; counting from boot" ;;
+        *) banked=$b; offset=$o; bid=$i; last=$l ;;
+    esac
+fi
+if [ "$bid" != "$boot" ]; then
+    banked=$((banked + last - offset)); offset=0; bid=$boot   # rebooted: bank the previous boot
+fi
+used=$((banked + tx - offset))
+echo "$banked $offset $bid $tx" > "$f.tmp" && mv -f "$f.tmp" "$f" || true
+
+if [ "$used" -ge "$cap_bytes" ]; then
+    if [ ! -e "$STATE/stopped-$month" ]; then
+        touch "$STATE/stopped-$month"
+        logger -t egress-guard "cap reached: $used bytes sent in $month (cap ${cap_gb} GiB); stopping caddy and wirefan"
+    fi
+    systemctl stop caddy wirefan || true
+else
+    for m in "$STATE"/stopped-*; do
+        [ -e "$m" ] || continue
+        [ "$m" = "$STATE/stopped-$month" ] && continue
+        rm -f "$m"
+        logger -t egress-guard "new billing month $month; starting caddy and wirefan"
+        systemctl start caddy wirefan || true
+    done
+fi
