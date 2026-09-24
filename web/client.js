@@ -866,6 +866,10 @@ function renderHint() {
     text = 'Nothing is connected yet: this page needs a key id in its link.';
   } else if (connState === 'badkey') {
     text = "Nothing is connected: the server refused this link's key.";
+  } else if (connState === 'closed') {
+    text = 'The server stopped answering, so this tab gave up. Try again to reconnect and send pulses.';
+  } else if (connState === 'error') {
+    text = `This tab could not join ${ch}. Try again to rejoin and send pulses.`;
   } else {
     text = 'Offline. Reconnect to send pulses.';
   }
@@ -876,7 +880,13 @@ function renderHint() {
 function renderSteps() {
   const live = connState === 'live';
   const trying = connState === 'connecting' || connState === 'reconnecting';
-  els.step1Label.textContent = live ? 'Connected' : trying ? 'Connecting' : 'Connect';
+  // Step 1 names the action the overlay actually offers.
+  let step1 = 'Connect';
+  if (live) step1 = 'Connected';
+  else if (trying) step1 = 'Connecting';
+  else if (connState === 'closed' || connState === 'error') step1 = 'Try again';
+  else if (connState === 'idle' && activeKey) step1 = 'Reconnect';
+  els.step1Label.textContent = step1;
   const done = [live, progress.peer, progress.fanout];
   let activeGiven = false;
   [...els.steps.children].forEach((li, i) => {
