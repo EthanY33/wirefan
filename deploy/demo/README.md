@@ -26,5 +26,18 @@ systemctl daemon-reload
 systemctl enable --now egress-shape.service egress-guard.timer
 ```
 
+The demo's Caddyfile also sends the bare URL to the page with the public key,
+because the page needs `?key=` to connect and the bare domain is what people
+type from a resume. Add this inside the site block, above `reverse_proxy`
+(`provision.sh` rewrites the Caddyfile, so re-add it after re-provisioning):
+
+```caddyfile
+@bare {
+    path /
+    not query key=*
+}
+redir @bare /?key=<public demo key id> 302
+```
+
 The demo also sets `WIREFAN_IP_CAP=60` in `/etc/wirefan/env`. Its page weighs
 about 20 KB compressed, so the rate cap still loads it in well under a second.
