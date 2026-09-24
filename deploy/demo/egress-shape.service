@@ -1,0 +1,15 @@
+[Unit]
+Description=Cap egress bandwidth on ens4 at 550 kbit/s
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 550 kbit/s is at most ~184 GB in a 31-day month, under the 200 GB of
+# Standard Tier egress Google includes free each month per region.
+ExecStart=/usr/sbin/tc qdisc replace dev ens4 root tbf rate 550kbit burst 32kb latency 200ms
+ExecStop=/usr/sbin/tc qdisc del dev ens4 root
+
+[Install]
+WantedBy=multi-user.target

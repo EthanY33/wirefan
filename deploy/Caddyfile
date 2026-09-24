@@ -3,6 +3,14 @@
 # wirefan.example.com is a placeholder: deploy/provision.sh substitutes the
 # real hostname (--domain) when it installs this to /etc/caddy/Caddyfile.
 
+# Admin API on a unix socket in /run/caddy (mode 0700, created by the
+# caddy-hardening.conf drop-in) instead of the default 127.0.0.1:2019, which
+# any local user could use to rewrite the proxy. `systemctl reload caddy`
+# still works: `caddy reload` reads this address from the config.
+{
+	admin unix//run/caddy/admin.sock
+}
+
 wirefan.example.com {
     encode gzip
 

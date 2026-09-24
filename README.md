@@ -276,7 +276,8 @@ binary against `SHA256SUMS`, keeps the previous binary and database, and puts
 them back if the health check fails. Appendices cover Docker, a Cloudflare
 Tunnel for machines without a public IP, and running behind Cloudflare's
 proxy. The [live demo](https://wirefan.ethanyucetepe.dev/?key=01M37HTPXNY8VGT3ZJP1ENRPEA)
-runs exactly this setup on a Google Cloud e2-micro (2 shared vCPUs, 1 GB RAM).
+runs this setup on a Google Cloud e2-micro (2 shared vCPUs, 1 GB RAM), plus
+the egress controls in [Appendix D](docs/DEPLOY.md#appendix-d-a-public-demo).
 
 <details>
 <summary><b>How a release is built</b></summary>

@@ -45,6 +45,13 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 
+# wirefan makes no outbound connections of its own. Keep it off the cloud
+# metadata endpoint, so code execution in it cannot fetch the VM's
+# credentials, and cap how fast it can write to the journal.
+IPAddressDeny=169.254.169.254
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
+
 # Persistent volume for sqlite db (operator must create this dir + chown to wirefan)
 ReadWritePaths=/var/lib/wirefan
 WorkingDirectory=/var/lib/wirefan

@@ -15,11 +15,11 @@
 #      and pins WIREFAN_TRUSTED_PROXIES=127.0.0.1 for the local-Caddy topology
 #   5. installs Caddy from the official apt repo
 #   6. installs the Caddyfile and the systemd unit with your domain
-#      substituted; a previous version that differs is saved to <file>.bak
-#      before being replaced
+#      substituted, plus a hardening drop-in for Caddy's own unit; a previous
+#      version that differs is saved to <file>.bak before being replaced
 #   7. installs the wirefan binary if --binary was given
 #   8. enables + (re)starts wirefan (start only if a binary is installed)
-#      and reloads Caddy so the new Caddyfile takes effect either way
+#      and restarts Caddy so the new Caddyfile and drop-in take effect
 #      (skipped with a loud notice when systemd is not running, e.g. inside
 #      a container); re-runs restart wirefan so a changed unit or binary
 #      actually takes effect
@@ -89,7 +89,7 @@ else
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-for f in wirefan.service Caddyfile .env.example; do
+for f in wirefan.service Caddyfile caddy-hardening.conf .env.example; do
     [ -f "$SCRIPT_DIR/$f" ] || fail "template '$f' not found next to this script ($SCRIPT_DIR). Run from the repo's deploy/ directory or copy the whole directory."
 done
 
@@ -97,7 +97,7 @@ HAVE_SYSTEMD=1
 if [ ! -d /run/systemd/system ]; then
     HAVE_SYSTEMD=0
     echo "provision.sh: NOTICE: systemd is not running (container or chroot?)." >&2
-    echo "provision.sh: NOTICE: files will be installed, but service enable/start and the Caddy reload are SKIPPED." >&2
+    echo "provision.sh: NOTICE: files will be installed, but service enable/start and the Caddy restart are SKIPPED." >&2
 fi
 
 # --- 2. service user --------------------------------------------------------
@@ -170,6 +170,10 @@ install_derived() {
 install_derived "$SCRIPT_DIR/Caddyfile" /etc/caddy/Caddyfile
 echo "provision.sh: wrote /etc/caddy/Caddyfile for $DOMAIN"
 
+install -d -m 0755 /etc/systemd/system/caddy.service.d
+install_derived "$SCRIPT_DIR/caddy-hardening.conf" /etc/systemd/system/caddy.service.d/harden.conf
+echo "provision.sh: wrote /etc/systemd/system/caddy.service.d/harden.conf"
+
 install_derived "$SCRIPT_DIR/wirefan.service" /etc/systemd/system/wirefan.service
 echo "provision.sh: wrote /etc/systemd/system/wirefan.service (allowed origin: https://$DOMAIN)"
 
@@ -201,17 +205,20 @@ if [ "$HAVE_SYSTEMD" -eq 1 ]; then
     fi
     # Unconditional: the Caddyfile above was rewritten whether or not a
     # binary exists, and the apt-installed Caddy is still serving its stock
-    # config until told otherwise. Reloading now also starts the ACME
-    # certificate request before the first deploy.
-    systemctl reload-or-restart caddy
-    echo "provision.sh: caddy reloaded with /etc/caddy/Caddyfile"
+    # config until told otherwise. A restart, not a reload: the drop-in only
+    # applies to a fresh process, and a reload cannot reach a Caddy whose
+    # admin API is still on the stock 127.0.0.1:2019 once the new Caddyfile
+    # moves it to a unix socket. Restarting also starts the ACME certificate
+    # request before the first deploy.
+    systemctl restart caddy
+    echo "provision.sh: caddy restarted with /etc/caddy/Caddyfile"
     if [ -x /usr/local/bin/wirefan ]; then
         echo "provision.sh: verify with: curl -fsS https://$DOMAIN/v1/health   (expect: ok)"
         echo "provision.sh: admin token (first boot writes it): sudo cat /var/lib/wirefan/admin.token"
     fi
 else
-    echo "provision.sh: SKIPPED systemd enable/start and the caddy reload (no systemd in this environment)."
-    echo "provision.sh: on a real host, finish with: systemctl daemon-reload && systemctl enable --now wirefan && systemctl reload-or-restart caddy"
+    echo "provision.sh: SKIPPED systemd enable/start and the caddy restart (no systemd in this environment)."
+    echo "provision.sh: on a real host, finish with: systemctl daemon-reload && systemctl enable --now wirefan && systemctl restart caddy"
 fi
 
 echo "provision.sh: DONE"
