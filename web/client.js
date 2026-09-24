@@ -66,7 +66,8 @@ const els = {
   eyebrow: $('eyebrow'), eyebrowText: $('eyebrowText'),
   stage: $('stage'), wire: $('wire'), stageChannel: $('stageChannel'), stageCount: $('stageCount'),
   stageLast: $('stageLast'), legendChannel: $('legendChannel'), legendCounted: $('legendCounted'),
-  overlay: $('stageOverlay'), overlayKicker: $('overlayKicker'), overlayKickerText: $('overlayKickerText'),
+  overlay: $('stageOverlay'), overlayPanel: $('overlayPanel'),
+  overlayKicker: $('overlayKicker'), overlayKickerText: $('overlayKickerText'),
   overlayTitle: $('overlayTitle'), overlayBody: $('overlayBody'), overlayActions: $('overlayActions'),
   overlayForm: $('overlayForm'), overlayKey: $('overlayKey'),
   btnPulse: $('btnPulse'), share: $('share'), btnTab: $('btnTab'), btnCopy: $('btnCopy'), copyLabel: $('copyLabel'),
@@ -693,10 +694,16 @@ function renderOverlay() {
   const d = connDetail || {};
   const ch = `#${CHANNEL}`;
   switch (connState) {
-    case 'live':
+    case 'live': {
+      // A keyboard user who connected from the panel (a pasted key,
+      // Reconnect, Try again) would land on <body> when it disappears; hand
+      // their place to the button they came for.
+      const hadFocus = els.overlay.contains(document.activeElement);
       els.overlay.hidden = true;
       els.stage.classList.remove('has-panel');
+      if (hadFocus) els.btnPulse.focus({ preventScroll: true });
       return;
+    }
     case 'idle':
       if (!activeKey) {
         kicker = 'No key';
@@ -765,6 +772,9 @@ function renderOverlay() {
       break;
   }
   const paint = () => {
+    // Repainting removes the old buttons and may hide the key form; if focus
+    // was on one of them, keep it on the panel instead of dropping to <body>.
+    const hadFocus = !els.overlay.hidden && els.overlay.contains(document.activeElement);
     els.overlayKicker.dataset.tone = tone;
     els.overlayKickerText.textContent = kicker;
     els.overlayTitle.textContent = title;
@@ -774,6 +784,11 @@ function renderOverlay() {
     els.overlayForm.hidden = !form;
     els.overlay.hidden = false;
     els.stage.classList.add('has-panel');
+    if (hadFocus) {
+      const a = document.activeElement;
+      const kept = a && els.overlay.contains(a) && a.isConnected && !a.closest('[hidden]');
+      if (!kept) els.overlayPanel.focus({ preventScroll: true });
+    }
   };
   els.stage.classList.toggle('has-panel', !els.overlay.hidden);
   // A healthy connect takes a few milliseconds; only show the "Connecting"
