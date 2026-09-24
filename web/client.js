@@ -31,9 +31,11 @@ const DEFAULT_CHANNEL = 'demo';
 // (100 publishes/s across all of them, docs/PROTOCOL.md section 9), so a tab
 // never sends more than 4 in any 1 s window (pulses and custom payloads
 // together), and nothing is ever sent on a timer: every publish on this page
-// starts with a click.
+// starts with a click. The window is 1050 ms, not 1000: a publish let through
+// exactly 1000 ms after the oldest one can read as the fifth "in one second"
+// on any clock coarser than the page's.
 const PULSE_MAX = 4;
-const PULSE_WINDOW_MS = 1000;
+const PULSE_WINDOW_MS = 1050;
 
 const MAX_ATTEMPTS = 8;             // reconnect attempts before giving up
 // Refusals worth retrying on the initial subscribes: a crowd on the shared
@@ -122,6 +124,9 @@ let userClosed = false;
 let connections = null;       // from the latest _wirefan-stats snapshot
 let lastSnap = null;
 let lastStatsAt = 0;
+// Tabs in this browser that the latest snapshot counted and that have said
+// "bye" since (a reload or Disconnect): the snapshot still includes them.
+let goneSinceSnapshot = 0;
 let prevPublished = null;     // { v, t } for the server-wide publish rate
 const rateSamples = [];       // [{ rate, at }]
 let received = 0;
@@ -812,7 +817,7 @@ function serverSilent() {
 }
 
 function othersCount() {
-  return connections === null ? null : Math.max(0, connections - 1);
+  return connections === null ? null : Math.max(0, connections - goneSinceSnapshot - 1);
 }
 // No count yet, and one is on its way (not refused, not given up on).
 function statsPending() {
@@ -966,7 +971,12 @@ if (bc) {
     if (!m || typeof m !== 'object' || m.v !== 1 || typeof m.sid !== 'string' || !ULID_RE.test(m.sid)) return;
     if (m.sid === mySid) return;
     if (m.type === 'bye') {
-      if (peers.delete(m.sid)) refreshPeers();
+      const gone = peers.get(m.sid);
+      if (!gone) return;
+      // Counted by the latest snapshot: take it back out until the next one.
+      if (gone.bc && gone.bcSince <= lastStatsAt) goneSinceSnapshot += 1;
+      peers.delete(m.sid);
+      refreshPeers();
       return;
     }
     if (m.key !== activeKey || m.channel !== CHANNEL) return;
@@ -1107,6 +1117,7 @@ function onStats(ev) {
   }
   statsState = 'ok';
   lastStatsAt = Date.now();
+  goneSinceSnapshot = 0;
   lastSnap = snap;
   if (typeof snap.connections === 'number') connections = snap.connections;
   if (typeof snap.published === 'number') {
@@ -1148,7 +1159,7 @@ function connectionsShown() {
   if (connections === null) return null;
   let local = 0;
   for (const p of peers.values()) if (p.bc) local += 1;
-  return Math.max(connections + bcSinceSnapshot(), (mySid ? 1 : 0) + local);
+  return Math.max(connections - goneSinceSnapshot + bcSinceSnapshot(), (mySid ? 1 : 0) + local);
 }
 
 // The Connections number and the plain-English sentence under the strip.
