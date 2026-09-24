@@ -447,7 +447,7 @@ h1 {
   stroke-opacity: 0.9; stroke-width: 1.8;
   filter: drop-shadow(0 0 3px rgba(240, 86, 28, 0.6));
 }
-.wire-svg .wire.is-counted { stroke-opacity: 0.5; stroke-width: 1.2; stroke-dasharray: 6 9; }
+.wire-svg .wire.is-counted { stroke-opacity: 0.72; stroke-width: 1.2; stroke-dasharray: 6 9; }
 .wire-svg .wire.is-hot, .wire-svg .wire-me.is-hot { stroke: var(--glow); stroke-opacity: 1; stroke-dasharray: none; }
 .wire-svg .wire-me { fill: none; stroke: var(--accent); stroke-width: 2; stroke-opacity: 0.95; transition: stroke 300ms ease; }
 .wire-svg .lead { stroke: url(#wf-lead); stroke-width: 2; }
@@ -455,14 +455,14 @@ h1 {
 .wire-svg .tail.is-lit { opacity: 1; }
 .wire-svg .tail.is-counted { opacity: 0.3; }
 .wire-svg .term {
-  fill: #000; stroke: var(--dim); stroke-opacity: 0.55; stroke-width: 1;
+  fill: #000; stroke: var(--dim); stroke-opacity: 0.66; stroke-width: 1;
   transition: fill 400ms ease, stroke 400ms ease, stroke-opacity 400ms ease;
 }
 .wire-svg .term.is-lit {
   fill: var(--glow); stroke: var(--accent); stroke-opacity: 1; stroke-width: 2.2;
   filter: drop-shadow(0 0 4px rgba(240, 86, 28, 0.9));
 }
-.wire-svg .term.is-counted { fill: #3a1d0f; stroke: var(--accent); stroke-opacity: 0.7; stroke-width: 1.2; }
+.wire-svg .term.is-counted { fill: #3a1d0f; stroke: var(--accent); stroke-opacity: 0.72; stroke-width: 1.2; }
 .wire-svg .term-halo, .wire-svg .hub-halo {
   fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: 0;
   transform-box: fill-box; transform-origin: center;
