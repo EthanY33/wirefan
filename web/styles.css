@@ -412,6 +412,7 @@ h1 {
   background: #0c0907; border: 1px solid var(--frame); border-radius: 14px;
   box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.9), 0 0 0 6px rgba(0, 0, 0, 0.35);
 }
+.overlay-panel:focus { outline: none; }
 .overlay-kicker {
   margin: 0; display: inline-flex; align-items: center; gap: 8px;
   font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--dim);
