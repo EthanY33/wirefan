@@ -9,6 +9,35 @@ exactly what that covers.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-23
+
+A patch release: a new demo page and a harder default deployment. The
+protocol, HTTP API, flags, environment variables, metric names and key
+database are unchanged.
+
+### Security
+
+- `deploy/provision.sh` installs a drop-in for Caddy's own unit
+  (`caddy.service.d/harden.conf`, from `deploy/caddy-hardening.conf`) that
+  drops the stock unit's `CAP_NET_ADMIN`, makes the system read-only to
+  Caddy except `/var/lib/caddy`, and gives Caddy's admin API a unix socket
+  in a `0700` runtime directory instead of `127.0.0.1:2019`, where any
+  local process, wirefan included, could rewrite the proxy. Provisioning
+  now restarts Caddy instead of reloading it, since a reload cannot reach
+  a Caddy whose admin API is moving; `systemctl reload caddy` works as
+  before afterwards.
+- `deploy/wirefan.service` denies the cloud metadata address
+  `169.254.169.254`, so code execution in wirefan cannot fetch the host's
+  cloud credentials, and rate-limits wirefan's journal output.
+
+### Added
+
+- `deploy/demo/` and `docs/DEPLOY.md` Appendix D: what the public demo
+  runs because its API key is public, an egress rate cap that bounds a
+  month's traffic under the host's free allowance and a backstop that
+  restores the cap and stops serving if a month's egress still passes a
+  limit.
+
 ### Changed
 
 - The demo page at `/` leads with a live fanout diagram instead of a
@@ -32,6 +61,12 @@ exactly what that covers.
   a publishes-per-second sparkline, limits and a custom publish form moved
   into a tabbed "Under the hood" panel; the 50-socket stress button now
   needs `&dev=1`.
+
+### Fixed
+
+- The README diagrams no longer show light gray corners: the Figma
+  exports had baked the canvas color into the area outside each frame's
+  rounded corners, which is now transparent.
 
 ## [1.0.0] - 2026-09-23
 
@@ -272,7 +307,8 @@ pub/sub, HMAC-bound subscribe tokens with replay protection, per-subscriber
 FIFO delivery, graceful drain, Prometheus metrics and zero runtime
 dependencies.
 
-[Unreleased]: https://github.com/EthanY33/wirefan/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/EthanY33/wirefan/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/EthanY33/wirefan/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/EthanY33/wirefan/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/EthanY33/wirefan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/EthanY33/wirefan/releases/tag/v0.1.0
