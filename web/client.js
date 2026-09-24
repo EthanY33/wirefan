@@ -29,10 +29,11 @@ const DEFAULT_CHANNEL = 'demo';
 
 // Publish budget for this tab. The demo key is shared by every visitor
 // (100 publishes/s across all of them, docs/PROTOCOL.md section 9), so a tab
-// never sends more than 4 per second, and nothing is ever sent on a timer:
-// every publish on this page starts with a click.
-const PULSE_RATE = 4;   // tokens per second
-const PULSE_BURST = 4;
+// never sends more than 4 in any 1 s window (pulses and custom payloads
+// together), and nothing is ever sent on a timer: every publish on this page
+// starts with a click.
+const PULSE_MAX = 4;
+const PULSE_WINDOW_MS = 1000;
 
 const MAX_ATTEMPTS = 8;             // reconnect attempts before giving up
 // Refusals worth retrying on the initial subscribes: a crowd on the shared
@@ -165,17 +166,18 @@ function describe(e) {
 }
 const ms = (v) => Math.max(1, Math.round(v));
 
-// Client-side token bucket for publishes (see PULSE_RATE above).
-const bucket = { tokens: PULSE_BURST, at: performance.now() };
-function refill() {
-  const now = performance.now();
-  bucket.tokens = Math.min(PULSE_BURST, bucket.tokens + ((now - bucket.at) / 1000) * PULSE_RATE);
-  bucket.at = now;
+// Client-side sliding window for publishes (see PULSE_MAX above). A token
+// bucket with a burst would let up to 8 through in one second; a window of
+// send times keeps "4 per second" literally true.
+const sentAt = [];            // performance.now() of this tab's recent publishes, oldest first
+function pruneSent(now) {
+  while (sentAt.length && now - sentAt[0] >= PULSE_WINDOW_MS) sentAt.shift();
 }
 function takeToken() {
-  refill();
-  if (bucket.tokens < 1) return false;
-  bucket.tokens -= 1;
+  const now = performance.now();
+  pruneSent(now);
+  if (sentAt.length >= PULSE_MAX) return false;
+  sentAt.push(now);
   return true;
 }
 
@@ -1187,8 +1189,9 @@ function canPublish() {
 
 let coolTimer = null;
 function coolDown() {
-  refill();
-  const waitMs = Math.max(120, Math.ceil(((1 - bucket.tokens) / PULSE_RATE) * 1000));
+  const now = performance.now();
+  pruneSent(now);
+  const waitMs = Math.max(120, Math.ceil(sentAt.length ? sentAt[0] + PULSE_WINDOW_MS - now : 0));
   els.btnPulse.classList.add('is-cooling');
   clearTimeout(coolTimer);
   coolTimer = setTimeout(() => els.btnPulse.classList.remove('is-cooling'), waitMs);
