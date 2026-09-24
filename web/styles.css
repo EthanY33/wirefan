@@ -286,7 +286,7 @@ h1 {
 /* The hint and a transient notice share one slot (stacked in one grid
    cell) so a notice never pushes the rest of the column down. */
 .say { display: grid; min-height: 2.9em; }
-.say > p { grid-area: 1 / 1; margin: 0; font-size: 14px; line-height: 1.55; max-width: 34em; }
+.say > p { grid-area: 1 / 1; margin: 0; font-size: 14px; line-height: 1.55; max-width: 34em; overflow-wrap: anywhere; }
 .hint { color: var(--dim); }
 .hint.is-covered { visibility: hidden; }
 .notice { color: var(--warn); }
@@ -393,7 +393,10 @@ h1 {
   pointer-events: none;
 }
 .stage-last:empty { display: none; }
-.lg-item { display: inline-flex; align-items: center; gap: 7px; }
+.lg-item { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; }
+/* A long ?channel= name is cut short here; the chip at the top and the
+   Publish tab carry it in full. */
+#legendChannel { min-width: 0; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lg { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .lg-me { border-radius: 2px; background: var(--accent); }
 .lg-peer { background: var(--glow); box-shadow: 0 0 0 2px var(--accent); width: 7px; height: 7px; }
@@ -426,8 +429,8 @@ h1 {
 .overlay-kicker[data-tone="err"] { color: var(--err); }
 .overlay-kicker[data-tone="err"] .kicker-dot { background: var(--err); }
 @keyframes blink { 50% { opacity: 0.25; } }
-.overlay-title { margin: 0; font-size: 21px; font-weight: 700; font-stretch: 106%; line-height: 1.2; letter-spacing: -0.01em; color: var(--ink); text-wrap: balance; }
-.overlay-body { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--ink-2); text-wrap: pretty; }
+.overlay-title { margin: 0; font-size: 21px; font-weight: 700; font-stretch: 106%; line-height: 1.2; letter-spacing: -0.01em; color: var(--ink); text-wrap: balance; overflow-wrap: anywhere; }
+.overlay-body { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--ink-2); text-wrap: pretty; overflow-wrap: anywhere; }
 .overlay-body:empty { display: none; }
 .overlay-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
 .overlay-form { display: flex; align-items: flex-end; gap: 10px; width: 100%; margin-top: 4px; }
@@ -542,7 +545,7 @@ h1 {
 .kv dd { margin: 0; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
 
 .field { display: flex; flex-direction: column; gap: 6px; }
-.field-label { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); }
+.field-label { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); overflow-wrap: anywhere; }
 .field-label .mono { text-transform: none; letter-spacing: 0; color: var(--olive); }
 .field input, .field textarea {
   font-family: var(--mono); font-size: 13px;
