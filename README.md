@@ -319,6 +319,8 @@ the egress controls in [Appendix D](docs/DEPLOY.md#appendix-d-a-public-demo).
   is reserved and token-protected today.
 - Publishing `@wirefan/client` to npm.
 
+Planned work for 1.1 to 1.3 is in [`ROADMAP.md`](ROADMAP.md).
+
 ## Development
 
 ```bash
@@ -345,6 +347,7 @@ privately as described in [`SECURITY.md`](SECURITY.md).
 | [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) | What SemVer covers from 1.0 on |
 | [`clients/js/README.md`](clients/js/README.md) | `@wirefan/client` usage and reconnect semantics |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes |
+| [`ROADMAP.md`](ROADMAP.md) | Planned work by milestone, with an issue and a plan doc for each item |
 
 The diagrams were designed in Figma and each one cites the source files it
 was drawn from.
