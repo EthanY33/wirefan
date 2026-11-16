@@ -9,6 +9,14 @@ exactly what that covers.
 
 ## [Unreleased]
 
+### Fixed
+
+- Inbound WebSocket binary frames were processed like text frames, so a
+  binary frame carrying JSON was handled as protocol input. `PROTOCOL.md` §2
+  requires text-only inbound frames; `readPump` now answers a binary frame
+  with a `BAD_FRAME` error frame and keeps the connection open. The code is
+  additive (see `docs/COMPATIBILITY.md`).
+
 ## [1.0.2] - 2026-11-16
 
 A patch release that rebuilds on a patched Go toolchain. The protocol, HTTP

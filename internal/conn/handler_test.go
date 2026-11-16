@@ -587,6 +587,25 @@ func TestErrorFramesCarryOpAndChannel(t *testing.T) {
 	wantError(t, readJSON(t, c), "BAD_TYPE", "", "")
 }
 
+// TestBinaryFrameRejectedWithBadFrame covers the text-only inbound rule
+// (PROTOCOL.md 2): a binary frame is answered with a BAD_FRAME error that
+// carries no op or channel, and the connection stays open, since error
+// frames never close it (PROTOCOL.md 7). The frame holds a valid subscribe,
+// so before the fix readPump processed it like text and the subscribe went
+// through; asserting the error proves handle never saw the frame, and the
+// publish below proves no subscription was created either.
+func TestBinaryFrameRejectedWithBadFrame(t *testing.T) {
+	c, _ := newTestConn(t, "test-signing-secret")
+
+	if err := c.Write(context.Background(), websocket.MessageBinary, []byte(`{"type":"subscribe","channel":"public-bin"}`)); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, readJSON(t, c), "BAD_FRAME", "", "")
+
+	sendJSON(t, c, map[string]any{"type": "publish", "channel": "public-bin", "data": 1})
+	wantError(t, readJSON(t, c), "NOT_SUBSCRIBED", "publish", "public-bin")
+}
+
 // TestOverlongChannelNotEchoed bounds what an error frame can cost. Echoing
 // the channel of a frame rejected for a too-long name let one 64 KiB frame
 // queue an error of up to 384 KiB (json.Marshal writes '<' as \u003c), with

@@ -49,9 +49,17 @@ func (c *Conn) writePump(ctx context.Context) error {
 func (c *Conn) readPump(ctx context.Context) error {
 	c.ws.SetReadLimit(64 * 1024)
 	for {
-		_, raw, err := c.ws.Read(ctx)
+		typ, raw, err := c.ws.Read(ctx)
 		if err != nil {
 			return err
+		}
+		// PROTOCOL.md 2 allows text frames only. A binary frame is rejected
+		// without being parsed: its JSON never reaches handle, and the error
+		// answers no particular frame, so it carries no op. It does not close
+		// the conn either — error frames never do (PROTOCOL.md 7).
+		if typ == websocket.MessageBinary {
+			c.sendError("BAD_FRAME", "binary frames are not supported")
+			continue
 		}
 		c.handle(ctx, raw)
 	}

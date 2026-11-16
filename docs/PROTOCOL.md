@@ -20,7 +20,7 @@ the first server frame on every successful connection (see §5.2).
 | Transport    | WebSocket (RFC 6455). wirefan serves plain HTTP; `wss://` comes from a TLS-terminating proxy in front of it (see [`DEPLOY.md`](DEPLOY.md)). |
 | WS library   | `github.com/coder/websocket` (server side)                       |
 | Subprotocol  | None. Clients SHOULD NOT request a `Sec-WebSocket-Protocol`.     |
-| Message type | Text only. The server sends text messages; clients MUST do the same. |
+| Message type | Text only. The server sends text messages; clients MUST do the same. A binary frame is not parsed: the server answers it with a `BAD_FRAME` error and keeps the connection open. |
 | Encoding     | UTF-8 JSON. One JSON object per WebSocket message.               |
 | Compression  | Not negotiated.                                                  |
 
@@ -294,7 +294,7 @@ publish that produced it. An absent `data` field is sent as `null`.
 | --------- | ------ | -------------------------------------------------- |
 | `code`    | string | Machine-readable code, listed in §7.               |
 | `message` | string | Human-readable text. Match on `code`, not on this. |
-| `op`      | string | Optional. `"subscribe"`, `"unsubscribe"` or `"publish"` when the error answers a client frame of that type. Every error answering such a frame carries it; `BAD_JSON` and `BAD_TYPE` do not. |
+| `op`      | string | Optional. `"subscribe"`, `"unsubscribe"` or `"publish"` when the error answers a client frame of that type. Every error answering such a frame carries it; `BAD_JSON`, `BAD_FRAME` and `BAD_TYPE` do not. |
 | `channel` | string | Optional. The channel exactly as the client sent it in that frame. Omitted when the frame had no (or an empty) channel, and when the channel is longer than 128 bytes, since such a name cannot be a real channel. `op` is still present in both cases. |
 
 `op` and `channel` let a client match an error to the request that caused
@@ -378,6 +378,7 @@ not recognize as a failure of the operation it answers (§14).
 | `BAD_JSON`          | none                      | Frame body is not valid UTF-8 (checked first, so invalid bytes are never relayed to other clients), or could not be unmarshaled into the incoming envelope (for example invalid JSON, a JSON array, or a known field with the wrong JSON type). |
 | `BAD_CHANNEL`       | subscribe, unsubscribe, publish | Channel name empty, over 128 bytes, or contains a C0 control character or DEL. |
 | `BAD_TYPE`          | none                      | `type` is missing or not one of `subscribe`, `unsubscribe`, `publish`. |
+| `BAD_FRAME`         | none                      | Frame arrived as a WebSocket binary message; the transport is text only (§2). The frame's contents are not parsed. |
 | `AUTH_FAILED`       | subscribe                 | `private-*`/`presence-*` subscribe with missing, malformed, expired, or invalid token. |
 | `AUTH_REPLAYED`     | subscribe                 | Token that is valid for this connection and channel but whose `jti` was already used (tokens are single-use, §4). |
 | `NOT_SUBSCRIBED`    | publish                   | `publish` to a channel this conn has not subscribed to.  |

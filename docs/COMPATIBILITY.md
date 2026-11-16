@@ -34,6 +34,12 @@ unknown error code as a failure of the operation it answers. A breaking
 protocol change would ship as `v2` on a new path (`/v2/connect`) in a 2.0
 release, with a published schedule for retiring `v1`.
 
+`BAD_FRAME` is such an additive error code. Servers used to process a
+binary WebSocket frame's JSON like text; per [`PROTOCOL.md`](PROTOCOL.md)
+§2 they now answer it with `BAD_FRAME` and keep the connection open.
+Clients that do not know the code treat it as the failure of the operation
+it answers — a binary frame answers none, so there is nothing to fail.
+
 ### HTTP API
 
 - Paths, methods and authentication schemes of `/v1/health`,
