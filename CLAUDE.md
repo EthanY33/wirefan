@@ -20,7 +20,7 @@ golangci-lint run               # binary dir: C:\Users\ethan\AppData\Local\Micro
 cd clients/js && npm ci && npm test   # JS client; after editing src, `npm run vendor:web` (CI fails on a stale web/wirefan-client.js)
 make bench                      # needs Docker + bash; see docs/BENCHMARKS.md
 ```
-`go.mod` requires at least `toolchain go1.26.8`; an older local Go downloads it on first use.
+`go.mod` requires at least `toolchain go1.26.11`; an older local Go downloads it on first use.
 
 ## Layout (full tour: `ARCHITECTURE.md`)
 - `cmd/wirefan/`: server entry; `parseFlags` binds `--listen`, `--admin-addr`, `--allowed-origins`, `--dev`, `--store=sqlite|memory`, `--db-path`, `--registry=sync-map|sharded`, `--fanout=per-conn|sharded`, `--version`. Env: `WIREFAN_ADMIN_TOKEN`, `WIREFAN_STATE_DIR`, `WIREFAN_TRUSTED_PROXIES`, `WIREFAN_IP_CAP`.

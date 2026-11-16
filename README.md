@@ -31,6 +31,10 @@ It is a small, auditable alternative to running Centrifugo or soketi when
 what you need is channel fanout with token auth, not clustering, an admin
 UI, or several transports.
 
+**Who it is for:** developers running a small app on one VPS who need live
+updates (chat, dashboards, notifications, multiplayer state) and would rather
+not run Redis or pay for a hosted pub/sub service.
+
 | | |
 |---|---|
 | **Protocol** | JSON over WebSocket, one object per frame, versioned `v1` ([spec](docs/PROTOCOL.md)) |
@@ -315,6 +319,8 @@ the egress controls in [Appendix D](docs/DEPLOY.md#appendix-d-a-public-demo).
   is reserved and token-protected today.
 - Publishing `@wirefan/client` to npm.
 
+Planned work for 1.1 to 1.3 is in [`ROADMAP.md`](ROADMAP.md).
+
 ## Development
 
 ```bash
@@ -341,6 +347,7 @@ privately as described in [`SECURITY.md`](SECURITY.md).
 | [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) | What SemVer covers from 1.0 on |
 | [`clients/js/README.md`](clients/js/README.md) | `@wirefan/client` usage and reconnect semantics |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes |
+| [`ROADMAP.md`](ROADMAP.md) | Planned work by milestone, with an issue and a plan doc for each item |
 
 The diagrams were designed in Figma and each one cites the source files it
 was drawn from.

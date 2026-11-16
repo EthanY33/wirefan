@@ -188,16 +188,16 @@ scp -i ~/.ssh/wirefan_vps dist/wirefan_${VER}_linux_${ARCH} dist/SHA256SUMS ubun
 **Option C: build on the server** (needs ~1 GB RAM free, gcc, and Go
 1.26 or newer). Ubuntu 24.04's `golang-go` package is Go 1.22, too old
 for this module, so install the official build from
-<https://go.dev/dl/> (any 1.26.x; 1.26.8 below). Alternatively keep a
+<https://go.dev/dl/> (any 1.26.x; 1.26.11 below). Alternatively keep a
 distro Go of 1.21 or later and put `GOTOOLCHAIN=auto` in front of the
 `go build` line: Go then downloads the toolchain `go.mod` asks for.
 
 ```bash
 sudo apt-get install -y gcc git
 sudo rm -rf /usr/local/go    # the official install replaces any previous one
-curl -fL https://go.dev/dl/go1.26.8.linux-${ARCH}.tar.gz | sudo tar -C /usr/local -xz
+curl -fL https://go.dev/dl/go1.26.11.linux-${ARCH}.tar.gz | sudo tar -C /usr/local -xz
 export PATH=/usr/local/go/bin:$PATH
-go version                   # expect: go version go1.26.8 linux/<arch>
+go version                   # expect: go version go1.26.11 linux/<arch>
 cd ~ && git clone https://github.com/EthanY33/wirefan.git && cd wirefan
 git checkout ${VER}
 CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${VER}" \

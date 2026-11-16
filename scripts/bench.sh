@@ -99,7 +99,8 @@ run_cell() {
     echo "# date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "# cell: fanout=${fanout} registry=${registry} rep=${rep}"
     echo "# image: ${IMAGE}"
-    echo "# docker invocation: ${docker_cmd[*]}"
+    # The admin token is generated per cell; keep it out of the recorded command.
+    echo "# docker invocation: ${docker_cmd[*]//$token/<redacted>}"
     echo "# loadtest: ${LOADTEST} --addr=ws://127.0.0.1:${PUB_PORT} --conns=${CONNS} --channels=${CHANNELS} --rate=${RATE} --dur=${DURATION} --rampup=${RAMPUP} --keys=<pool of ${NKEYS} ids>"
     echo "# key pool: ${NKEYS} keys (1 per ${KEYS_PER_CONNS} conns); WIREFAN_IP_CAP=${IP_CAP}"
   } > "$out"

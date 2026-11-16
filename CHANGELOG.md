@@ -9,6 +9,17 @@ exactly what that covers.
 
 ## [Unreleased]
 
+### Security
+
+- Go toolchain 1.26.11, which fixes standard-library vulnerabilities that
+  govulncheck reports in 1.26.8 (net/http GO-2026-6859 and others, plus
+  crypto/tls, crypto/x509 and mime/multipart).
+
+### Changed
+
+- `scripts/bench.sh` no longer writes each cell's generated admin token into
+  the recorded docker command in `results/`.
+
 ## [1.0.1] - 2026-09-23
 
 A patch release: a new demo page and a harder default deployment. The
