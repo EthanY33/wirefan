@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://wirefan.ethanyucetepe.dev/?key=01M37HTPXNY8VGT3ZJP1ENRPEA"><strong>Live demo</strong></a> &nbsp;&middot;&nbsp;
+  <a href="https://wirefan.ethanyucetepe.dev/"><strong>Live demo</strong></a> &nbsp;&middot;&nbsp;
   <a href="#install">Install</a> &nbsp;&middot;&nbsp;
   <a href="#quickstart">Quickstart</a> &nbsp;&middot;&nbsp;
   <a href="#how-it-works">How it works</a> &nbsp;&middot;&nbsp;
@@ -31,6 +31,10 @@ It is a small, auditable alternative to running Centrifugo or soketi when
 what you need is channel fanout with token auth, not clustering, an admin
 UI, or several transports.
 
+**Who it is for:** developers running a small app on one VPS who need live
+updates (chat, dashboards, notifications, multiplayer state) and would rather
+not run Redis or pay for a hosted pub/sub service.
+
 | | |
 |---|---|
 | **Protocol** | JSON over WebSocket, one object per frame, versioned `v1` ([spec](docs/PROTOCOL.md)) |
@@ -45,7 +49,7 @@ UI, or several transports.
 </p>
 
 <p align="center">
-  Try it live at <a href="https://wirefan.ethanyucetepe.dev/?key=01M37HTPXNY8VGT3ZJP1ENRPEA">wirefan.ethanyucetepe.dev</a>
+  Try it live at <a href="https://wirefan.ethanyucetepe.dev/">wirefan.ethanyucetepe.dev</a>
   (open it in two tabs).
 </p>
 
@@ -275,7 +279,7 @@ and metrics. Upgrades go through `deploy/deploy.sh`, which verifies the new
 binary against `SHA256SUMS`, keeps the previous binary and database, and puts
 them back if the health check fails. Appendices cover Docker, a Cloudflare
 Tunnel for machines without a public IP, and running behind Cloudflare's
-proxy. The [live demo](https://wirefan.ethanyucetepe.dev/?key=01M37HTPXNY8VGT3ZJP1ENRPEA)
+proxy. The [live demo](https://wirefan.ethanyucetepe.dev/)
 runs this setup on a Google Cloud e2-micro (2 shared vCPUs, 1 GB RAM), plus
 the egress controls in [Appendix D](docs/DEPLOY.md#appendix-d-a-public-demo).
 

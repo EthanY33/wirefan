@@ -2,7 +2,7 @@
 # date: 2026-08-06T04:17:49Z
 # cell: fanout=sharded registry=sync-map rep=2
 # image: wirefan:bench
-# docker invocation: docker run -d --name wirefan-bench --cpus=1 --memory=6g -e WIREFAN_ADMIN_TOKEN=4df08792a7ec190d097df9526f2dea1c -e WIREFAN_IP_CAP=20000 -p 8080:8080 -p 127.0.0.1:6060:6060 wirefan:bench --listen=:8080 --admin-addr=0.0.0.0:6060 --dev --allowed-origins=* --store=memory --registry=sync-map --fanout=sharded
+# docker invocation: docker run -d --name wirefan-bench --cpus=1 --memory=6g -e WIREFAN_ADMIN_TOKEN=<redacted> -e WIREFAN_IP_CAP=20000 -p 8080:8080 -p 127.0.0.1:6060:6060 wirefan:bench --listen=:8080 --admin-addr=0.0.0.0:6060 --dev --allowed-origins=* --store=memory --registry=sync-map --fanout=sharded
 # loadtest: ./bin/loadtest.exe --addr=ws://127.0.0.1:8080 --conns=1000 --channels=100 --rate=3 --dur=30s --rampup=5s --keys=<pool of 100 ids>
 # key pool: 100 keys (1 per 10 conns); WIREFAN_IP_CAP=20000
 dialing 1000 conns over 5s rampup, 100 channels, 3.0 msg/s/conn (50% publishers), 100-key pool, duration 30s
