@@ -9,6 +9,12 @@ exactly what that covers.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-16
+
+A patch release that rebuilds on a patched Go toolchain. The protocol, HTTP
+API, flags, environment variables, metric names and key database are
+unchanged.
+
 ### Security
 
 - Go toolchain 1.26.11, which fixes standard-library vulnerabilities that
@@ -19,6 +25,13 @@ exactly what that covers.
 
 - `scripts/bench.sh` no longer writes each cell's generated admin token into
   the recorded docker command in `results/`.
+- `github.com/prometheus/client_golang` 1.25.0. The JS client's development
+  dependencies (vite, vitest, source-map-js) are updated; the vendored
+  `web/wirefan-client.js` is unchanged.
+
+### Added
+
+- `ROADMAP.md` and per-epic plans under `docs/roadmap/` for v1.1 to v1.3.
 
 ## [1.0.1] - 2026-09-23
 
@@ -318,7 +331,8 @@ pub/sub, HMAC-bound subscribe tokens with replay protection, per-subscriber
 FIFO delivery, graceful drain, Prometheus metrics and zero runtime
 dependencies.
 
-[Unreleased]: https://github.com/EthanY33/wirefan/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/EthanY33/wirefan/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/EthanY33/wirefan/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/EthanY33/wirefan/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/EthanY33/wirefan/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/EthanY33/wirefan/compare/v0.1.0...v0.2.0
