@@ -31,6 +31,10 @@ It is a small, auditable alternative to running Centrifugo or soketi when
 what you need is channel fanout with token auth, not clustering, an admin
 UI, or several transports.
 
+**Who it is for:** developers running a small app on one VPS who need live
+updates (chat, dashboards, notifications, multiplayer state) and would rather
+not run Redis or pay for a hosted pub/sub service.
+
 | | |
 |---|---|
 | **Protocol** | JSON over WebSocket, one object per frame, versioned `v1` ([spec](docs/PROTOCOL.md)) |
