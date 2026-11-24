@@ -72,6 +72,12 @@ type Server struct {
 // the http.Server that New returns.
 const requestReadTimeout = 15 * time.Second
 
+// responseWriteTimeout bounds writing one response on the public listener.
+// The largest response is a static file of about 62 KB, so 30 s is generous
+// for a real client and still reaps a peer that sends requests and never
+// reads the answers. Tests shorten it on the http.Server that New returns.
+const responseWriteTimeout = 30 * time.Second
+
 // New builds the public and admin muxes. The admin listener is created
 // only when cfg.AdminAddr is non-empty.
 func New(cfg Config, deps Deps) *Server {
@@ -132,9 +138,13 @@ func New(cfg Config, deps Deps) *Server {
 	// net/http clears the read deadline before the handler of a request with
 	// no body runs, and Hijack clears every deadline on the connection.
 	// IdleTimeout reaps keep-alive connections that never send another
-	// request. WriteTimeout is still unset: WebSocket writes carry their own
-	// per-message deadlines (see internal/conn/conn.go), and plain HTTP
-	// responses have none.
+	// request. WriteTimeout is set on the public listener so a peer that
+	// never reads its responses cannot pin a handler in Write. It does not
+	// reach WebSockets either: Hijack clears every deadline on the
+	// connection, and WebSocket writes carry their own per-message deadlines
+	// (see internal/conn/conn.go). It is left unset on the admin listener
+	// because net/http/pprof profile and trace write for ?seconds= and
+	// refuse durations past WriteTimeout, and that listener is private.
 	// ConnContext puts each request's TCP connection in its context, so
 	// conn.Run can close a WebSocket's socket when coder/websocket cannot
 	// (a close handshake stuck on a peer that stalled mid-frame).
@@ -143,6 +153,7 @@ func New(cfg Config, deps Deps) *Server {
 		Handler:           s.mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       requestReadTimeout,
+		WriteTimeout:      responseWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 		ConnContext:       conn.WithNetConn,
 	}

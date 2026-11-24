@@ -128,6 +128,57 @@ func TestStalledRequestBodyIsReaped(t *testing.T) {
 	}
 }
 
+// shortenWriteTimeout is shortenReadTimeout for WriteTimeout: a listener built
+// without one is left alone so the test that calls it fails.
+func shortenWriteTimeout(srv *http.Server, d time.Duration) {
+	if srv.WriteTimeout > 0 {
+		srv.WriteTimeout = d
+	}
+}
+
+// TestUnreadResponseIsReaped: a peer that pipelines requests and never reads
+// the responses must not hold its connection open. Once the socket buffers
+// fill, the handler blocks in Write, and with no WriteTimeout that lasts as
+// long as the peer keeps the socket, outside the per-IP cap.
+func TestUnreadResponseIsReaped(t *testing.T) {
+	const (
+		writeTimeout = 300 * time.Millisecond
+		wait         = 5 * time.Second
+	)
+	closed := make(chan struct{}, 1)
+	_, publicAddr, _ := newServedServer(t, func(s *Server) {
+		shortenWriteTimeout(s.srv, writeTimeout)
+		s.srv.ConnState = func(_ net.Conn, st http.ConnState) {
+			if st == http.StateClosed {
+				select {
+				case closed <- struct{}{}:
+				default:
+				}
+			}
+		}
+	})
+	nc, err := net.Dial("tcp", publicAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = nc.Close() }()
+	if tc, ok := nc.(*net.TCPConn); ok {
+		_ = tc.SetReadBuffer(4096)
+	}
+	var req bytes.Buffer
+	for i := 0; i < 400; i++ {
+		req.WriteString("GET /client.js HTTP/1.1\r\nHost: x\r\n\r\n")
+	}
+	if _, err := nc.Write(req.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-closed:
+	case <-time.After(wait):
+		t.Fatalf("connection whose responses were never read was still open %v after the requests", wait)
+	}
+}
+
 // TestReadTimeoutLeavesIdleWebSocketOpen guards the other side of the body
 // read deadline: it must not cut WebSockets. A connection that upgrades
 // through the server New builds stays silent for several ReadTimeouts and
@@ -138,6 +189,7 @@ func TestReadTimeoutLeavesIdleWebSocketOpen(t *testing.T) {
 	const readTimeout = 300 * time.Millisecond
 	keyID, publicAddr, _ := newServedServer(t, func(s *Server) {
 		s.srv.ReadTimeout = readTimeout
+		s.srv.WriteTimeout = readTimeout
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
