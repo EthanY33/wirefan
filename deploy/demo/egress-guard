@@ -11,7 +11,9 @@
 #      the cap (metadata attribute egress-cap-gb, default 175 GiB), it stops
 #      caddy and wirefan until the next month. The VM stays up and keeps its
 #      static IP, so SSH still works and nothing needs repointing.
-# Reopen early: sudo rm /var/lib/egress-guard/stopped-*; sudo systemctl start caddy wirefan
+# Reopen early (the marker makes the guard ignore the cap for the rest of this
+# month; it is removed when a new month starts):
+#   sudo touch /var/lib/egress-guard/reopened-$(TZ=America/Los_Angeles date +%Y-%m); sudo rm -f /var/lib/egress-guard/stopped-*; sudo systemctl start caddy wirefan
 set -u
 
 IFACE=ens4
@@ -61,7 +63,7 @@ fi
 used=$((banked + tx - offset))
 echo "$banked $offset $bid $tx" > "$f.tmp" && mv -f "$f.tmp" "$f" || true
 
-if [ "$used" -ge "$cap_bytes" ]; then
+if [ "$used" -ge "$cap_bytes" ] && [ ! -e "$STATE/reopened-$month" ]; then
     if [ ! -e "$STATE/stopped-$month" ]; then
         touch "$STATE/stopped-$month"
         logger -t egress-guard "cap reached: $used bytes sent in $month (cap ${cap_gb} GiB); stopping caddy and wirefan"
@@ -76,3 +78,8 @@ else
         systemctl start caddy wirefan || true
     done
 fi
+for m in "$STATE"/reopened-*; do
+    [ -e "$m" ] || continue
+    [ "$m" = "$STATE/reopened-$month" ] && continue
+    rm -f "$m"
+done
