@@ -65,6 +65,13 @@ type Server struct {
 	listenerGrace time.Duration
 }
 
+// requestReadTimeout bounds reading one whole request, headers and body, on
+// both listeners. Every request body wirefan accepts is a small JSON object
+// (/v1/auth/sign, /v1/keys), so 15 s is generous for a real client and still
+// reaps a peer that declares a body and never sends it. Tests shorten it on
+// the http.Server that New returns.
+const requestReadTimeout = 15 * time.Second
+
 // New builds the public and admin muxes. The admin listener is created
 // only when cfg.AdminAddr is non-empty.
 func New(cfg Config, deps Deps) *Server {
@@ -117,11 +124,17 @@ func New(cfg Config, deps Deps) *Server {
 	rest.RegisterAdmin(s.adminMux)
 
 	// ReadHeaderTimeout caps how long a peer can dribble in request headers
-	// (slowloris). IdleTimeout reaps keep-alive connections that never send
-	// another request. ReadTimeout / WriteTimeout are intentionally unset:
-	// /v1/connect is a long-lived WS upgrade — a body-read deadline here
-	// would force a reconnect every N seconds, and writes are paced by
-	// websocket.Conn's own per-message deadlines (see internal/conn/conn.go).
+	// (slowloris). ReadTimeout caps the whole request, body included. Without
+	// it net/http clears the read deadline once the headers are parsed, so a
+	// request that declared a Content-Length and never sent the body held
+	// its connection for as long as the peer liked, outside the per-IP cap
+	// (which only counts accepted WebSockets). It does not reach WebSockets:
+	// net/http clears the read deadline before the handler of a request with
+	// no body runs, and Hijack clears every deadline on the connection.
+	// IdleTimeout reaps keep-alive connections that never send another
+	// request. WriteTimeout is still unset: WebSocket writes carry their own
+	// per-message deadlines (see internal/conn/conn.go), and plain HTTP
+	// responses have none.
 	// ConnContext puts each request's TCP connection in its context, so
 	// conn.Run can close a WebSocket's socket when coder/websocket cannot
 	// (a close handshake stuck on a peer that stalled mid-frame).
@@ -129,6 +142,7 @@ func New(cfg Config, deps Deps) *Server {
 		Addr:              cfg.Addr,
 		Handler:           s.mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       requestReadTimeout,
 		IdleTimeout:       120 * time.Second,
 		ConnContext:       conn.WithNetConn,
 	}
@@ -137,6 +151,7 @@ func New(cfg Config, deps Deps) *Server {
 			Addr:              cfg.AdminAddr,
 			Handler:           s.adminMux,
 			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       requestReadTimeout,
 			IdleTimeout:       120 * time.Second,
 		}
 	}
