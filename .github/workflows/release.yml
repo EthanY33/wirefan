@@ -74,10 +74,30 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      # Download only the two artifacts the build job uploads. The ci job in
+      # this same run also executes third-party code and could upload other
+      # artifacts, so a bare download of the whole run must not feed the
+      # release.
       - uses: actions/download-artifact@v8
         with:
+          name: wirefan-linux-amd64
           path: dist
-          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: wirefan-linux-arm64
+          path: dist
+      - name: Assert exact release file set
+        # Fail unless dist/ holds exactly the two binaries named for this tag.
+        working-directory: dist
+        run: |
+          expected="$(printf '%s\n' "wirefan_${GITHUB_REF_NAME}_linux_amd64" "wirefan_${GITHUB_REF_NAME}_linux_arm64" | sort)"
+          actual="$(find . -mindepth 1 -printf '%P\n' | sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "unexpected files in dist/" >&2
+            echo "expected:" >&2; echo "$expected" >&2
+            echo "actual:" >&2; echo "$actual" >&2
+            exit 1
+          fi
       - name: Generate checksums
         working-directory: dist
         run: |
