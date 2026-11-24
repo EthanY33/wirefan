@@ -194,7 +194,9 @@ for that parallelism is the better contract.
 
 Each `Conn` owns two goroutines plus its own `send chan []byte` and a
 `closeReq chan struct{}`. `Run` is the single owner; the pumps report
-to it.
+to it. `writePump` runs each ping in a short-lived goroutine of its own
+and waits for it before returning, so the send chan keeps draining
+while a pong is outstanding.
 
 ```mermaid
 sequenceDiagram

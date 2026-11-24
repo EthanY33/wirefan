@@ -13,6 +13,25 @@ func (c *Conn) writePump(ctx context.Context) error {
 	interval, wait := pingInterval, pongWait
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// Ping blocks until readPump's Read sees the pong, so its pongWait
+	// context bounds both the write and the peer's round trip. It runs in
+	// its own goroutine: called from this loop it kept the loop off c.send
+	// for the whole round trip, and a peer that read every frame but took
+	// a moment to answer a ping had its queue fill and was closed as a slow
+	// consumer. At most one ping is in flight (pinging), and pong carries
+	// its result. The goroutine never outlives writePump: the deferred func
+	// cancels the ping and waits for it.
+	pingCtx, stopPing := context.WithCancel(ctx)
+	pong := make(chan error, 1)
+	pinging := false
+	defer func() {
+		stopPing()
+		if pinging {
+			<-pong
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -28,11 +47,20 @@ func (c *Conn) writePump(ctx context.Context) error {
 				return err
 			}
 		case <-ticker.C:
-			// Ping blocks until readPump's Read sees the pong, so this
-			// bounds both the write and the peer's round trip.
-			pctx, cancel := context.WithTimeout(ctx, wait)
-			err := c.ws.Ping(pctx)
-			cancel()
+			if pinging {
+				// The last ping is still waiting for its pong (only when
+				// pingInterval is shorter than pongWait). Its own deadline
+				// decides the conn; a second ping would add nothing.
+				continue
+			}
+			pinging = true
+			go func() {
+				pctx, cancel := context.WithTimeout(pingCtx, wait)
+				defer cancel()
+				pong <- c.ws.Ping(pctx)
+			}()
+		case err := <-pong:
+			pinging = false
 			if err != nil {
 				return err
 			}
