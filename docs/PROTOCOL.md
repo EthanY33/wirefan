@@ -62,9 +62,10 @@ gets 401 rather than 426 when its key is missing or invalid.
 
 For the 429 check the source IP is the TCP peer address or, when the peer
 is listed in `WIREFAN_TRUSTED_PROXIES`, the rightmost `X-Forwarded-For`
-hop not in that list. IPv4 clients are counted per address and IPv6
-clients per /64 prefix; an IPv4-mapped IPv6 address counts as its IPv4
-address.
+hop not in that list. Repeated `X-Forwarded-For` header lines are read as
+one list, in the order received. IPv4 clients are counted per address and
+IPv6 clients per /64 prefix; an IPv4-mapped IPv6 address counts as its
+IPv4 address.
 
 ### 3.3 First server frame
 

@@ -218,6 +218,12 @@ func stripHostPort(s string) (netip.Addr, string, bool) {
 // return the first hop whose IP is not in trustedProxies. This is the
 // algorithm called for in CWE-348 mitigations (do NOT use the leftmost
 // entry — clients can pick that themselves).
+//
+// The list is every X-Forwarded-For header line joined in order, which is
+// what repeated lines of a list header mean. Header.Get would return only
+// the first line, and a proxy that adds its hop as a new line (HAProxy's
+// "option forwardfor") leaves a client-sent line first: the walk then saw
+// only what the client wrote.
 func clientIP(r *http.Request, trustedProxies []netip.Prefix) string {
 	raAddr, raStr, raOk := stripHostPort(r.RemoteAddr)
 	if !raOk {
@@ -226,7 +232,7 @@ func clientIP(r *http.Request, trustedProxies []netip.Prefix) string {
 	if len(trustedProxies) == 0 || !addrInPrefixes(raAddr, trustedProxies) {
 		return raStr
 	}
-	xff := r.Header.Get("X-Forwarded-For")
+	xff := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
 	if xff == "" {
 		return raStr
 	}
