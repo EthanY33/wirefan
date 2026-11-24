@@ -35,7 +35,8 @@ sells is the natural starting point.
 Three facts the whole runbook leans on:
 
 - **`--allowed-origins` is required.** wirefan refuses to start without it,
-  and refuses `*` outside `--dev`.
+  and refuses `*`, or any other pattern that matches every origin (such as
+  `https://*`), outside `--dev`.
 - **The admin token is a file, not a log line.** On first boot wirefan
   writes a token to `/var/lib/wirefan/admin.token` (mode 0600) and reuses
   it on every later boot. It is never printed or logged.

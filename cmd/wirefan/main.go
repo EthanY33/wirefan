@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -259,14 +260,14 @@ func ensureStateDir() (string, error) {
 // defaults to 127.0.0.1:6060 so /metrics and /debug/pprof/* are no longer
 // reachable from a misconfigured ingress that bypasses the reverse proxy.
 //
-// --allowed-origins is required: refusing to start when it is "*" outside
-// --dev makes "skip origin check" an explicit choice rather than the
+// --allowed-origins is required: refusing to start when an entry matches
+// every origin ("*", "**", "https://*", ...) outside --dev makes "skip origin check" an explicit choice rather than the
 // silent default it used to be.
 func parseFlags(args []string) (appConfig, error) {
 	fs := flag.NewFlagSet("wirefan", flag.ContinueOnError)
 	addr := fs.String("listen", ":8080", "public listener address (WS, /v1/auth/sign, /v1/health, static client)")
 	adminAddr := fs.String("admin-addr", "127.0.0.1:6060", "admin listener address (/metrics, /debug/pprof/*, /v1/keys); empty disables")
-	origins := fs.String("allowed-origins", "", "comma-separated WebSocket Origin allowlist (e.g. https://example.com,https://staging.example.com); '*' is rejected outside --dev")
+	origins := fs.String("allowed-origins", "", "comma-separated WebSocket Origin allowlist (e.g. https://example.com,https://staging.example.com); patterns that match every origin, such as '*', are rejected outside --dev")
 	dev := fs.Bool("dev", false, "developer mode: permits --allowed-origins=*")
 	storeKind := fs.String("store", "sqlite", "key store backend: sqlite (persistent, default) or memory (wiped on restart)")
 	dbPath := fs.String("db-path", "", "sqlite database file (default <state-dir>/wirefan.db; state dir is $WIREFAN_STATE_DIR or ./var)")
@@ -275,6 +276,9 @@ func parseFlags(args []string) (appConfig, error) {
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return appConfig{}, err
+	}
+	if fs.NArg() > 0 {
+		return appConfig{}, fmt.Errorf("unexpected argument %q: flags stop at the first non-flag argument, use --flag=value, and --allowed-origins is comma-separated", fs.Arg(0))
 	}
 	if *showVersion {
 		return appConfig{showVersion: true}, nil
@@ -303,11 +307,24 @@ func parseFlags(args []string) (appConfig, error) {
 	if len(cleaned) == 0 {
 		return appConfig{}, errors.New("--allowed-origins parsed to empty list")
 	}
-	if !*dev {
-		for _, o := range cleaned {
+	for _, o := range cleaned {
+		// coder/websocket matches each pattern with path.Match against the
+		// Origin host, or against scheme://host when the pattern contains
+		// "://". Test it the same way against a host that cannot be a real
+		// origin: a match means the pattern admits every origin.
+		probe := "wirefan-origin-probe.invalid"
+		if strings.Contains(o, "://") {
+			probe = "https://" + probe
+		}
+		matchAll, err := path.Match(strings.ToLower(o), probe)
+		if err != nil {
+			return appConfig{}, fmt.Errorf("--allowed-origins entry %q is not a valid pattern: %w", o, err)
+		}
+		if matchAll && !*dev {
 			if o == "*" {
 				return appConfig{}, errors.New("--allowed-origins=* requires --dev")
 			}
+			return appConfig{}, fmt.Errorf("--allowed-origins entry %q matches every origin and requires --dev", o)
 		}
 	}
 	return appConfig{
