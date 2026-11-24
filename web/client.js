@@ -50,6 +50,8 @@ const RATE_WINDOW_MS = 5_000;
 const ANNOUNCE_GAP_MS = 4_000;
 const HEARD_TTL_MS = 10 * 60_000;   // forget a tab that has not pulsed for this long
 const FRESH_MS = 6_000;             // a pulse this recent outranks the stats count
+const MAX_HEARD = 32;               // heard-only tabs kept; _from is unauthenticated
+const FRESH_SLACK = 2;              // recent pulses may run this far ahead of the stats count
 const BC_NAME = 'wirefan-demo';
 const BC_BEAT_MS = 20_000;
 const BC_TTL_MS = 75_000;
@@ -930,7 +932,10 @@ function refreshPeers() {
   const bcNew = bcSinceSnapshot();
   let room = heardOnly.length;
   if (statOthers !== null) {
-    const fresh = heardOnly.filter(([, p]) => now - p.heard < FRESH_MS).length;
+    const fresh = Math.min(
+      heardOnly.filter(([, p]) => now - p.heard < FRESH_MS).length,
+      statOthers + FRESH_SLACK,
+    );
     room = Math.min(heardOnly.length, Math.max(fresh, statOthers - (viaBc.length - bcNew), 0));
   }
   const on = !!client;
@@ -998,6 +1003,25 @@ if (bc) {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) bcHello(); });
 }
 
+// A forged _from must not grow the map without bound: keep the newest
+// MAX_HEARD heard-only entries and drop the oldest.
+function trimHeard() {
+  const heardOnly = [];
+  for (const [sid, p] of peers) if (!p.bc) heardOnly.push([sid, p.heard]);
+  if (heardOnly.length <= MAX_HEARD) return;
+  heardOnly.sort((a, b) => b[1] - a[1]);
+  for (const [sid] of heardOnly.slice(MAX_HEARD)) peers.delete(sid);
+}
+// A burst of pulses costs one rescan per frame, not one per event.
+let refreshQueued = false;
+function scheduleRefreshPeers() {
+  if (refreshQueued) return;
+  refreshQueued = true;
+  const run = () => { refreshQueued = false; refreshPeers(); };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 16);
+}
+
 // ---------------- incoming events ----------------
 // The only payload this page draws. _from rides in the payload because the
 // event frame carries no publisher identity (docs/PROTOCOL.md); any client
@@ -1047,7 +1071,8 @@ function onChannelEvent(ev) {
     const p = peers.get(from) || { bc: 0, heard: 0, bcSince: 0 };
     p.heard = Date.now();
     peers.set(from, p);
-    refreshPeers();
+    trimHeard();
+    scheduleRefreshPeers();
     completeFanout();
   }
   diagram.deliver({ from: mine ? 'me' : from, hubAt });
