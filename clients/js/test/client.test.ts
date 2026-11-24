@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AckTimeoutError,
+  AuthorizeTimeoutError,
   ConfigurationError,
   ConnectionClosedError,
   WirefanClient,
@@ -611,6 +612,47 @@ describe("private channels", () => {
       channel: "private-room",
       token: "tok-123",
     });
+    c.close();
+  });
+
+  it("rejects a subscribe() whose authorize() never settles, and frees the channel for a later call", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    let calls = 0;
+    // authorizeTimeoutMs is not set: the deadline defaults to ackTimeoutMs.
+    const c = makeClient(h, {
+      ackTimeoutMs: 20,
+      authorize: () => (++calls === 1 ? new Promise<string>(() => {}) : "tok-2"),
+    });
+    await c.connect();
+    const err = await c.subscribe("private-room").then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AuthorizeTimeoutError);
+    expect((err as AuthorizeTimeoutError).channel).toBe("private-room");
+    expect(h.current.sentFrames()).toEqual([]);
+
+    // The stuck attempt is gone, so a later call starts a fresh one.
+    const sub = await c.subscribe("private-room");
+    expect(sub.active).toBe(true);
+    expect(h.current.sentFrames()).toEqual([
+      { type: "subscribe", channel: "private-room", token: "tok-2" },
+    ]);
+    c.close();
+  });
+
+  it("surfaces an authorize() that throws synchronously as the subscribe() rejection", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h, {
+      authorize: () => {
+        throw new Error("no session");
+      },
+    });
+    await c.connect();
+    await expect(c.subscribe("private-room")).rejects.toThrow("no session");
+    expect(h.current.sentFrames()).toEqual([]);
     c.close();
   });
 

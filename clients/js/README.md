@@ -41,10 +41,10 @@ client.close();
 - On any unexpected disconnect the client retries with exponential backoff plus jitter: delays start at 300 ms, double each attempt, cap at 15 s, and each is scaled by a random factor in [0.75, 1.25]. All parameters are settable via the `reconnect` option.
 - `reconnect: false` makes the client single-use: the first unexpected disconnect emits `closed` with reason `"exhausted"` (no attempts are made) and permanently closes the client; any later `connect()` rejects with `client is closed; create a new WirefanClient`.
 - Each dial is bounded by `handshakeTimeoutMs` (default 10 s), covering the upgrade plus the wait for the server's `connected` frame. A connection that upgrades but never becomes ready is torn down and fed to the same backoff path.
-- After a reconnect the client automatically resubscribes every channel you were on and then emits `resubscribed`. Your handlers stay attached; you do nothing.
+- After a reconnect the client automatically resubscribes every channel you were on and then emits `resubscribed`. Your handlers stay attached; you do nothing. The channels are restored side by side, so a slow `authorize()` for one channel does not hold up the others; `resubscribed` follows once every channel's first attempt has settled.
 - A resubscribe that fails does not silently cost you the channel. What happens depends on the failure:
   - The connection drops again mid-restore: the channel is kept and the next connection restores it (no `error` event; `disconnected` already told you).
-  - A transient failure (the ack times out, the server answers `RATE_LIMITED` or `RATE_LIMITED_CONN` because a reconnect herd hit its rate limit, the server answers `SUBSCRIBE_FAILED` because the subscribe lost a race with its channel cleanup, your `authorize()` throws, or a code this client does not know): the client emits `error`, keeps the channel, and retries on the same connection with the reconnect backoff curve. Once a retry lands, the channel gets its own `resubscribed` event. Retries stop when the connection drops (the next connection starts over), when you unsubscribe, or on `close()`.
+  - A transient failure (the ack times out, the server answers `RATE_LIMITED` or `RATE_LIMITED_CONN` because a reconnect herd hit its rate limit, the server answers `SUBSCRIBE_FAILED` because the subscribe lost a race with its channel cleanup, your `authorize()` throws or does not settle within `authorizeTimeoutMs`, or a code this client does not know): the client emits `error`, keeps the channel, and retries on the same connection with the reconnect backoff curve. Once a retry lands, the channel gets its own `resubscribed` event. Retries stop when the connection drops (the next connection starts over), when you unsubscribe, or on `close()`.
   - A definitive refusal (`AUTH_FAILED`, `AUTH_REPLAYED`, `RESERVED_CHANNEL`, `BAD_CHANNEL`, any `LIMIT_*` code): the client emits `error` and drops the channel; its handlers stop and its `Subscription.active` turns false for good (subscribing again returns a new handle).
 - The server issues a fresh `socket_id` per connection and subscribe tokens are single-use and socket-bound, so the client re-invokes your `authorize` callback for every `private-`/`presence-` resubscribe. Never cache tokens. This holds even when the drop lands while an `authorize()` call is still in flight: the stale attempt is abandoned (a connection-epoch check stops its token from ever reaching the new socket) and the resubscribe fetches a fresh token bound to the new `socket_id`.
 - If that interrupted attempt was your own `subscribe()` call and the client has reconnected by the time it fails, the call adopts the resubscribe instead of rejecting: it resolves with your handler attached once the channel is confirmed on the new connection, or rejects with the refusal if the server turns it down (the same error the `error` event reports, even when the refusal lands before the interrupted attempt fails). It rejects with `ConnectionClosedError` only when the client is not connected again yet, and then your handler is removed.
@@ -73,7 +73,7 @@ const client = new WirefanClient({
 });
 ```
 
-The callback runs once per subscribe attempt, including automatic resubscribes.
+The callback runs once per subscribe attempt, including automatic resubscribes. Each call has `authorizeTimeoutMs` to settle (default: the value of `ackTimeoutMs`, 10 s). Past that the attempt fails with `AuthorizeTimeoutError`: your `subscribe()` call rejects with it, a resubscribe after a reconnect reports it on `error` and retries, and a token that arrives late is discarded. Raise the option if your token endpoint can legitimately take longer.
 
 ## Events
 
@@ -91,7 +91,7 @@ Every `on()` returns an unsubscribe function. `reconnected` stays false on the f
 
 ## Errors
 
-Failures are typed: `WirefanError` (a server `error` frame; `.code` carries the server's code, e.g. `AUTH_FAILED`, `RATE_LIMITED`, `RESERVED_CHANNEL`), `ConnectionClosedError`, `AckTimeoutError`, `ConfigurationError`. `subscribe()` rejects with the matching `WirefanError` when the server refuses, and so does `Subscription.unsubscribe()`; publish rejections (publish has no ack in the protocol) surface on the `error` event.
+Failures are typed: `WirefanError` (a server `error` frame; `.code` carries the server's code, e.g. `AUTH_FAILED`, `RATE_LIMITED`, `RESERVED_CHANNEL`), `ConnectionClosedError`, `AckTimeoutError`, `AuthorizeTimeoutError`, `ConfigurationError`. `subscribe()` rejects with the matching `WirefanError` when the server refuses, and so does `Subscription.unsubscribe()`; publish rejections (publish has no ack in the protocol) surface on the `error` event.
 
 Error routing depends on the server:
 

@@ -123,6 +123,17 @@ export class AckTimeoutError extends Error {
   }
 }
 
+/** An `authorize()` call did not settle within `authorizeTimeoutMs`. */
+export class AuthorizeTimeoutError extends Error {
+  /** The channel the token was being fetched for. */
+  readonly channel: string;
+  constructor(channel: string, ms: number) {
+    super(`authorize() for "${channel}" did not settle within ${ms}ms`);
+    this.name = "AuthorizeTimeoutError";
+    this.channel = channel;
+  }
+}
+
 /** The client was used in a way its configuration cannot support. */
 export class ConfigurationError extends Error {
   constructor(message: string) {
@@ -178,7 +189,8 @@ export interface AuthorizeContext {
  * Fetches a subscribe token for a `private-` or `presence-` channel.
  * Called once per subscribe attempt, including automatic resubscribes after a
  * reconnect: tokens are single-use and bound to the current socket_id, so a
- * cached token is never valid twice.
+ * cached token is never valid twice. Each call must settle within
+ * `authorizeTimeoutMs`.
  */
 export type AuthorizeFn = (ctx: AuthorizeContext) => Promise<string> | string;
 
@@ -199,6 +211,15 @@ export interface WirefanClientOptions {
   reconnect?: ReconnectOptions | false;
   /** How long to wait for a subscribe/unsubscribe ack. Default 10 000 ms. */
   ackTimeoutMs?: number;
+  /**
+   * How long one `authorize()` call may take. Past it the subscribe attempt
+   * fails with AuthorizeTimeoutError (a resubscribe after a reconnect then
+   * retries with backoff) and a token that arrives later is discarded.
+   * Without a bound, a token fetch that never settles would leave its
+   * channel waiting for as long as the connection lives. Defaults to
+   * `ackTimeoutMs`.
+   */
+  authorizeTimeoutMs?: number;
   /**
    * How long a dial may take to produce the server's `connected` frame before
    * the attempt is abandoned and fed to the normal reconnect path. Bounds the
@@ -341,8 +362,9 @@ const SUBSCRIBE_ERROR_CODES = new Set<string>([
  * Refusals that retrying cannot fix (plus every LIMIT_* code): a resubscribe
  * that ends in one of these drops the channel. Every other failure (ack
  * timeout, RATE_LIMITED, RATE_LIMITED_CONN, an authorize() callback that
- * throws, a code this client does not know) is treated as transient and
- * retried with backoff, so a reconnect herd cannot silently strip channels.
+ * throws or times out, a code this client does not know) is treated as
+ * transient and retried with backoff, so a reconnect herd cannot silently
+ * strip channels.
  * SUBSCRIBE_FAILED is transient too: the server sends it only when a
  * subscribe lost a race with its registry sweeper, and the protocol defines
  * it as safe to retry (docs/PROTOCOL.md section 7).
@@ -410,6 +432,7 @@ export class WirefanClient {
   readonly #WS: WebSocketConstructor;
   readonly #reconnect: Required<ReconnectOptions> | false;
   readonly #ackTimeoutMs: number;
+  readonly #authorizeTimeoutMs: number;
   readonly #handshakeTimeoutMs: number;
   readonly #random: () => number;
 
@@ -458,6 +481,7 @@ export class WirefanClient {
         ? false
         : { ...DEFAULT_RECONNECT, ...(options.reconnect ?? {}) };
     this.#ackTimeoutMs = options.ackTimeoutMs ?? 10_000;
+    this.#authorizeTimeoutMs = options.authorizeTimeoutMs ?? this.#ackTimeoutMs;
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? 10_000;
     this.#random = options.random ?? Math.random;
   }
@@ -880,16 +904,19 @@ export class WirefanClient {
    */
   async #resubscribeAll(): Promise<void> {
     const epoch = this.#epoch;
-    const channels = [...this.#channels.keys()];
-    const restored: string[] = [];
-    for (const channel of channels) {
-      // Dropped again mid-restore; after a reconnect, that connection's own
-      // #resubscribeAll takes over.
-      if (this.#epoch !== epoch || this.#state !== "connected") return;
-      const rec = this.#channels.get(channel);
-      if (!rec) continue; // unsubscribed meanwhile
-      if (await this.#resubscribe(channel, rec, epoch, 0)) restored.push(channel);
-    }
+    // Every channel starts its attempt now. Taking them one at a time would
+    // let a single slow authorize() keep every channel behind it off the
+    // wire. The server sizes its per-connection subscribe burst to a full
+    // channel set (docs/PROTOCOL.md section 9), and a refusal past it is
+    // retried like any other transient failure. A drop mid-restore fails
+    // each attempt with ConnectionClosedError, and the next connection's own
+    // pass takes over.
+    const outcomes = await Promise.all(
+      [...this.#channels].map(async ([channel, rec]) =>
+        (await this.#resubscribe(channel, rec, epoch, 0)) ? channel : null,
+      ),
+    );
+    const restored = outcomes.filter((c): c is string => c !== null);
     if (this.#epoch === epoch && this.#state === "connected" && restored.length > 0) {
       this.#emit("resubscribed", { channels: restored });
     }
@@ -1113,7 +1140,7 @@ export class WirefanClient {
       if (!socketId) throw new ConnectionClosedError("not connected");
       const epoch = this.#epoch;
       // Re-fetched every time: tokens are single-use and socket-bound.
-      frame.token = await this.#authorize!({ socketId, channel });
+      frame.token = await this.#authorizeBounded({ socketId, channel }, epoch);
       // The authorize() round trip can span a drop, or a drop AND a
       // reconnect. Checking #state alone is not enough (after a reconnect
       // the state is "connected" again on a different socket), so require
@@ -1123,6 +1150,31 @@ export class WirefanClient {
       }
     }
     await this.#sendOp("subscribe", channel, frame);
+  }
+
+  /**
+   * Call authorize() under the authorizeTimeoutMs deadline. A token fetch
+   * can hang for good (fetch has no timeout of its own), and the attempt
+   * awaiting it would then never fail, never be retried and never report
+   * anything. The result of a call that outlives its deadline is discarded.
+   */
+  #authorizeBounded(ctx: AuthorizeContext, epoch: number): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        // A deadline that expires after the connection changed says nothing
+        // about the current one: the drop is what ended this attempt, just
+        // as when a stale call returns its token late (#sendSubscribe).
+        reject(
+          this.#state === "connected" && this.#epoch === epoch
+            ? new AuthorizeTimeoutError(ctx.channel, this.#authorizeTimeoutMs)
+            : new ConnectionClosedError("connection dropped while authorizing"),
+        );
+      }, this.#authorizeTimeoutMs);
+      // The async wrapper turns a synchronous throw into a rejection.
+      (async () => this.#authorize!(ctx))()
+        .then(resolve, reject)
+        .finally(() => clearTimeout(timer));
+    });
   }
 
   #sendOp(
