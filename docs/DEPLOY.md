@@ -503,11 +503,13 @@ client:
   write). With `--fanout=sharded` it is only the handoff to a worker
   queue, so the per-subscriber work is not included.
 - `wirefan_upgrade_rejected_total{reason}` (counter): refused WebSocket
-  upgrades. Three reasons exist: `bad_key` (missing, unknown, or revoked
-  key; the client gets `401`), `phantom_cap` (the per-IP connection
-  cap; `429`) and `draining` (an upgrade attempted during shutdown;
-  `503`). Origin mismatches are not counted here: they get `403`
-  and a `ws upgrade failed` warning in the log.
+  upgrades. Four reasons exist: `bad_key` (missing, unknown, or revoked
+  key; the client gets `401`), `store_error` (the key store could not
+  be read, so the key was not judged; `503`, with an `upgrade: lookup
+  key` error in the log), `phantom_cap` (the per-IP connection cap;
+  `429`) and `draining` (an upgrade attempted during shutdown; `503`).
+  Origin mismatches are not counted here: they get `403` and a
+  `ws upgrade failed` warning in the log.
 - `wirefan_auth_failures_total` (counter): failed subscribe-token checks
   on `private-`/`presence-` channels.
 

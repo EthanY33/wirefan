@@ -173,6 +173,15 @@ func (h *RestHandler) sign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	k, err := h.store.LookupKey(r.Context(), parts[0])
+	if err != nil && !errors.Is(err, store.ErrKeyNotFound) {
+		// A store that could not answer is not a verdict on the credentials;
+		// see the same branch in UpgradeHandler.ServeHTTP.
+		if r.Context().Err() == nil {
+			slog.Error("rest: lookup key", "err", err)
+		}
+		http.Error(w, "key store unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil || k.RevokedAt != nil || !auth.VerifySecret(parts[1], k.SecretHash) {
 		http.Error(w, "bad credentials", http.StatusUnauthorized)
 		return

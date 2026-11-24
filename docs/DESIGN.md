@@ -962,8 +962,8 @@ Three layers: Prometheus metrics, slog logs, and pprof.
     the worker-queue enqueue under `sharded`; neither includes the
     socket write)
   - `wirefan_upgrade_rejected_total{reason}` (counter; `bad_key`,
-    `phantom_cap` and `draining`. Origin rejections happen inside
-    `websocket.Accept` and are not counted)
+    `store_error`, `phantom_cap` and `draining`. Origin rejections
+    happen inside `websocket.Accept` and are not counted)
   - `wirefan_auth_failures_total` (counter: failed subscribe-token
     checks)
 - **slog**: log calls go through `log/slog`'s default logger. Nothing

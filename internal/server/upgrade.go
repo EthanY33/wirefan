@@ -267,6 +267,20 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	k, err := h.deps.Store.LookupKey(r.Context(), keyID)
+	if err != nil && !errors.Is(err, store.ErrKeyNotFound) {
+		// The store could not answer, which says nothing about the key. A
+		// 401 here told the client its key was bad and counted a storage
+		// fault as key guessing, with no log line pointing at the store. A
+		// lookup that failed only because the client went away (its request
+		// context ended) is not a store fault: nobody reads the response,
+		// and it is neither counted nor logged.
+		if r.Context().Err() == nil {
+			metrics.UpgradeRej.WithLabelValues("store_error").Inc()
+			slog.Error("upgrade: lookup key", "err", err)
+		}
+		http.Error(w, "key store unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil || k.RevokedAt != nil {
 		metrics.UpgradeRej.WithLabelValues("bad_key").Inc()
 		http.Error(w, "invalid key", http.StatusUnauthorized)

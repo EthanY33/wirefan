@@ -52,7 +52,7 @@ answers the first one that fails with a plain-text HTTP response:
 | Order | HTTP          | Reason                                                   |
 | ----- | ------------- | -------------------------------------------------------- |
 | 0     | 503           | The server is shutting down (`draining`). Reconnect with backoff; another instance or the restarted process will accept. |
-| 1     | 401           | `key` query param missing (`missing key`), or the key is unknown or revoked (`invalid key`). |
+| 1     | 401, 503      | 401 when the `key` query param is missing (`missing key`), or the key is unknown or revoked (`invalid key`). 503 when the key store could not be read (`key store unavailable`): the key was not judged, so retry with backoff. |
 | 2     | 429           | Per-source-IP active-connection cap reached (default 200, `WIREFAN_IP_CAP`). |
 | 3     | 426, 405, 400 | WebSocket handshake rejected by `coder/websocket`: 426 when the request is older than HTTP/1.1 or its `Connection` and `Upgrade` headers do not ask for a WebSocket upgrade; 405 when the method is not `GET`; 400 when `Sec-WebSocket-Version` is not `13` or `Sec-WebSocket-Key` is missing, repeated or malformed. |
 | 4     | 403           | `Origin` not allowed by `--allowed-origins`. A request without an `Origin` header, or whose `Origin` host equals its `Host`, passes this check. |
@@ -130,6 +130,7 @@ answers:
 | HTTP | Body                                            | When                                   |
 | ---- | ----------------------------------------------- | -------------------------------------- |
 | 401  | `bad credentials`                               | The credentials are missing or contain no `:`, the key is unknown or revoked, or the secret is wrong. Checked before the body is read. |
+| 503  | `key store unavailable`                         | The key store could not be read, so the credentials were not checked. Retry with backoff. |
 | 400  | `bad request`                                   | The body does not decode as that JSON object. |
 | 400  | `bad request: socket_id is not a valid socket id` | `socket_id` is not a ULID (26 Crockford base32 characters), the only shape `/v1/connect` issues. |
 | 400  | `bad request: channel must be a valid private- or presence- channel name` | `channel` is empty, over 128 bytes, contains a C0 control character or DEL, or does not start with `private-` or `presence-`. Public channels and `_wirefan-stats` need no token, so none is minted for them. |

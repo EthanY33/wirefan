@@ -226,7 +226,7 @@ only counters end in `_total`.
 | `wirefan_messages_published_total` | counter | `internal/conn/handler.go: handlePublish` |
 | `wirefan_broadcast_latency_seconds` | histogram | `handlePublish`, around `Fanout.Broadcast` |
 | `wirefan_messages_dropped_total{reason}` | counter | `internal/conn/handler.go: Conn.Send` (`slow_consumer`) |
-| `wirefan_upgrade_rejected_total{reason}` | counter | `internal/server/upgrade.go: ServeHTTP` (`bad_key`, `phantom_cap`, `draining`) |
+| `wirefan_upgrade_rejected_total{reason}` | counter | `internal/server/upgrade.go: ServeHTTP` (`bad_key`, `store_error`, `phantom_cap`, `draining`) |
 | `wirefan_auth_failures_total` | counter | `internal/conn/handler.go: handleSubscribe` |
 
 `metrics.SnapshotBasic` reads the same collectors for the
