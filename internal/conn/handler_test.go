@@ -308,6 +308,10 @@ func newSharedEnvConns(t *testing.T, pol Policy, n int) []*websocket.Conn {
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
 	fan := fanout.NewPerConn()
+	// Server-side conns live until the test ends, not for a fixed time: a
+	// slow or loaded runner must not cut a conn off mid-test.
+	runCtx, cancelRuns := context.WithCancel(context.Background())
+	t.Cleanup(cancelRuns)
 
 	var idCounter int
 	var idMu sync.Mutex
@@ -320,9 +324,7 @@ func newSharedEnvConns(t *testing.T, pol Policy, n int) []*websocket.Conn {
 		sid := fmt.Sprintf("conn-%d", idCounter)
 		idCounter++
 		idMu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = Run(ctx, c, sid, "test-key", Deps{
+		_ = Run(runCtx, c, sid, "test-key", Deps{
 			Registry:      reg,
 			SigningSecret: "test-signing-secret",
 			Fanout:        fan,
@@ -429,12 +431,32 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 	// sendChanSize, so the queue stops at sendUnmeteredFrames (64, where
 	// it always did) and the next Send returns ErrSlowConsumer.
 	bigPayload := strings.Repeat("x", 50_000)
+	// pub is subscribed to the channel it publishes on, so it receives its
+	// own echoes. Drain them so the publisher is not itself a stalled
+	// subscriber; only slow is meant to stop reading.
+	pub.SetReadLimit(1 << 20)
+	go func() {
+		for {
+			if _, _, err := pub.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
 	for i := 0; i < 90; i++ {
-		sendJSON(t, pub, map[string]any{
+		b, err := json.Marshal(map[string]any{
 			"type":    "publish",
 			"channel": "public-slow",
 			"data":    map[string]any{"i": i, "blob": bigPayload},
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wctx, wcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = pub.Write(wctx, websocket.MessageText, b)
+		wcancel()
+		if err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
 	}
 
 	// Read from slow until the server closes the conn. Raise the client
@@ -765,5 +787,19 @@ func TestPublishRejectsInvalidUTF8(t *testing.T) {
 	defer cancel()
 	if _, raw, err := sub.Read(rctx); err == nil {
 		t.Fatalf("subscriber received a relayed frame: %q", raw)
+	}
+}
+
+// TestSharedEnvConnOutlivesTenSeconds is the regression for the shared test
+// server giving every Run a hard 10 s lifetime: a test that ran past it had
+// its socket torn down under it and failed with a connection reset that said
+// nothing about the code under test.
+func TestSharedEnvConnOutlivesTenSeconds(t *testing.T) {
+	t.Parallel()
+	conns := newSharedEnvConns(t, PolicyDisconnect{}, 1)
+	time.Sleep(10500 * time.Millisecond)
+	sendJSON(t, conns[0], map[string]any{"type": "subscribe", "channel": "public-late"})
+	if got := readJSON(t, conns[0]); got["type"] != "subscribed" {
+		t.Fatalf("ack after 10.5 s: %+v", got)
 	}
 }
