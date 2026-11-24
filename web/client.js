@@ -932,11 +932,12 @@ function refreshPeers() {
   const bcNew = bcSinceSnapshot();
   let room = heardOnly.length;
   if (statOthers !== null) {
+    const left = Math.max(0, statOthers - (viaBc.length - bcNew));
     const fresh = Math.min(
       heardOnly.filter(([, p]) => now - p.heard < FRESH_MS).length,
-      statOthers + FRESH_SLACK,
+      left + FRESH_SLACK,
     );
-    room = Math.min(heardOnly.length, Math.max(fresh, statOthers - (viaBc.length - bcNew), 0));
+    room = Math.min(heardOnly.length, Math.max(fresh, left));
   }
   const on = !!client;
   const list = on
@@ -1012,14 +1013,21 @@ function trimHeard() {
   heardOnly.sort((a, b) => b[1] - a[1]);
   for (const [sid] of heardOnly.slice(MAX_HEARD)) peers.delete(sid);
 }
-// A burst of pulses costs one rescan per frame, not one per event.
-let refreshQueued = false;
+// A burst of pulses costs at most two rescans per frame, not one per event.
+// The first runs at once, so a sender heard for the first time is placed in
+// the diagram before its pulse is drawn; the rest of the frame shares one.
+let refreshQueued = false;   // a rescan already ran in this frame
+let refreshOwed = false;     // pulses arrived after it
 function scheduleRefreshPeers() {
-  if (refreshQueued) return;
+  if (refreshQueued) { refreshOwed = true; return; }
   refreshQueued = true;
-  const run = () => { refreshQueued = false; refreshPeers(); };
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
-  else setTimeout(run, 16);
+  refreshPeers();
+  const release = () => {
+    refreshQueued = false;
+    if (refreshOwed) { refreshOwed = false; refreshPeers(); }
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(release);
+  else setTimeout(release, 16);
 }
 
 // ---------------- incoming events ----------------
