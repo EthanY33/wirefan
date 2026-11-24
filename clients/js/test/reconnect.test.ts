@@ -4,6 +4,7 @@ import {
   ConnectionClosedError,
   WirefanClient,
   WirefanError,
+  type ChannelEvent,
   type Subscription,
   type WirefanState,
 } from "../src/index.js";
@@ -744,6 +745,51 @@ describe("resubscribe failures", () => {
       { type: "unsubscribe", channel: "demo" },
     ]);
     expect(resub).toEqual([]);
+    c.close();
+  });
+
+  it("keeps a channel and its resubscribe retry when a second subscribe() with the same handler is refused", async () => {
+    const h = new FakeWSHarness();
+    let limited = true;
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        // A reconnect herd: the second connection is rate limited for a while.
+        respond: (f) =>
+          i === 1 && f.type === "subscribe" && limited
+            ? { type: "error", code: "RATE_LIMITED", message: "slow down", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const c = makeClient(h);
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    const got: unknown[] = [];
+    const onEvent = (ev: ChannelEvent): void => {
+      got.push(ev.data);
+    };
+    const first = await c.subscribe("room", onEvent);
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => errors.length >= 1, "a rate-limited resubscribe");
+
+    // The app subscribes again with the same handler while the client is
+    // still retrying, and is refused as well.
+    const err = await c.subscribe("room", onEvent).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(WirefanError);
+    expect((err as WirefanError).code).toBe("RATE_LIMITED");
+    expect(first.active).toBe(true);
+
+    limited = false;
+    await until(() => resub.length === 1, "resubscribed once the limit lifts");
+    expect(resub[0]).toEqual(["room"]);
+    expect(first.active).toBe(true);
+    h.sockets[1]!.serverSend({ type: "event", channel: "room", data: 1, id: "e" });
+    expect(got).toEqual([1]);
     c.close();
   });
 

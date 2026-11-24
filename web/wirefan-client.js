@@ -261,7 +261,7 @@ export class WirefanClient {
         __classPrivateFieldSet(this, _WirefanClient_socketId, null, "f");
         for (const rec of __classPrivateFieldGet(this, _WirefanClient_channels, "f").values()) {
             __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, rec);
-            rec.handlers.clear();
+            rec.holders.clear();
         }
         __classPrivateFieldGet(this, _WirefanClient_channels, "f").clear();
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_setState).call(this, "closed");
@@ -274,7 +274,10 @@ export class WirefanClient {
      * callback in the client options.
      *
      * Subscribing to a channel that is already subscribed reuses the server
-     * subscription and just attaches the handler.
+     * subscription and just attaches the handler. Every call returns its own
+     * handle, with or without a handler, and the channel stays subscribed until
+     * the last handle unsubscribes. A function that several handles passed is
+     * called once per event.
      */
     async subscribe(channel, handler) {
         if (__classPrivateFieldGet(this, _WirefanClient_closed, "f"))
@@ -290,7 +293,7 @@ export class WirefanClient {
         const alreadyConfirmed = rec?.confirmed === true;
         if (!rec) {
             rec = {
-                handlers: new Set(),
+                holders: new Map(),
                 confirmed: false,
                 inflight: null,
                 retryTimer: null,
@@ -298,8 +301,9 @@ export class WirefanClient {
             };
             __classPrivateFieldGet(this, _WirefanClient_channels, "f").set(channel, rec);
         }
-        if (handler)
-            rec.handlers.add(handler);
+        // This call's own hold on the channel, with or without a handler.
+        const holder = Symbol(channel);
+        rec.holders.set(holder, handler ?? null);
         if (!alreadyConfirmed) {
             let epoch = __classPrivateFieldGet(this, _WirefanClient_epoch, "f");
             for (;;) {
@@ -322,13 +326,15 @@ export class WirefanClient {
                         epoch = __classPrivateFieldGet(this, _WirefanClient_epoch, "f");
                         continue;
                     }
-                    if (handler)
-                        rec.handlers.delete(handler);
+                    // Give up this call's own hold only: another handle on the record
+                    // (and a resubscribe retry pending for it) must outlive this
+                    // failure.
+                    rec.holders.delete(holder);
                     // Forget only this call's own record. If it was already dropped,
                     // a record now under the name belongs to a later subscribe().
                     if (__classPrivateFieldGet(this, _WirefanClient_channels, "f").get(channel) === rec &&
                         !rec.confirmed &&
-                        rec.handlers.size === 0) {
+                        rec.holders.size === 0) {
                         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(this, rec);
                         __classPrivateFieldGet(this, _WirefanClient_channels, "f").delete(channel);
                     }
@@ -358,9 +364,8 @@ export class WirefanClient {
                 active = false;
                 if (__classPrivateFieldGet(client, _WirefanClient_channels, "f").get(channel) !== held)
                     return;
-                if (handler)
-                    held.handlers.delete(handler);
-                if (held.handlers.size > 0)
+                held.holders.delete(holder);
+                if (held.holders.size > 0)
                     return; // other handles still want it
                 __classPrivateFieldGet(client, _WirefanClient_instances, "m", _WirefanClient_cancelRetry).call(client, held);
                 __classPrivateFieldGet(client, _WirefanClient_channels, "f").delete(channel);
@@ -516,7 +521,11 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
         data: frame.data,
         id: frame.id,
     };
-    for (const h of [...rec.handlers]) {
+    // A snapshot, and a Set so that a function several handles passed is
+    // still called once per event.
+    for (const h of new Set(rec.holders.values())) {
+        if (!h)
+            continue;
         try {
             h(ev);
         }
@@ -647,7 +656,7 @@ _WirefanClient_url = new WeakMap(), _WirefanClient_authorize = new WeakMap(), _W
         __classPrivateFieldSet(this, _WirefanClient_closed, true, "f");
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_rejectConnectWaiters).call(this, new ConnectionClosedError("reconnect attempts exhausted", code, reason));
         for (const rec of __classPrivateFieldGet(this, _WirefanClient_channels, "f").values())
-            rec.handlers.clear();
+            rec.holders.clear();
         __classPrivateFieldGet(this, _WirefanClient_channels, "f").clear();
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_setState).call(this, "closed");
         __classPrivateFieldGet(this, _WirefanClient_instances, "m", _WirefanClient_emit).call(this, "closed", { reason: "exhausted" });

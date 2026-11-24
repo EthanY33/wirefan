@@ -295,7 +295,14 @@ interface PendingOp {
 }
 
 interface ChannelRecord {
-  handlers: Set<Handler<ChannelEvent>>;
+  /**
+   * One entry per live handle (subscribe() call), keyed by a token of its
+   * own; the value is the handler it passed, or null. The size is the
+   * channel's reference count. Handlers alone cannot count holders: a handle
+   * with no handler would count for nothing, and two handles given the same
+   * function would count once.
+   */
+  holders: Map<symbol, Handler<ChannelEvent> | null>;
   /** Confirmed by a `subscribed` ack on the current connection. */
   confirmed: boolean;
   /** Shared by concurrent subscribe() calls so only one frame is sent. */
@@ -559,7 +566,7 @@ export class WirefanClient {
     this.#socketId = null;
     for (const rec of this.#channels.values()) {
       this.#cancelRetry(rec);
-      rec.handlers.clear();
+      rec.holders.clear();
     }
     this.#channels.clear();
     this.#setState("closed");
@@ -679,7 +686,10 @@ export class WirefanClient {
       data: frame.data,
       id: frame.id,
     };
-    for (const h of [...rec.handlers]) {
+    // A snapshot, and a Set so that a function several handles passed is
+    // still called once per event.
+    for (const h of new Set(rec.holders.values())) {
+      if (!h) continue;
       try {
         h(ev);
       } catch {
@@ -827,7 +837,7 @@ export class WirefanClient {
       this.#rejectConnectWaiters(
         new ConnectionClosedError("reconnect attempts exhausted", code, reason),
       );
-      for (const rec of this.#channels.values()) rec.handlers.clear();
+      for (const rec of this.#channels.values()) rec.holders.clear();
       this.#channels.clear();
       this.#setState("closed");
       this.#emit("closed", { reason: "exhausted" });
@@ -952,7 +962,10 @@ export class WirefanClient {
    * callback in the client options.
    *
    * Subscribing to a channel that is already subscribed reuses the server
-   * subscription and just attaches the handler.
+   * subscription and just attaches the handler. Every call returns its own
+   * handle, with or without a handler, and the channel stays subscribed until
+   * the last handle unsubscribes. A function that several handles passed is
+   * called once per event.
    */
   async subscribe(
     channel: string,
@@ -975,7 +988,7 @@ export class WirefanClient {
     const alreadyConfirmed = rec?.confirmed === true;
     if (!rec) {
       rec = {
-        handlers: new Set(),
+        holders: new Map(),
         confirmed: false,
         inflight: null,
         retryTimer: null,
@@ -983,7 +996,9 @@ export class WirefanClient {
       };
       this.#channels.set(channel, rec);
     }
-    if (handler) rec.handlers.add(handler);
+    // This call's own hold on the channel, with or without a handler.
+    const holder = Symbol(channel);
+    rec.holders.set(holder, handler ?? null);
 
     if (!alreadyConfirmed) {
       let epoch = this.#epoch;
@@ -1008,13 +1023,16 @@ export class WirefanClient {
             epoch = this.#epoch;
             continue;
           }
-          if (handler) rec.handlers.delete(handler);
+          // Give up this call's own hold only: another handle on the record
+          // (and a resubscribe retry pending for it) must outlive this
+          // failure.
+          rec.holders.delete(holder);
           // Forget only this call's own record. If it was already dropped,
           // a record now under the name belongs to a later subscribe().
           if (
             this.#channels.get(channel) === rec &&
             !rec.confirmed &&
-            rec.handlers.size === 0
+            rec.holders.size === 0
           ) {
             this.#cancelRetry(rec);
             this.#channels.delete(channel);
@@ -1043,8 +1061,8 @@ export class WirefanClient {
         if (!active) return;
         active = false;
         if (client.#channels.get(channel) !== held) return;
-        if (handler) held.handlers.delete(handler);
-        if (held.handlers.size > 0) return; // other handles still want it
+        held.holders.delete(holder);
+        if (held.holders.size > 0) return; // other handles still want it
         client.#cancelRetry(held);
         client.#channels.delete(channel);
         if (client.#state !== "connected") return; // nothing to tell the server

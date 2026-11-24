@@ -201,6 +201,69 @@ describe("subscribe / events / unsubscribe", () => {
     c.close();
   });
 
+  it("keeps the channel for a handle without a handler when a listening handle unsubscribes", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h);
+    await c.connect();
+    const unsubscribes = () => h.current.sentFrames().filter((f) => f.type === "unsubscribe");
+    // A publish-only handle, then a listening one on the same channel.
+    const pub = await c.subscribe("room");
+    const listener = await c.subscribe("room", () => {});
+
+    await listener.unsubscribe();
+    expect(unsubscribes()).toEqual([]);
+    expect(listener.active).toBe(false);
+    expect(pub.active).toBe(true);
+
+    // Only the last handle leaving tells the server.
+    await pub.unsubscribe();
+    expect(unsubscribes()).toEqual([{ type: "unsubscribe", channel: "room" }]);
+    c.close();
+  });
+
+  it("counts two handles without handlers as two holders of the channel", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h);
+    await c.connect();
+    const unsubscribes = () => h.current.sentFrames().filter((f) => f.type === "unsubscribe");
+    const s1 = await c.subscribe("room");
+    const s2 = await c.subscribe("room");
+
+    await s1.unsubscribe();
+    expect(unsubscribes()).toEqual([]);
+    expect(s2.active).toBe(true);
+
+    await s2.unsubscribe();
+    expect(unsubscribes()).toHaveLength(1);
+    c.close();
+  });
+
+  it("keeps delivering to a handle after another handle with the same handler unsubscribes", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h);
+    await c.connect();
+    const got: unknown[] = [];
+    const onEvent = (ev: ChannelEvent): void => {
+      got.push(ev.data);
+    };
+    const s1 = await c.subscribe("room", onEvent);
+    const s2 = await c.subscribe("room", onEvent);
+
+    // One function is called once per event, however many handles passed it.
+    h.current.serverSend({ type: "event", channel: "room", data: "a", id: "1" });
+    expect(got).toEqual(["a"]);
+
+    await s2.unsubscribe();
+    expect(h.current.sentFrames().filter((f) => f.type === "unsubscribe")).toEqual([]);
+    expect(s1.active).toBe(true);
+    h.current.serverSend({ type: "event", channel: "room", data: "b", id: "2" });
+    expect(got).toEqual(["a", "b"]);
+    c.close();
+  });
+
   it("rejects the subscribe promise on a server error frame, typed with the code", async () => {
     const h = new FakeWSHarness();
     h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
