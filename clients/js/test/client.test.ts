@@ -225,6 +225,34 @@ describe("subscribe / events / unsubscribe", () => {
     c.close();
   });
 
+  it("rejects a first subscribe refused with SUBSCRIBE_FAILED and leaves the retry to the caller", async () => {
+    const h = new FakeWSHarness();
+    let seen = 0;
+    h.onDial = (ws) =>
+      autoAccept(ws, "S", {
+        respond: (f) =>
+          f.type === "subscribe" && ++seen === 1
+            ? { type: "error", code: "SUBSCRIBE_FAILED", message: "channel deleted", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const c = makeClient(h);
+    await c.connect();
+    const err = await c.subscribe("demo").then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(WirefanError);
+    expect((err as WirefanError).code).toBe("SUBSCRIBE_FAILED");
+
+    // Only a resubscribe after a reconnect retries on its own; a second call
+    // here is a new attempt.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.current.sentFrames().filter((f) => f.type === "subscribe")).toHaveLength(1);
+    const sub = await c.subscribe("demo");
+    expect(sub.active).toBe(true);
+    c.close();
+  });
+
   it("emits unattributable error frames on the error event", async () => {
     const h = new FakeWSHarness();
     h.onDial = (ws) => autoAccept(ws, "S");

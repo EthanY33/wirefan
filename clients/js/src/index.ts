@@ -336,13 +336,15 @@ const SUBSCRIBE_ERROR_CODES = new Set<string>([
  * timeout, RATE_LIMITED, RATE_LIMITED_CONN, an authorize() callback that
  * throws, a code this client does not know) is treated as transient and
  * retried with backoff, so a reconnect herd cannot silently strip channels.
+ * SUBSCRIBE_FAILED is transient too: the server sends it only when a
+ * subscribe lost a race with its registry sweeper, and the protocol defines
+ * it as safe to retry (docs/PROTOCOL.md section 7).
  */
 const DEFINITIVE_SUBSCRIBE_CODES = new Set<string>([
   "AUTH_FAILED",
   "AUTH_REPLAYED",
   "RESERVED_CHANNEL",
   "BAD_CHANNEL",
-  "SUBSCRIBE_FAILED",
 ]);
 
 function isDefinitiveRefusal(err: Error): boolean {

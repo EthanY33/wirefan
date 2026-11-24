@@ -581,6 +581,10 @@ describe("resubscribe failures", () => {
     // Newer server: op and channel route it exactly.
     ["RATE_LIMITED", true],
     ["RATE_LIMITED_CONN", true],
+    // The subscribe lost a race with the server's registry sweeper, which
+    // docs/PROTOCOL.md section 7 defines as safe to retry.
+    ["SUBSCRIBE_FAILED", false],
+    ["SUBSCRIBE_FAILED", true],
   ])(
     "retries a resubscribe refused with %s (op named: %s) after a backoff",
     async (code, named) => {
@@ -621,6 +625,33 @@ describe("resubscribe failures", () => {
     },
   );
 
+  it("fetches a fresh token to retry a private channel refused with SUBSCRIBE_FAILED", async () => {
+    const h = new FakeWSHarness();
+    let seen = 0;
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        // The refused subscribe has already spent its token on the server.
+        respond: (f) =>
+          i === 1 && f.type === "subscribe" && ++seen === 1
+            ? { type: "error", code: "SUBSCRIBE_FAILED", message: "channel deleted", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    let n = 0;
+    const c = makeClient(h, { authorize: ({ socketId }) => `tok-${socketId}-${n++}` });
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    const sub = await c.subscribe("private-room", () => {});
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => resub.length === 1, "resubscribed after the retry");
+
+    expect(resub[0]).toEqual(["private-room"]);
+    expect(subscribesOn(h, 1).map((f) => f.token)).toEqual(["tok-SID1-1", "tok-SID1-2"]);
+    expect(sub.active).toBe(true);
+    c.close();
+  });
+
   it.each([
     "AUTH_FAILED",
     "AUTH_REPLAYED",
@@ -628,7 +659,6 @@ describe("resubscribe failures", () => {
     "BAD_CHANNEL",
     "LIMIT_CHANNELS",
     "LIMIT_SUBSCRIBERS",
-    "SUBSCRIBE_FAILED",
   ])("drops a channel whose resubscribe is definitively refused with %s", async (code) => {
     const h = new FakeWSHarness();
     h.onDial = (ws, i) =>
