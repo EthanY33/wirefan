@@ -295,10 +295,7 @@ func marshalFrame(v any) []byte {
 
 func (c *Conn) sendAck(typ, channel string) {
 	b := marshalFrame(map[string]string{"type": typ, "channel": channel})
-	select {
-	case c.send <- b:
-	default:
-	}
+	c.send.offer(b) // dropped when the queue is full
 }
 
 // errorFrame is the wire shape of every error. Op and Channel are set only
@@ -338,10 +335,7 @@ func (c *Conn) sendOpError(msg incoming, code, message string) {
 
 func (c *Conn) sendErrorFrame(f errorFrame) {
 	b := marshalFrame(f)
-	select {
-	case c.send <- b:
-	default:
-	}
+	c.send.offer(b) // dropped when the queue is full
 }
 
 // Send satisfies the registry.Subscriber interface. Delegates to the configured
@@ -352,10 +346,10 @@ func (c *Conn) sendErrorFrame(f errorFrame) {
 // try-send) sequence on c.send, so concurrent multi-channel broadcasts each
 // evict at most the one message their own insert needs. Every step of that
 // sequence is non-blocking, so holding the lock can never stall a
-// broadcaster behind a stuck or exited writePump. PolicyDisconnect tolerates
-// concurrency on its own (the send / default pair is atomic per goroutine),
-// but the lock also costs nothing in the common path so we hold it
-// unconditionally.
+// broadcaster behind a stuck or exited writePump. Under PolicyDisconnect the
+// lock matters too: sendQueue.offer checks the byte bound and enqueues in
+// two steps, so without it concurrent broadcasts could pass that bound
+// together.
 func (c *Conn) Send(b []byte) error {
 	if c.closed.Load() {
 		return ErrSlowConsumer

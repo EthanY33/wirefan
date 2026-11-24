@@ -1,12 +1,14 @@
 package conn
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -423,8 +425,9 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 	// Use a payload close to the 64 KiB ReadLimit so a handful of frames
 	// saturate the kernel's TCP send buffer (~200 KiB on Linux, similar
 	// order of magnitude on Windows). With writePump blocked on Write,
-	// c.send fills to sendChanSize and the next Send returns
-	// ErrSlowConsumer.
+	// c.send fills. Frames this size pass sendQueueBytes long before
+	// sendChanSize, so the queue stops at sendUnmeteredFrames (64, where
+	// it always did) and the next Send returns ErrSlowConsumer.
 	bigPayload := strings.Repeat("x", 50_000)
 	for i := 0; i < 90; i++ {
 		sendJSON(t, pub, map[string]any{
@@ -468,6 +471,74 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 		// disconnect successful. CloseStatus may return 1008 (clean) or -1
 		// (abnormal); both indicate the server severed the conn.
 		return
+	}
+}
+
+// TestAdmittedBurstKeepsReadersConnected is the regression for a send queue
+// smaller than the publish burst. The queue held 64 frames while a fresh conn
+// may publish 100 at once, and readPump handles a burst that is already in
+// its socket buffer without yielding: every event was queued for every
+// subscriber before any writePump ran, the 65th Send overflowed, and conns
+// that were reading the whole time were closed with 1008 as slow consumers.
+// A burst the rate limits admit must reach every reader and close none.
+func TestAdmittedBurstKeepsReadersConnected(t *testing.T) {
+	// One P, as on a 1 vCPU host, so the publisher's readPump runs the
+	// whole burst before a writePump gets a turn.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	const subscribers = 20
+	const burst = defaultConnPublishBurst
+	conns := newSharedEnvConns(t, PolicyDisconnect{}, subscribers+1)
+	for i, c := range conns {
+		sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "public-burst"})
+		if got := readJSON(t, c); got["type"] != "subscribed" {
+			t.Fatalf("conn %d ack: %+v", i, got)
+		}
+	}
+
+	// Every conn, the publisher included, reads as fast as frames arrive.
+	type result struct {
+		events int
+		err    error
+	}
+	results := make(chan result, len(conns))
+	for _, c := range conns {
+		go func(c *websocket.Conn) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			n := 0
+			for n < burst {
+				_, raw, err := c.Read(ctx)
+				if err != nil {
+					results <- result{n, err}
+					return
+				}
+				if bytes.Contains(raw, []byte(`"type":"event"`)) {
+					n++
+				}
+			}
+			results <- result{n, nil}
+		}(c)
+	}
+
+	// The whole per-conn publish burst, back to back.
+	pub := conns[subscribers]
+	frame := []byte(`{"type":"publish","channel":"public-burst","data":"xxxxxxxxxxxxxxxxxxxx"}`)
+	for i := 0; i < burst; i++ {
+		if err := pub.Write(context.Background(), websocket.MessageText, frame); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+
+	lost := 0
+	for range conns {
+		if r := <-results; r.err != nil {
+			lost++
+			t.Logf("a reading conn got %d of %d events, then: %v", r.events, burst, r.err)
+		}
+	}
+	if lost != 0 {
+		t.Fatalf("%d of %d reading conns did not get a burst the rate limits admit", lost, len(conns))
 	}
 }
 

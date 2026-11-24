@@ -141,10 +141,13 @@ so the same binary benchmarks both strategies:
 
 A publish is rate-limited per connection and per API key, stamped with a
 ULID, and copied into the send buffer of every subscriber on the channel.
-Each connection has its own 64-message buffer and write pump, so one slow
-reader cannot delay the others: when its buffer fills it is disconnected
-(with close code 1008 when its socket still accepts one) and everyone else
-keeps receiving.
+Each connection has its own write pump and send buffer (256 messages, and
+no more than 1 MiB once it holds 64), so one slow reader cannot delay the
+others: when its buffer fills it is disconnected (with close code 1008 when
+its socket still accepts one) and everyone else keeps receiving. The buffer
+holds more messages than the largest burst one key's rate limits admit, so
+a burst within the byte limit cannot by itself fill it for a reader that is
+keeping up.
 
 <p align="center">
   <img src="docs/img/private-channel-auth.png" alt="Sequence diagram: the browser connects and learns its socket_id, asks your app server for access, your app server calls /v1/auth/sign with the key secret, wirefan returns a token, and the browser subscribes with it" width="100%">

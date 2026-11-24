@@ -49,7 +49,7 @@ shows a gain:
   same host. `bench.sh` accepts `CPUS` but no result exists above 1.
   `cmd/wirefan/main.go:140` sizes the sharded pool by `GOMAXPROCS`.
 * **Memory per connection.** `conn.Run` starts two pump goroutines
-  (`internal/conn/conn.go` lines 221-222), a 64-slot send channel, two
+  (`internal/conn/conn.go` lines 221-222), a 256-slot send channel, two
   `rate.Limiter`s and a close-request channel. `docs/BENCHMARKS.md` (lines
   210-211) gives only "about 10 MB in use" at 500 connections with bufio
   buffers about 40 percent of heap. The demo runs on a 1 GB e2-micro.

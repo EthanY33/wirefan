@@ -20,7 +20,7 @@ without editing source, installing extra tools or guessing:
 
 * **Hardcoded limits.** `internal/conn/conn.go` (lines 79-99):
   `defaultMaxChannelsPerConn` (64), `defaultMaxSubsPerChannel` (10 000),
-  per-conn publish and control rates, `sendChanSize` (64). The 64 KiB read
+  per-conn publish and control rates, `sendChanSize` (256). The 64 KiB read
   limit is `SetReadLimit` in `internal/conn/pumps.go:50`. The per-key rate
   is `ratelimit.New(100, 200, time.Hour)` in `cmd/wirefan/main.go:171`.
   `docs/DESIGN.md` 14 "Not in 1.0" lists the missing flags; `CLAUDE.md`

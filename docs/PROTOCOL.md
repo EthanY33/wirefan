@@ -446,7 +446,7 @@ stays open; the server never sends 1003 (`UnsupportedData`).
 | Publish rate per connection, sustained / burst | 50 / sec, 100 | `defaultConnPublishRate` / `defaultConnPublishBurst` in `conn.go` |
 | Subscribe + unsubscribe rate per connection, sustained / burst | 20 / sec, 64 | `defaultConnControlRate` / `defaultConnControlBurst` in `conn.go` |
 | Active conns per source IP       | 200 (override: `WIREFAN_IP_CAP` env); IPv6 counted per /64 | `defaultIPCap` and `ipCapKey` in `internal/server/upgrade.go` |
-| Per-conn send buffer             | 64 messages    | `sendChanSize` in `conn.go`                      |
+| Per-conn send buffer             | 256 messages; once it holds 64, at most 1 MiB | `sendChanSize`, `sendUnmeteredFrames` and `sendQueueBytes` in `conn.go` |
 | Token TTL                        | 5 min          | `internal/server/rest.go`                        |
 
 Every publish, subscribe and unsubscribe is charged first to the
@@ -456,6 +456,16 @@ every connection opened with the same key. A request refused by a
 per-connection bucket spends no per-key budget. A frame refused by an
 earlier check in §7 (for example `BAD_CHANNEL`, `RESERVED_CHANNEL` or
 `NOT_SUBSCRIBED`) is not charged at all.
+
+The send buffer holds more messages than the largest burst one API
+key's limits admit (200), so such a burst cannot by itself fill the
+buffer of a subscriber that is reading. Two cases fall outside that:
+bursts from several keys that reach one subscriber at the same moment,
+and a burst of more than 64 messages that also totals more than 1 MiB,
+which fits only as far as the subscriber drains it while it arrives.
+The first 64 queued messages are accepted whatever their size, so the
+most one connection can have queued is 64 messages of 64 KiB, about
+4 MiB.
 
 ## 10. Ordering guarantees
 
@@ -484,13 +494,14 @@ cross-publisher ordering.
 
 ## 11. Backpressure policies
 
-When a subscriber's per-conn send buffer (capacity 64) is full, a
+When a subscriber's per-conn send buffer is full (256 messages, or more
+than 1 MiB once it holds 64; see section 9), a
 `Policy` decides what happens to the event (`internal/conn/policy.go`):
 
 | Policy             | Behaviour when buffer is full                                    |
 | ------------------ | ---------------------------------------------------------------- |
 | `PolicyDisconnect` | Returns `ErrSlowConsumer`: the event is not queued, and the conn is closed with **1008** (PolicyViolation), reason `slow consumer`. **The only policy the server uses.** |
-| `PolicyDropOldest` | Evicts the head message and enqueues the new one. If the buffer is still full after the eviction (an ack or error frame took the freed slot), the new message is dropped. Never blocks, never errors. Not selectable. |
+| `PolicyDropOldest` | Evicts the head message and enqueues the new one. If the buffer is still full after the eviction (an ack or error frame took the freed slot, or the evicted message was smaller than the new one), the new message is dropped. Never blocks, never errors. Not selectable. |
 | `PolicyDropNewest` | Drops the new message. Never errors. Not selectable.             |
 
 The policy is hardcoded to `PolicyDisconnect` in `cmd/wirefan/main.go`.
@@ -504,7 +515,7 @@ No `error` frame is sent on the disconnect path: the client sees a
 1008 close.
 
 Acks (`subscribed`, `unsubscribed`) and `error` frames share the same
-64-message buffer. If it is full when one of them is queued, that frame
+buffer. If it is full when one of them is queued, that frame
 is dropped silently; this does not disconnect the client.
 
 ## 12. Heartbeat

@@ -36,10 +36,11 @@ func (c *Conn) writePump(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case msg, ok := <-c.send:
+		case msg, ok := <-c.send.ch:
 			if !ok {
 				return c.ws.Close(websocket.StatusNormalClosure, "")
 			}
+			c.send.release(msg)
 			wctx, cancel := context.WithTimeout(ctx, writeDeadline)
 			err := c.ws.Write(wctx, websocket.MessageText, msg)
 			cancel()
