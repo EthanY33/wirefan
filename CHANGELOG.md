@@ -9,6 +9,87 @@ exactly what that covers.
 
 ## [Unreleased]
 
+### Security
+
+- `--allowed-origins` now refuses every entry that matches all origins unless
+  `--dev` is set, not only the literal `*`. `**`, `https://*`, `http://*`,
+  `ws://*`, `wss://*` and similar patterns make the server exit at startup
+  with an error naming the entry. An entry that is not a valid pattern is
+  also refused at startup; before, it made every handshake fail. A setup
+  that relied on such a pattern to skip the origin check must now list its
+  origins or run with `--dev`.
+- Both listeners now give up reading a request, body included, after 15 s,
+  and the public listener gives up writing a response after 30 s. A client
+  that stalls on a request body, or that sends requests and never reads the
+  replies, no longer holds a connection open indefinitely. WebSocket
+  connections are not affected, and the admin listener still has no write
+  timeout, so `pprof` profiles and traces can run long.
+- Behind a trusted proxy, every `X-Forwarded-For` header line is now read as
+  one list, in order. A proxy that adds its hop as a new header line (for
+  example HAProxy's `option forwardfor`) no longer lets a client choose its
+  own per-IP connection cap bucket by sending a line of its own first.
+- The release workflow publishes only the two binaries its build job makes
+  and fails unless the release directory holds exactly those two files, so
+  no other artifact from the same run can be added to a release or be
+  covered by `SHA256SUMS`.
+
+### Changed
+
+- Passing an extra argument to `wirefan` is now an error that names the
+  argument. Flags stop at the first non-flag argument, so before this every
+  flag after one (for example `--allowed-origins a.com b.com --dev`, written
+  with a space instead of a comma) was silently ignored.
+- When the key store cannot be read, `/v1/connect` and `/v1/auth/sign` now
+  answer `503` with `key store unavailable` instead of `401`. The failure is
+  logged, and on `/v1/connect` it is counted in
+  `wirefan_upgrade_rejected_total` under `reason="store_error"` instead of
+  `reason="bad_key"`. Unknown and revoked keys still get `401`. Clients
+  should retry a `503` with backoff. See `docs/PROTOCOL.md`.
+- The per-connection send queue holds 256 messages instead of 64, and once
+  it holds 64 it accepts another only while the queued bytes stay within
+  1 MiB. The first 64 messages are accepted at any size, so the most one
+  connection can queue is still 64 messages of 64 KiB, about 4 MiB.
+- JavaScript client: `authorize()` now has a deadline, `authorizeTimeoutMs`
+  (default: the value of `ackTimeoutMs`). If it does not settle in time the
+  attempt fails with the new `AuthorizeTimeoutError`, which a resubscribe
+  reports and retries.
+
+### Fixed
+
+- Subscribers that were reading normally were closed with `1008` when a
+  burst of publishes outran their send queue, or when they took a while to
+  answer a keepalive ping. The server now keeps draining a connection's send
+  queue while a ping waits for its pong, and yields after each admitted
+  publish so readers can drain during a burst. A burst of more than 64
+  messages totalling more than 1 MiB can still close a subscriber on a slow
+  link or a busy host; `docs/PROTOCOL.md` section 9 lists the remaining
+  cases.
+- JavaScript client: a channel refused with `SUBSCRIBE_FAILED` on
+  resubscribe is now kept and retried with backoff (with a fresh token on
+  private channels) instead of being dropped, since the server sends it only
+  when a subscribe loses a race with the registry sweeper.
+- JavaScript client: unsubscribing one handle, or a refused duplicate
+  `subscribe()`, no longer tears down a channel that other handles still
+  hold or cancels a pending resubscribe retry. Handles with no handler, or
+  given the same function, are now counted separately.
+- JavaScript client: after a reconnect, one `authorize()` call that never
+  settled kept every later channel from resubscribing, with no error and no
+  retry. Channels are now restored side by side.
+- `deploy/deploy.sh` no longer leaves wirefan stopped, or with a truncated
+  binary, when saving the previous binary or installing the new one fails
+  (for example on a full disk). The binary is installed through a temporary
+  file and a rename, and each failing step restarts the service on the
+  unchanged binary where possible and exits with a `FATAL` message.
+- The early-reopen command documented in `deploy/demo/egress-guard` now
+  works: it creates a marker that makes the guard ignore the cap for the
+  rest of the month, where before the guard stopped the services again at
+  its next 15 s check. Markers from earlier months are removed.
+- The demo page no longer grows without bound from forged sender ids: it
+  keeps at most 32 peers it has only heard about, lets recent pulses run at
+  most 2 ahead of the server's connection count, and rescans peers at most
+  twice per frame. The first pulse from a new sender is still drawn from its
+  place in the diagram.
+
 ## [1.0.2] - 2026-11-16
 
 A patch release that rebuilds on a patched Go toolchain. The protocol, HTTP
