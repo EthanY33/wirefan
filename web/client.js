@@ -528,13 +528,17 @@ async function subscribeWithRetry(c, channel, handler, onRetry) {
 
 // /v1/connect checks the key before anything else, and a plain GET with a
 // good key gets 426 (it is not an upgrade), so one GET after a failed first
-// dial tells a revoked key (401) from the per-IP cap (429), a restarting
-// server (503) or a server that is simply down (no answer).
+// dial tells a revoked key (401) from the per-IP cap (429), a 503 or a
+// server that is simply down (no answer). A 503 is either a restarting
+// server (body `draining`) or an unreadable key store (body `key store
+// unavailable`); only the first is named as a restart.
 async function diagnoseFirstFailure(c, key) {
   let status = 0;
+  let body = '';
   try {
     const res = await fetch(`/v1/connect?key=${encodeURIComponent(key)}`, { cache: 'no-store' });
     status = res.status;
+    body = (await res.text()).trim();
   } catch (_) { /* network down: the reconnect loop keeps trying */ }
   if (client !== c || c.state === 'connected') return;
   if (status === 401) {
@@ -545,7 +549,7 @@ async function diagnoseFirstFailure(c, key) {
     return;
   }
   if (status === 429) dialHint = 'ipcap';
-  else if (status === 503) dialHint = 'draining';
+  else if (status === 503 && body === 'draining') dialHint = 'draining';
   if (dialHint) renderOverlay();
 }
 
