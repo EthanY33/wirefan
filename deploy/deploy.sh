@@ -24,7 +24,10 @@
 #      previous run's snapshot
 #   5. saves the currently installed binary to /usr/local/bin/wirefan.prev
 #      (exactly one previous version is kept, for rollback)
-#   6. installs the staged binary at /usr/local/bin/wirefan
+#   6. installs the staged binary at /usr/local/bin/wirefan (written to
+#      wirefan.new and renamed into place, so a failed write never leaves a
+#      truncated binary; if saving the old binary or installing fails,
+#      wirefan is restarted on the unchanged binary and the script exits)
 #   7. starts wirefan (a failed start falls through to the health check
 #      rather than aborting) and polls http://127.0.0.1:8080/v1/health
 #      for up to 30s expecting HTTP 200
@@ -148,6 +151,20 @@ restore_db() {
     done
 }
 
+# install_binary writes <src> next to $BIN_PATH and renames it over the live
+# binary. The rename is atomic on one filesystem, so $BIN_PATH is always either
+# the old or the new binary, never a partial write.
+install_binary() {
+    if ! install -m 0755 -o root -g root "$1" "$BIN_PATH.new"; then
+        rm -f "$BIN_PATH.new"
+        return 1
+    fi
+    if ! mv -f "$BIN_PATH.new" "$BIN_PATH"; then
+        rm -f "$BIN_PATH.new"
+        return 1
+    fi
+}
+
 # --- 3-7. stop, snapshot, swap, start ---------------------------------------
 
 echo "deploy.sh: stopping wirefan"
@@ -162,14 +179,23 @@ echo "deploy.sh: snapshotted $DB_PATH (and any -wal/-shm) to .prev"
 
 HAD_PREVIOUS=0
 if [ -f "$BIN_PATH" ]; then
-    cp -f "$BIN_PATH" "$PREV_PATH"
+    if ! cp -f "$BIN_PATH" "$PREV_PATH"; then
+        # Nothing has been swapped yet, so the current binary can come back up.
+        systemctl start wirefan || true
+        fail "could not save $BIN_PATH to $PREV_PATH (disk full?); nothing was swapped and wirefan was restarted on the current binary"
+    fi
     HAD_PREVIOUS=1
     echo "deploy.sh: saved current binary to $PREV_PATH"
 else
     echo "deploy.sh: NOTICE: no existing binary at $BIN_PATH (first deploy); rollback will not be possible"
 fi
 
-install -m 0755 -o root -g root "$STAGED" "$BIN_PATH"
+if ! install_binary "$STAGED"; then
+    # $BIN_PATH was not replaced (the swap is a rename), so the current binary,
+    # if any, can come back up.
+    systemctl start wirefan || true
+    fail "could not install the new binary at $BIN_PATH (disk full?); the installed binary is unchanged and wirefan was restarted on it"
+fi
 echo "deploy.sh: installed new binary at $BIN_PATH"
 
 echo "deploy.sh: starting wirefan"
@@ -196,7 +222,7 @@ if [ "$HAD_PREVIOUS" -eq 1 ]; then
     # The new binary may already have migrated the schema, which the
     # previous binary would refuse to open.
     restore_db || fail "new binary failed its health check AND restoring the database from $DB_PATH.prev failed. Service is stopped; restore the *.prev files in $(dirname "$DB_PATH") by hand"
-    install -m 0755 -o root -g root "$PREV_PATH" "$BIN_PATH"
+    install_binary "$PREV_PATH" || fail "new binary failed its health check AND reinstalling $PREV_PATH failed. Service is stopped and the new binary is still installed; copy $PREV_PATH over $BIN_PATH by hand, then start wirefan (the database is already restored)"
     # || true so a failed start still reaches the explanatory fail below
     # instead of exiting silently with systemd's status code.
     systemctl start wirefan || true

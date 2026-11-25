@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   AckTimeoutError,
+  AuthorizeTimeoutError,
   ConnectionClosedError,
   WirefanClient,
   WirefanError,
+  type ChannelEvent,
   type Subscription,
   type WirefanState,
 } from "../src/index.js";
@@ -581,6 +583,10 @@ describe("resubscribe failures", () => {
     // Newer server: op and channel route it exactly.
     ["RATE_LIMITED", true],
     ["RATE_LIMITED_CONN", true],
+    // The subscribe lost a race with the server's registry sweeper, which
+    // docs/PROTOCOL.md section 7 defines as safe to retry.
+    ["SUBSCRIBE_FAILED", false],
+    ["SUBSCRIBE_FAILED", true],
   ])(
     "retries a resubscribe refused with %s (op named: %s) after a backoff",
     async (code, named) => {
@@ -621,6 +627,33 @@ describe("resubscribe failures", () => {
     },
   );
 
+  it("fetches a fresh token to retry a private channel refused with SUBSCRIBE_FAILED", async () => {
+    const h = new FakeWSHarness();
+    let seen = 0;
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        // The refused subscribe has already spent its token on the server.
+        respond: (f) =>
+          i === 1 && f.type === "subscribe" && ++seen === 1
+            ? { type: "error", code: "SUBSCRIBE_FAILED", message: "channel deleted", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    let n = 0;
+    const c = makeClient(h, { authorize: ({ socketId }) => `tok-${socketId}-${n++}` });
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    const sub = await c.subscribe("private-room", () => {});
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => resub.length === 1, "resubscribed after the retry");
+
+    expect(resub[0]).toEqual(["private-room"]);
+    expect(subscribesOn(h, 1).map((f) => f.token)).toEqual(["tok-SID1-1", "tok-SID1-2"]);
+    expect(sub.active).toBe(true);
+    c.close();
+  });
+
   it.each([
     "AUTH_FAILED",
     "AUTH_REPLAYED",
@@ -628,7 +661,6 @@ describe("resubscribe failures", () => {
     "BAD_CHANNEL",
     "LIMIT_CHANNELS",
     "LIMIT_SUBSCRIBERS",
-    "SUBSCRIBE_FAILED",
   ])("drops a channel whose resubscribe is definitively refused with %s", async (code) => {
     const h = new FakeWSHarness();
     h.onDial = (ws, i) =>
@@ -714,6 +746,181 @@ describe("resubscribe failures", () => {
       { type: "unsubscribe", channel: "demo" },
     ]);
     expect(resub).toEqual([]);
+    c.close();
+  });
+
+  it("restores the other channels while one authorize() hangs, then times it out and retries it", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) => autoAccept(ws, `SID${i}`);
+    const calls: string[] = [];
+    let answerLate!: (token: string) => void;
+    const c = makeClient(h, {
+      // Long enough that the checks made before the deadline cannot race it.
+      authorizeTimeoutMs: 200,
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        // The token fetch for the first resubscribe never answers in time.
+        if (calls.length === 2) {
+          return new Promise<string>((resolve) => {
+            answerLate = resolve;
+          });
+        }
+        return `tok-${socketId}-${calls.length}`;
+      },
+    });
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    // The private channel is first in line, ahead of two public ones.
+    const priv = await c.subscribe("private-a", () => {});
+    const news: unknown[] = [];
+    await c.subscribe("news", (ev) => news.push(ev.data));
+    await c.subscribe("scores");
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => calls.length === 2, "authorize for the resubscribe");
+
+    // The stalled token fetch holds up no channel but its own.
+    await until(() => subscribesOn(h, 1).length === 2, "public resubscribe frames");
+    expect(subscribesOn(h, 1).map((f) => f.channel)).toEqual(["news", "scores"]);
+    expect(errors).toEqual([]);
+    h.sockets[1]!.serverSend({ type: "event", channel: "news", data: "n", id: "e" });
+    expect(news).toEqual(["n"]);
+
+    // The deadline turns the hang into a failure that is reported, and the
+    // retry behind it gets a fresh token.
+    await until(() => errors.length === 1, "authorize timeout on the error event");
+    expect(errors[0]).toBeInstanceOf(AuthorizeTimeoutError);
+    expect((errors[0] as AuthorizeTimeoutError).channel).toBe("private-a");
+    expect(errors[0]!.message).toContain("private-a");
+    await until(() => resub.length === 2, "both resubscribed events");
+    expect(resub).toEqual([["news", "scores"], ["private-a"]]);
+    expect(subscribesOn(h, 1).at(-1)).toEqual({
+      type: "subscribe",
+      channel: "private-a",
+      token: "tok-SID1-3",
+    });
+    expect(priv.active).toBe(true);
+
+    // The abandoned call answering after its deadline changes nothing.
+    answerLate("tok-late");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(subscribesOn(h, 1)).toHaveLength(3);
+    expect(errors).toHaveLength(1);
+    c.close();
+  });
+
+  it("lets a subscribe() adopt the resubscribe when its authorize() deadline expires after a reconnect", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) => autoAccept(ws, `SID${i}`);
+    const calls: string[] = [];
+    const c = makeClient(h, {
+      // Long enough for the reconnect to finish before the deadline.
+      authorizeTimeoutMs: 250,
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        // The first call never answers, and its connection drops under it.
+        return calls.length === 1 ? new Promise<string>(() => {}) : `tok-for-${socketId}`;
+      },
+    });
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    await c.connect();
+    const got: unknown[] = [];
+    const outcome = c.subscribe("private-room", (ev) => got.push(ev.data)).then(
+      (s) => s,
+      (e: unknown) => e,
+    );
+    await until(() => calls.length === 1, "first authorize");
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => calls.length === 2, "authorize re-invoked after reconnect");
+
+    // By the time the stale deadline expires the channel is restored on the
+    // new connection. The drop is what ended that attempt, not a timeout.
+    const sub = await outcome;
+    expect(sub).not.toBeInstanceOf(Error);
+    expect((sub as Subscription).active).toBe(true);
+    expect(errors).toEqual([]);
+    h.sockets[1]!.serverSend({ type: "event", channel: "private-room", data: "hi", id: "e" });
+    expect(got).toEqual(["hi"]);
+    c.close();
+  });
+
+  it("reports no authorize() timeout for a resubscribe whose connection has already dropped", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws, i) => autoAccept(ws, `SID${i}`);
+    const calls: string[] = [];
+    const c = makeClient(h, {
+      // Long enough for the second drop to land before the deadline.
+      authorizeTimeoutMs: 150,
+      authorize: ({ socketId }) => {
+        calls.push(socketId);
+        // Only the resubscribe on the second connection hangs.
+        return calls.length === 2 ? new Promise<string>(() => {}) : `tok-for-${socketId}`;
+      },
+    });
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    await c.subscribe("private-a", () => {});
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => calls.length === 2, "authorize on the second connection");
+    h.sockets[1]!.serverClose(1006, "blip again");
+    await until(() => resub.length === 1, "restored on the third connection");
+    expect(resub[0]).toEqual(["private-a"]);
+
+    await new Promise((r) => setTimeout(r, 300)); // well past the stale deadline
+    expect(errors).toEqual([]);
+    c.close();
+  });
+
+  it("keeps a channel and its resubscribe retry when a second subscribe() with the same handler is refused", async () => {
+    const h = new FakeWSHarness();
+    let limited = true;
+    h.onDial = (ws, i) =>
+      autoAccept(ws, `SID${i}`, {
+        // A reconnect herd: the second connection is rate limited for a while.
+        respond: (f) =>
+          i === 1 && f.type === "subscribe" && limited
+            ? { type: "error", code: "RATE_LIMITED", message: "slow down", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const c = makeClient(h);
+    const errors: Error[] = [];
+    c.on("error", (e) => errors.push(e));
+    const resub: string[][] = [];
+    c.on("resubscribed", (r) => resub.push(r.channels));
+    await c.connect();
+    const got: unknown[] = [];
+    const onEvent = (ev: ChannelEvent): void => {
+      got.push(ev.data);
+    };
+    const first = await c.subscribe("room", onEvent);
+
+    h.sockets[0]!.serverClose(1006, "blip");
+    await until(() => errors.length >= 1, "a rate-limited resubscribe");
+
+    // The app subscribes again with the same handler while the client is
+    // still retrying, and is refused as well.
+    const err = await c.subscribe("room", onEvent).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(WirefanError);
+    expect((err as WirefanError).code).toBe("RATE_LIMITED");
+    expect(first.active).toBe(true);
+
+    limited = false;
+    await until(() => resub.length === 1, "resubscribed once the limit lifts");
+    expect(resub[0]).toEqual(["room"]);
+    expect(first.active).toBe(true);
+    h.sockets[1]!.serverSend({ type: "event", channel: "room", data: 1, id: "e" });
+    expect(got).toEqual([1]);
     c.close();
   });
 

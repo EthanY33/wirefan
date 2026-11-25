@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AckTimeoutError,
+  AuthorizeTimeoutError,
   ConfigurationError,
   ConnectionClosedError,
   WirefanClient,
@@ -201,6 +202,69 @@ describe("subscribe / events / unsubscribe", () => {
     c.close();
   });
 
+  it("keeps the channel for a handle without a handler when a listening handle unsubscribes", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h);
+    await c.connect();
+    const unsubscribes = () => h.current.sentFrames().filter((f) => f.type === "unsubscribe");
+    // A publish-only handle, then a listening one on the same channel.
+    const pub = await c.subscribe("room");
+    const listener = await c.subscribe("room", () => {});
+
+    await listener.unsubscribe();
+    expect(unsubscribes()).toEqual([]);
+    expect(listener.active).toBe(false);
+    expect(pub.active).toBe(true);
+
+    // Only the last handle leaving tells the server.
+    await pub.unsubscribe();
+    expect(unsubscribes()).toEqual([{ type: "unsubscribe", channel: "room" }]);
+    c.close();
+  });
+
+  it("counts two handles without handlers as two holders of the channel", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h);
+    await c.connect();
+    const unsubscribes = () => h.current.sentFrames().filter((f) => f.type === "unsubscribe");
+    const s1 = await c.subscribe("room");
+    const s2 = await c.subscribe("room");
+
+    await s1.unsubscribe();
+    expect(unsubscribes()).toEqual([]);
+    expect(s2.active).toBe(true);
+
+    await s2.unsubscribe();
+    expect(unsubscribes()).toHaveLength(1);
+    c.close();
+  });
+
+  it("keeps delivering to a handle after another handle with the same handler unsubscribes", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h);
+    await c.connect();
+    const got: unknown[] = [];
+    const onEvent = (ev: ChannelEvent): void => {
+      got.push(ev.data);
+    };
+    const s1 = await c.subscribe("room", onEvent);
+    const s2 = await c.subscribe("room", onEvent);
+
+    // One function is called once per event, however many handles passed it.
+    h.current.serverSend({ type: "event", channel: "room", data: "a", id: "1" });
+    expect(got).toEqual(["a"]);
+
+    await s2.unsubscribe();
+    expect(h.current.sentFrames().filter((f) => f.type === "unsubscribe")).toEqual([]);
+    expect(s1.active).toBe(true);
+    h.current.serverSend({ type: "event", channel: "room", data: "b", id: "2" });
+    expect(got).toEqual(["a", "b"]);
+    c.close();
+  });
+
   it("rejects the subscribe promise on a server error frame, typed with the code", async () => {
     const h = new FakeWSHarness();
     h.onDial = (ws) => autoAccept(ws, "S", { ackSubscribes: false });
@@ -222,6 +286,34 @@ describe("subscribe / events / unsubscribe", () => {
     );
     expect(err).toBeInstanceOf(WirefanError);
     expect((err as WirefanError).code).toBe("RESERVED_CHANNEL");
+    c.close();
+  });
+
+  it("rejects a first subscribe refused with SUBSCRIBE_FAILED and leaves the retry to the caller", async () => {
+    const h = new FakeWSHarness();
+    let seen = 0;
+    h.onDial = (ws) =>
+      autoAccept(ws, "S", {
+        respond: (f) =>
+          f.type === "subscribe" && ++seen === 1
+            ? { type: "error", code: "SUBSCRIBE_FAILED", message: "channel deleted", op: "subscribe", channel: f.channel }
+            : undefined,
+      });
+    const c = makeClient(h);
+    await c.connect();
+    const err = await c.subscribe("demo").then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(WirefanError);
+    expect((err as WirefanError).code).toBe("SUBSCRIBE_FAILED");
+
+    // Only a resubscribe after a reconnect retries on its own; a second call
+    // here is a new attempt.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.current.sentFrames().filter((f) => f.type === "subscribe")).toHaveLength(1);
+    const sub = await c.subscribe("demo");
+    expect(sub.active).toBe(true);
     c.close();
   });
 
@@ -520,6 +612,47 @@ describe("private channels", () => {
       channel: "private-room",
       token: "tok-123",
     });
+    c.close();
+  });
+
+  it("rejects a subscribe() whose authorize() never settles, and frees the channel for a later call", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    let calls = 0;
+    // authorizeTimeoutMs is not set: the deadline defaults to ackTimeoutMs.
+    const c = makeClient(h, {
+      ackTimeoutMs: 20,
+      authorize: () => (++calls === 1 ? new Promise<string>(() => {}) : "tok-2"),
+    });
+    await c.connect();
+    const err = await c.subscribe("private-room").then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AuthorizeTimeoutError);
+    expect((err as AuthorizeTimeoutError).channel).toBe("private-room");
+    expect(h.current.sentFrames()).toEqual([]);
+
+    // The stuck attempt is gone, so a later call starts a fresh one.
+    const sub = await c.subscribe("private-room");
+    expect(sub.active).toBe(true);
+    expect(h.current.sentFrames()).toEqual([
+      { type: "subscribe", channel: "private-room", token: "tok-2" },
+    ]);
+    c.close();
+  });
+
+  it("surfaces an authorize() that throws synchronously as the subscribe() rejection", async () => {
+    const h = new FakeWSHarness();
+    h.onDial = (ws) => autoAccept(ws, "S");
+    const c = makeClient(h, {
+      authorize: () => {
+        throw new Error("no session");
+      },
+    });
+    await c.connect();
+    await expect(c.subscribe("private-room")).rejects.toThrow("no session");
+    expect(h.current.sentFrames()).toEqual([]);
     c.close();
   });
 

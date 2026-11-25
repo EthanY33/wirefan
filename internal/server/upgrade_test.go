@@ -153,6 +153,114 @@ func TestClientIPTrustedProxyPicksRightmostUntrusted(t *testing.T) {
 	}
 }
 
+// TestClientIPReadsEveryForwardedForLine: X-Forwarded-For may arrive as
+// several header lines, which mean the same as one comma-joined line in
+// that order. A proxy that adds its hop as a new line (HAProxy's
+// "option forwardfor") leaves a client-sent line first, and reading only
+// that first line let the client name its own per-IP cap bucket.
+func TestClientIPReadsEveryForwardedForLine(t *testing.T) {
+	trusted := parseTrustedProxies("127.0.0.1/32,10.0.0.0/8")
+	cases := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			"proxy appends its line after a client-sent one",
+			[]string{"198.51.100.77", "203.0.113.5"}, "203.0.113.5",
+		},
+		{
+			"the same list folded into one line",
+			[]string{"198.51.100.77, 203.0.113.5"}, "203.0.113.5",
+		},
+		{
+			"client sends several lines, proxy appends the real hop",
+			[]string{"1.2.3.4", "9.9.9.9, 10.0.0.5", "203.0.113.5"}, "203.0.113.5",
+		},
+		{
+			"trusted hops on later lines are skipped",
+			[]string{"1.2.3.4", "203.0.113.5", "10.0.0.5, 127.0.0.1"}, "203.0.113.5",
+		},
+		{
+			"every hop on every line trusted, fall back to leftmost",
+			[]string{"10.0.0.1", "127.0.0.1"}, "10.0.0.1",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/", nil)
+			r.RemoteAddr = "127.0.0.1:8000"
+			for _, line := range c.lines {
+				r.Header.Add("X-Forwarded-For", line)
+			}
+			if got := clientIP(r, trusted); got != c.want {
+				t.Errorf("clientIP = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestIPCapCountsClientBehindLineAppendingProxy is the end-to-end half: with
+// a cap of one, a client behind a trusted proxy that appends its own
+// X-Forwarded-For line must be refused its second socket however it varies
+// the line it sends itself.
+func TestIPCapCountsClientBehindLineAppendingProxy(t *testing.T) {
+	t.Setenv("WIREFAN_IP_CAP", "1")
+	t.Setenv("WIREFAN_TRUSTED_PROXIES", "127.0.0.1/32,::1/128")
+	ctx := context.Background()
+	s := store.NewMemory()
+	secret, _ := auth.GenerateSecret()
+	k, _ := s.CreateKey(ctx, "t", auth.HashSecret(secret))
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	h := NewUpgradeHandler(UpgradeDeps{
+		Store:          s,
+		AllowedOrigins: []string{"*"},
+		Registry:       registry.NewSyncMap(),
+		SigningSecret:  "test-signing-secret",
+		Fanout:         fanout.NewPerConn(),
+		RateLimit:      rl,
+		Policy:         conn.PolicyDisconnect{},
+		Hub:            hub.New(),
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close) // runs after the per-socket cleanups below
+	wsURL := strings.Replace(srv.URL, "http", "ws", 1) + "/v1/connect?key=" + k.ID
+
+	// dial sends the client's own X-Forwarded-For line first and the line
+	// the proxy appended, carrying the client's real address, second.
+	// Accepted sockets stay open until the test ends so they hold the cap.
+	dial := func(clientSent, proxyAppended string) (accepted bool, status int) {
+		t.Helper()
+		hdr := http.Header{}
+		hdr.Add("X-Forwarded-For", clientSent)
+		hdr.Add("X-Forwarded-For", proxyAppended)
+		c, res, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: hdr})
+		if res != nil {
+			status = res.StatusCode
+		}
+		if err != nil {
+			return false, status
+		}
+		t.Cleanup(func() { _ = c.Close(websocket.StatusNormalClosure, "") })
+		return true, status
+	}
+
+	if ok, status := dial("198.51.100.1", "203.0.113.5"); !ok {
+		t.Fatalf("first socket refused (status %d), want accepted", status)
+	}
+	ok, status := dial("198.51.100.2", "203.0.113.5")
+	if ok {
+		t.Fatal("second socket from the same client accepted: the address it sent itself chose its cap bucket")
+	}
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("second socket from the same client got status %d, want %d", status, http.StatusTooManyRequests)
+	}
+	if ok, status := dial("198.51.100.2", "203.0.113.6"); !ok {
+		t.Fatalf("socket from a different client refused (status %d), want accepted", status)
+	}
+}
+
 func TestParseIPCap(t *testing.T) {
 	cases := []struct {
 		raw  string

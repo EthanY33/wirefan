@@ -194,7 +194,9 @@ for that parallelism is the better contract.
 
 Each `Conn` owns two goroutines plus its own `send chan []byte` and a
 `closeReq chan struct{}`. `Run` is the single owner; the pumps report
-to it.
+to it. `writePump` runs each ping in a short-lived goroutine of its own
+and waits for it before returning, so the send chan keeps draining
+while a pong is outstanding.
 
 ```mermaid
 sequenceDiagram
@@ -829,10 +831,10 @@ multi-host design sketch, not a 1.x feature.
 
 Three policies, defined in `internal/conn/policy.go`:
 
-| Policy             | Behaviour when send chan (cap 64) is full                           |
+| Policy             | Behaviour when send chan (256 frames, 1 MiB past the first 64) is full |
 | ------------------ | ------------------------------------------------------------------- |
 | `PolicyDisconnect` | **Default.** Returns `ErrSlowConsumer`; conn is closed with a best-effort 1008. |
-| `PolicyDropOldest` | Evicts the head of the chan and enqueues the new message; if an ack or error frame took the freed slot, drops the new one. Never blocks, never errors. |
+| `PolicyDropOldest` | Evicts the head of the chan and enqueues the new message; if an ack or error frame took the freed slot, or the freed bytes are not enough, drops the new one. Never blocks, never errors. |
 | `PolicyDropNewest` | Drops the new message. Never errors.                               |
 
 Why disconnect is the default: in a fan-out broadcaster, a slow
@@ -876,8 +878,8 @@ Every limit exists to bound a specific failure mode. Sources:
 | Max inbound message size        | 64 KiB        | Per-conn memory; runaway publish payloads.               |
 | Max channel name length         | 128 bytes     | Registry memory one conn can pin; the longest name an error frame echoes. |
 | Max channels per connection     | 64            | Single-conn worst case for the registry.                 |
-| Max subscribers per channel     | 10 000        | Per-broadcast iteration cost; fans out into N send chans (up to N×64 queued frames). |
-| Send chan size                  | 64            | Per-conn buffered queue depth before backpressure trips. |
+| Max subscribers per channel     | 10 000        | Per-broadcast iteration cost; fans out into N send chans (up to N x 256 queued frames). |
+| Send chan size                  | 256 frames; 1 MiB once it holds 64 | Per-conn queue before backpressure trips. More frames than the per-key burst, so a burst the limiters admit does not trip it for a conn that is reading; the first 64 frames are taken at any size, so the most one conn queues is 64 frames of 64 KiB (about 4 MiB). |
 | Rate per API key, sustained / burst | 100/s / 200 | Shared by every conn on the key; publish, subscribe and unsubscribe all draw from it. |
 | Publish rate per connection, sustained / burst | 50/s / 100 | One socket's publishes, charged before the per-key bucket. |
 | Subscribe/unsubscribe rate per connection, sustained / burst | 20/s / 64 | One socket's control ops, charged before the per-key bucket. |
@@ -962,8 +964,8 @@ Three layers: Prometheus metrics, slog logs, and pprof.
     the worker-queue enqueue under `sharded`; neither includes the
     socket write)
   - `wirefan_upgrade_rejected_total{reason}` (counter; `bad_key`,
-    `phantom_cap` and `draining`. Origin rejections happen inside
-    `websocket.Accept` and are not counted)
+    `store_error`, `phantom_cap` and `draining`. Origin rejections
+    happen inside `websocket.Accept` and are not counted)
   - `wirefan_auth_failures_total` (counter: failed subscribe-token
     checks)
 - **slog**: log calls go through `log/slog`'s default logger. Nothing

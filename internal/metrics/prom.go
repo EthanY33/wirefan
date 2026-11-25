@@ -67,7 +67,7 @@ var (
 	})
 	UpgradeRej = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "wirefan_upgrade_rejected_total",
-		Help: "WebSocket upgrade requests refused before the handshake, by reason (bad_key, phantom_cap, draining).",
+		Help: "WebSocket upgrade requests refused before the handshake, by reason (bad_key, store_error, phantom_cap, draining).",
 	}, []string{"reason"})
 	AuthFails = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "wirefan_auth_failures_total",

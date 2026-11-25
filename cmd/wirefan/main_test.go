@@ -301,3 +301,40 @@ func TestVersionLineNamesVersionAndPlatform(t *testing.T) {
 		}
 	}
 }
+
+func TestParseFlagsRejectsMatchAllOriginsWithoutDev(t *testing.T) {
+	for _, p := range []string{"**", "*.*", "https://*", "http://*", "ws://*", "wss://*", "*://*", "?*", "[", "https://ok.example,**"} {
+		if _, err := parseFlags([]string{"--allowed-origins=" + p}); err == nil {
+			t.Errorf("--allowed-origins=%s without --dev: expected error", p)
+		}
+		if p == "[" {
+			continue // a malformed glob is rejected even with --dev
+		}
+		if _, err := parseFlags([]string{"--dev", "--allowed-origins=" + p}); err != nil {
+			t.Errorf("--allowed-origins=%s with --dev: unexpected error: %v", p, err)
+		}
+	}
+	for _, p := range []string{"https://example.com", "*.example.com", "https://*.example.com", "http://example.com"} {
+		if _, err := parseFlags([]string{"--allowed-origins=" + p}); err != nil {
+			t.Errorf("--allowed-origins=%s: unexpected error: %v", p, err)
+		}
+	}
+}
+
+func TestParseFlagsRejectsLeftoverArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"--allowed-origins", "https://a.example", "https://b.example", "--listen=127.0.0.1:8080", "--admin-addr="},
+		{"--allowed-origins=https://a.example", "--dev", "false", "--listen=127.0.0.1:8080", "--admin-addr="},
+	} {
+		if _, err := parseFlags(args); err == nil {
+			t.Errorf("parseFlags(%q): expected error for leftover argument", args)
+		}
+	}
+	cfg, err := parseFlags([]string{"--allowed-origins=https://a.example", "--listen=127.0.0.1:8080", "--admin-addr="})
+	if err != nil {
+		t.Fatalf("valid args: %v", err)
+	}
+	if cfg.srv.Addr != "127.0.0.1:8080" || cfg.srv.AdminAddr != "" {
+		t.Fatalf("unexpected cfg: %+v", cfg.srv)
+	}
+}

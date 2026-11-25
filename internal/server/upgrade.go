@@ -218,6 +218,12 @@ func stripHostPort(s string) (netip.Addr, string, bool) {
 // return the first hop whose IP is not in trustedProxies. This is the
 // algorithm called for in CWE-348 mitigations (do NOT use the leftmost
 // entry — clients can pick that themselves).
+//
+// The list is every X-Forwarded-For header line joined in order, which is
+// what repeated lines of a list header mean. Header.Get would return only
+// the first line, and a proxy that adds its hop as a new line (HAProxy's
+// "option forwardfor") leaves a client-sent line first: the walk then saw
+// only what the client wrote.
 func clientIP(r *http.Request, trustedProxies []netip.Prefix) string {
 	raAddr, raStr, raOk := stripHostPort(r.RemoteAddr)
 	if !raOk {
@@ -226,7 +232,7 @@ func clientIP(r *http.Request, trustedProxies []netip.Prefix) string {
 	if len(trustedProxies) == 0 || !addrInPrefixes(raAddr, trustedProxies) {
 		return raStr
 	}
-	xff := r.Header.Get("X-Forwarded-For")
+	xff := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
 	if xff == "" {
 		return raStr
 	}
@@ -261,6 +267,20 @@ func (h *UpgradeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	k, err := h.deps.Store.LookupKey(r.Context(), keyID)
+	if err != nil && !errors.Is(err, store.ErrKeyNotFound) {
+		// The store could not answer, which says nothing about the key. A
+		// 401 here told the client its key was bad and counted a storage
+		// fault as key guessing, with no log line pointing at the store. A
+		// lookup that failed only because the client went away (its request
+		// context ended) is not a store fault: nobody reads the response,
+		// and it is neither counted nor logged.
+		if r.Context().Err() == nil {
+			metrics.UpgradeRej.WithLabelValues("store_error").Inc()
+			slog.Error("upgrade: lookup key", "err", err)
+		}
+		http.Error(w, "key store unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil || k.RevokedAt != nil {
 		metrics.UpgradeRej.WithLabelValues("bad_key").Inc()
 		http.Error(w, "invalid key", http.StatusUnauthorized)

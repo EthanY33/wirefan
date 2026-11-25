@@ -52,7 +52,7 @@ answers the first one that fails with a plain-text HTTP response:
 | Order | HTTP          | Reason                                                   |
 | ----- | ------------- | -------------------------------------------------------- |
 | 0     | 503           | The server is shutting down (`draining`). Reconnect with backoff; another instance or the restarted process will accept. |
-| 1     | 401           | `key` query param missing (`missing key`), or the key is unknown or revoked (`invalid key`). |
+| 1     | 401, 503      | 401 when the `key` query param is missing (`missing key`), or the key is unknown or revoked (`invalid key`). 503 when the key store could not be read (`key store unavailable`): the key was not judged, so retry with backoff. |
 | 2     | 429           | Per-source-IP active-connection cap reached (default 200, `WIREFAN_IP_CAP`). |
 | 3     | 426, 405, 400 | WebSocket handshake rejected by `coder/websocket`: 426 when the request is older than HTTP/1.1 or its `Connection` and `Upgrade` headers do not ask for a WebSocket upgrade; 405 when the method is not `GET`; 400 when `Sec-WebSocket-Version` is not `13` or `Sec-WebSocket-Key` is missing, repeated or malformed. |
 | 4     | 403           | `Origin` not allowed by `--allowed-origins`. A request without an `Origin` header, or whose `Origin` host equals its `Host`, passes this check. |
@@ -62,9 +62,10 @@ gets 401 rather than 426 when its key is missing or invalid.
 
 For the 429 check the source IP is the TCP peer address or, when the peer
 is listed in `WIREFAN_TRUSTED_PROXIES`, the rightmost `X-Forwarded-For`
-hop not in that list. IPv4 clients are counted per address and IPv6
-clients per /64 prefix; an IPv4-mapped IPv6 address counts as its IPv4
-address.
+hop not in that list. Repeated `X-Forwarded-For` header lines are read as
+one list, in the order received. IPv4 clients are counted per address and
+IPv6 clients per /64 prefix; an IPv4-mapped IPv6 address counts as its
+IPv4 address.
 
 ### 3.3 First server frame
 
@@ -129,6 +130,7 @@ answers:
 | HTTP | Body                                            | When                                   |
 | ---- | ----------------------------------------------- | -------------------------------------- |
 | 401  | `bad credentials`                               | The credentials are missing or contain no `:`, the key is unknown or revoked, or the secret is wrong. Checked before the body is read. |
+| 503  | `key store unavailable`                         | The key store could not be read, so the credentials were not checked. Retry with backoff. |
 | 400  | `bad request`                                   | The body does not decode as that JSON object. |
 | 400  | `bad request: socket_id is not a valid socket id` | `socket_id` is not a ULID (26 Crockford base32 characters), the only shape `/v1/connect` issues. |
 | 400  | `bad request: channel must be a valid private- or presence- channel name` | `channel` is empty, over 128 bytes, contains a C0 control character or DEL, or does not start with `private-` or `presence-`. Public channels and `_wirefan-stats` need no token, so none is minted for them. |
@@ -444,7 +446,7 @@ stays open; the server never sends 1003 (`UnsupportedData`).
 | Publish rate per connection, sustained / burst | 50 / sec, 100 | `defaultConnPublishRate` / `defaultConnPublishBurst` in `conn.go` |
 | Subscribe + unsubscribe rate per connection, sustained / burst | 20 / sec, 64 | `defaultConnControlRate` / `defaultConnControlBurst` in `conn.go` |
 | Active conns per source IP       | 200 (override: `WIREFAN_IP_CAP` env); IPv6 counted per /64 | `defaultIPCap` and `ipCapKey` in `internal/server/upgrade.go` |
-| Per-conn send buffer             | 64 messages    | `sendChanSize` in `conn.go`                      |
+| Per-conn send buffer             | 256 messages; once it holds 64, at most 1 MiB | `sendChanSize`, `sendUnmeteredFrames` and `sendQueueBytes` in `conn.go` |
 | Token TTL                        | 5 min          | `internal/server/rest.go`                        |
 
 Every publish, subscribe and unsubscribe is charged first to the
@@ -454,6 +456,28 @@ every connection opened with the same key. A request refused by a
 per-connection bucket spends no per-key budget. A frame refused by an
 earlier check in §7 (for example `BAD_CHANNEL`, `RESERVED_CHANNEL` or
 `NOT_SUBSCRIBED`) is not charged at all.
+
+The send buffer holds more messages than the largest burst one API
+key's limits admit (200), so such a burst cannot by itself fill the
+buffer of a subscriber that is reading. Two cases fall outside that:
+bursts from several keys that reach one subscriber at the same moment,
+and a burst of more than 64 messages that also totals more than 1 MiB,
+which fits only as far as the subscriber drains it while it arrives. The
+server yields after each admitted publish, so every frame is handed to
+each subscriber's socket before the next one is queued. That keeps a
+single connection's burst clean only for subscribers whose connection
+takes the data as fast as it is published, such as a reverse proxy on
+the same host. A subscriber on a slower link, or any subscriber while
+the server is short of CPU, is still closed with 1008 once more than 64
+messages totalling more than 1 MiB are waiting for it, even though it is
+reading. A burst of at most 64 messages, or of less than 1 MiB in total,
+cannot be refused however slowly the subscriber drains. Several
+connections publishing large bursts at the same moment on several CPUs,
+or on several keys, still depend on draining and can close subscribers
+that are reading.
+The first 64 queued messages are accepted whatever their size, so the
+most one connection can have queued is 64 messages of 64 KiB, about
+4 MiB.
 
 ## 10. Ordering guarantees
 
@@ -482,13 +506,14 @@ cross-publisher ordering.
 
 ## 11. Backpressure policies
 
-When a subscriber's per-conn send buffer (capacity 64) is full, a
+When a subscriber's per-conn send buffer is full (256 messages, or more
+than 1 MiB once it holds 64; see section 9), a
 `Policy` decides what happens to the event (`internal/conn/policy.go`):
 
 | Policy             | Behaviour when buffer is full                                    |
 | ------------------ | ---------------------------------------------------------------- |
 | `PolicyDisconnect` | Returns `ErrSlowConsumer`: the event is not queued, and the conn is closed with **1008** (PolicyViolation), reason `slow consumer`. **The only policy the server uses.** |
-| `PolicyDropOldest` | Evicts the head message and enqueues the new one. If the buffer is still full after the eviction (an ack or error frame took the freed slot), the new message is dropped. Never blocks, never errors. Not selectable. |
+| `PolicyDropOldest` | Evicts the head message and enqueues the new one. If the buffer is still full after the eviction (an ack or error frame took the freed slot, or the evicted message was smaller than the new one), the new message is dropped. Never blocks, never errors. Not selectable. |
 | `PolicyDropNewest` | Drops the new message. Never errors. Not selectable.             |
 
 The policy is hardcoded to `PolicyDisconnect` in `cmd/wirefan/main.go`.
@@ -502,7 +527,7 @@ No `error` frame is sent on the disconnect path: the client sees a
 1008 close.
 
 Acks (`subscribed`, `unsubscribed`) and `error` frames share the same
-64-message buffer. If it is full when one of them is queued, that frame
+buffer. If it is full when one of them is queued, that frame
 is dropped silently; this does not disconnect the client.
 
 ## 12. Heartbeat

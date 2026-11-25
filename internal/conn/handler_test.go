@@ -1,14 +1,17 @@
 package conn
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/coder/websocket"
+	"golang.org/x/time/rate"
 )
 
 func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
@@ -37,7 +41,7 @@ func newTestConnWithCache(t *testing.T, signingSecret string, cache *auth.Replay
 		if err != nil {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		_ = Run(ctx, c, socketID, "test-key", Deps{
 			Registry:      registry.NewSyncMap(),
@@ -306,6 +310,10 @@ func newSharedEnvConns(t *testing.T, pol Policy, n int) []*websocket.Conn {
 	rl := ratelimit.New(100, 200, time.Hour)
 	t.Cleanup(rl.Close)
 	fan := fanout.NewPerConn()
+	// Server-side conns live until the test ends, not for a fixed time: a
+	// slow or loaded runner must not cut a conn off mid-test.
+	runCtx, cancelRuns := context.WithCancel(context.Background())
+	t.Cleanup(cancelRuns)
 
 	var idCounter int
 	var idMu sync.Mutex
@@ -318,9 +326,7 @@ func newSharedEnvConns(t *testing.T, pol Policy, n int) []*websocket.Conn {
 		sid := fmt.Sprintf("conn-%d", idCounter)
 		idCounter++
 		idMu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = Run(ctx, c, sid, "test-key", Deps{
+		_ = Run(runCtx, c, sid, "test-key", Deps{
 			Registry:      reg,
 			SigningSecret: "test-signing-secret",
 			Fanout:        fan,
@@ -423,15 +429,36 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 	// Use a payload close to the 64 KiB ReadLimit so a handful of frames
 	// saturate the kernel's TCP send buffer (~200 KiB on Linux, similar
 	// order of magnitude on Windows). With writePump blocked on Write,
-	// c.send fills to sendChanSize and the next Send returns
-	// ErrSlowConsumer.
+	// c.send fills. Frames this size pass sendQueueBytes long before
+	// sendChanSize, so the queue stops at sendUnmeteredFrames (64, where
+	// it always did) and the next Send returns ErrSlowConsumer.
 	bigPayload := strings.Repeat("x", 50_000)
+	// pub is subscribed to the channel it publishes on, so it receives its
+	// own echoes. Drain them so the publisher is not itself a stalled
+	// subscriber; only slow is meant to stop reading.
+	pub.SetReadLimit(1 << 20)
+	go func() {
+		for {
+			if _, _, err := pub.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
 	for i := 0; i < 90; i++ {
-		sendJSON(t, pub, map[string]any{
+		b, err := json.Marshal(map[string]any{
 			"type":    "publish",
 			"channel": "public-slow",
 			"data":    map[string]any{"i": i, "blob": bigPayload},
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wctx, wcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = pub.Write(wctx, websocket.MessageText, b)
+		wcancel()
+		if err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
 	}
 
 	// Read from slow until the server closes the conn. Raise the client
@@ -468,6 +495,227 @@ func TestSlowConsumerDisconnects(t *testing.T) {
 		// disconnect successful. CloseStatus may return 1008 (clean) or -1
 		// (abnormal); both indicate the server severed the conn.
 		return
+	}
+}
+
+// TestAdmittedBurstKeepsReadersConnected is the regression for a send queue
+// smaller than the publish burst. The queue held 64 frames while a fresh conn
+// may publish 100 at once, and readPump handles a burst that is already in
+// its socket buffer without yielding: every event was queued for every
+// subscriber before any writePump ran, the 65th Send overflowed, and conns
+// that were reading the whole time were closed with 1008 as slow consumers.
+// A burst the rate limits admit must reach every reader and close none.
+func TestAdmittedBurstKeepsReadersConnected(t *testing.T) {
+	// One P, as on a 1 vCPU host, so the publisher's readPump runs the
+	// whole burst before a writePump gets a turn.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	const subscribers = 20
+	const burst = defaultConnPublishBurst
+	conns := newSharedEnvConns(t, PolicyDisconnect{}, subscribers+1)
+	for i, c := range conns {
+		sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "public-burst"})
+		if got := readJSON(t, c); got["type"] != "subscribed" {
+			t.Fatalf("conn %d ack: %+v", i, got)
+		}
+	}
+
+	// Every conn, the publisher included, reads as fast as frames arrive.
+	type result struct {
+		events int
+		err    error
+	}
+	results := make(chan result, len(conns))
+	for _, c := range conns {
+		go func(c *websocket.Conn) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			n := 0
+			for n < burst {
+				_, raw, err := c.Read(ctx)
+				if err != nil {
+					results <- result{n, err}
+					return
+				}
+				if bytes.Contains(raw, []byte(`"type":"event"`)) {
+					n++
+				}
+			}
+			results <- result{n, nil}
+		}(c)
+	}
+
+	// The whole per-conn publish burst, back to back.
+	pub := conns[subscribers]
+	frame := []byte(`{"type":"publish","channel":"public-burst","data":"xxxxxxxxxxxxxxxxxxxx"}`)
+	for i := 0; i < burst; i++ {
+		if err := pub.Write(context.Background(), websocket.MessageText, frame); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+
+	lost := 0
+	for range conns {
+		if r := <-results; r.err != nil {
+			lost++
+			t.Logf("a reading conn got %d of %d events, then: %v (close status %d, deadline hit: %v)",
+				r.events, burst, r.err, websocket.CloseStatus(r.err), errors.Is(r.err, context.DeadlineExceeded))
+		}
+	}
+	if lost != 0 {
+		t.Fatalf("%d of %d reading conns did not get a burst the rate limits admit", lost, len(conns))
+	}
+}
+
+// TestAdmittedLargeFrameBurstKeepsReadersConnected is the regression for a
+// burst the rate limits admit that totals more than sendQueueBytes. One conn
+// writes its whole publish burst (100 frames of 16,000 bytes, about 1.5 MiB)
+// in a single TCP write, so readPump has every frame in its socket buffer. It
+// used to queue all of them for every subscriber before a writePump got a
+// turn, the byte bound refused the tail, and subscribers that were reading
+// the whole time were closed as slow consumers. readPump now yields after
+// each admitted publish, so no reader may be closed.
+func TestAdmittedLargeFrameBurstKeepsReadersConnected(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	const subscribers = 20
+	const burst = defaultConnPublishBurst
+	const payload = 16_000
+	wsURL := serveSharedRun(t)
+
+	type result struct {
+		events int
+		err    error
+	}
+	results := make(chan result, subscribers)
+	for i := 0; i < subscribers; i++ {
+		c := dialWS(t, wsURL)
+		c.SetReadLimit(1 << 20)
+		if _, _, err := c.Read(context.Background()); err != nil {
+			t.Fatalf("hello: %v", err)
+		}
+		sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "public-big"})
+		if got := readJSON(t, c); got["type"] != "subscribed" {
+			t.Fatalf("ack: %+v", got)
+		}
+		go func(c *websocket.Conn) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			n := 0
+			for n < burst {
+				_, raw, err := c.Read(ctx)
+				if err != nil {
+					results <- result{n, err}
+					return
+				}
+				// marshalFrame sorts keys, so "type" comes last.
+				if bytes.HasSuffix(raw, []byte(`"type":"event"}`)) {
+					n++
+				}
+			}
+			results <- result{n, nil}
+		}(c)
+	}
+
+	// The publisher is raw so the whole burst can go out in one write. It
+	// is subscribed too (a publish needs that) and keeps reading its own
+	// echoes and answering pings.
+	nc, br := rawDial(t, wsURL)
+	rawSubscribe(t, nc, br, "public-big")
+	go func() {
+		for {
+			op, p, err := readRawFrame(br)
+			if err != nil {
+				return
+			}
+			if op == 0x9 {
+				_ = writeRawFrame(nc, 0xA, p)
+			}
+		}
+	}()
+	frame := []byte(`{"type":"publish","channel":"public-big","data":"` + strings.Repeat("x", payload) + `"}`)
+	var all bytes.Buffer
+	for i := 0; i < burst; i++ {
+		if err := writeRawFrame(&all, 0x1, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := nc.Write(all.Bytes()); err != nil {
+		t.Fatalf("burst write: %v", err)
+	}
+
+	lost := 0
+	for i := 0; i < subscribers; i++ {
+		if r := <-results; r.err != nil {
+			lost++
+			t.Logf("a reading conn got %d of %d events, then: %v (close status %d, deadline hit: %v)",
+				r.events, burst, r.err, websocket.CloseStatus(r.err), errors.Is(r.err, context.DeadlineExceeded))
+		}
+	}
+	if lost != 0 {
+		t.Fatalf("%d of %d reading conns were cut off by one conn's admitted burst of %d frames of %d bytes",
+			lost, subscribers, burst, payload)
+	}
+}
+
+// wakeFanout stands in for the subscribers' writePumps: each Broadcast makes
+// one parked goroutine runnable, as a Send to an idle conn does.
+type wakeFanout struct{ wake chan struct{} }
+
+func (f wakeFanout) Broadcast(context.Context, *registry.Channel, []byte) {
+	select {
+	case f.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (wakeFanout) Close() error { return nil }
+
+// TestPublishYieldsBetweenFrames pins the yield in handlePublish without
+// sockets, so it fails without the yield on every OS. On one P the frames of
+// a burst are handled back to back; a goroutine a publish made runnable (a
+// subscriber's writePump in production) only runs between two frames if
+// handlePublish yields.
+func TestPublishYieldsBetweenFrames(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	const burst = defaultConnPublishBurst
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	fan := wakeFanout{wake: make(chan struct{}, 1)}
+	c := &Conn{
+		apiKeyID:  "test-key",
+		send:      newSendQueue(),
+		fanout:    fan,
+		rateLimit: rl,
+		connRate:  rate.NewLimiter(rate.Limit(defaultConnPublishRate), defaultConnPublishBurst),
+		policy:    PolicyDisconnect{},
+		subs:      map[string]*registry.Channel{"public-yield": registry.NewSyncMap().GetOrCreate("public-yield")},
+	}
+
+	var ran atomic.Int64
+	parked := make(chan struct{})
+	go func() {
+		close(parked)
+		for range fan.wake {
+			ran.Add(1)
+		}
+	}()
+	<-parked
+	t.Cleanup(func() { close(fan.wake) })
+
+	frame := []byte(`{"type":"publish","channel":"public-yield","data":1}`)
+	for i := 0; i < burst; i++ {
+		c.handle(context.Background(), frame)
+	}
+	// Read before anything here can block. The scheduler takes a goroutine
+	// from the global queue first now and then, which can cost a wake-up,
+	// so the bound is loose. Without the yield the count is 0.
+	if got := ran.Load(); got < burst/2 {
+		t.Fatalf("a goroutine made runnable by each publish ran %d times during a burst of %d; handlePublish must yield after each admitted publish", got, burst)
+	}
+	if n := len(c.send.ch); n != 0 {
+		t.Fatalf("%d error frames queued; every publish should have been admitted", n)
 	}
 }
 
@@ -694,5 +942,19 @@ func TestPublishRejectsInvalidUTF8(t *testing.T) {
 	defer cancel()
 	if _, raw, err := sub.Read(rctx); err == nil {
 		t.Fatalf("subscriber received a relayed frame: %q", raw)
+	}
+}
+
+// TestSharedEnvConnOutlivesTenSeconds is the regression for the shared test
+// server giving every Run a hard 10 s lifetime: a test that ran past it had
+// its socket torn down under it and failed with a connection reset that said
+// nothing about the code under test.
+func TestSharedEnvConnOutlivesTenSeconds(t *testing.T) {
+	t.Parallel()
+	conns := newSharedEnvConns(t, PolicyDisconnect{}, 1)
+	time.Sleep(10500 * time.Millisecond)
+	sendJSON(t, conns[0], map[string]any{"type": "subscribe", "channel": "public-late"})
+	if got := readJSON(t, conns[0]); got["type"] != "subscribed" {
+		t.Fatalf("ack after 10.5 s: %+v", got)
 	}
 }

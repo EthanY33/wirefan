@@ -21,9 +21,38 @@ import (
 )
 
 const (
-	sendChanSize    = 64
 	writeDeadline   = 10 * time.Second
 	protocolVersion = "v1"
+)
+
+// Send queue bounds (sendQueue). A frame is queued while the queue holds
+// fewer than sendChanSize frames and either fewer than sendUnmeteredFrames
+// frames or, with the new frame, at most sendQueueBytes.
+const (
+	// sendChanSize is the frame bound. Keep it above the largest burst the
+	// rate limiters admit: the per-key burst of 200 (cmd/wirefan/main.go:
+	// run). Every conn on a key draws on that bucket, so the per-conn
+	// bursts below cannot exceed it between them. readPump handles a burst
+	// that is already in its socket buffer in one run, so on one CPU every
+	// frame of it would be queued before a subscriber's writePump got a
+	// turn; at 64 slots a 100-frame burst closed subscribers that were
+	// reading normally. handlePublish therefore also yields after each
+	// admitted publish, so writePumps drain between the frames of a burst, as
+	// far as each peer's socket takes the data.
+	// Each slot costs 24 bytes per conn whether it is used or not.
+	sendChanSize = 256
+
+	// sendQueueBytes is the byte bound: room for 256 frames of 4 KiB.
+	// Without it the larger frame bound would let one conn queue 256
+	// frames of the 64 KiB inbound cap, about 16 MiB.
+	sendQueueBytes = 1 << 20
+
+	// sendUnmeteredFrames is how many frames the queue takes whatever
+	// their size. It is the old frame bound, kept so that nothing that
+	// fitted before is refused now; sendQueueBytes applies from there on.
+	// The most a conn can have queued is therefore what it was before: 64
+	// frames of the 64 KiB inbound cap, about 4 MiB.
+	sendUnmeteredFrames = 64
 )
 
 // Keepalive timers. writePump pings every pingInterval and ends the conn when
@@ -46,8 +75,8 @@ var (
 // tests can shorten it.
 var closeHandshakeTimeout = 15 * time.Second
 
-// ErrSlowConsumer is returned by Conn.Send when the send buffer is full.
-// Task 15's backpressure policy hooks here.
+// ErrSlowConsumer is returned by Conn.Send when the send queue refuses the
+// frame (see sendQueue.offer). Task 15's backpressure policy hooks here.
 var ErrSlowConsumer = errors.New("slow consumer")
 
 type Conn struct {
@@ -56,7 +85,7 @@ type Conn struct {
 	closeTimeout  time.Duration
 	socketID      string
 	apiKeyID      string
-	send          chan []byte
+	send          *sendQueue
 	sendMu        sync.Mutex // serializes Send calls; required for PolicyDropOldest correctness (see Send)
 	registry      registry.Registry
 	signingSecret string
@@ -174,7 +203,7 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 		closeTimeout:  closeHandshakeTimeout,
 		socketID:      socketID,
 		apiKeyID:      apiKeyID,
-		send:          make(chan []byte, sendChanSize),
+		send:          newSendQueue(),
 		registry:      d.Registry,
 		signingSecret: d.SigningSecret,
 		replayCache:   d.ReplayCache,
@@ -211,9 +240,7 @@ func Run(ctx context.Context, ws *websocket.Conn, socketID, apiKeyID string, d D
 		"socket_id": socketID,
 		"version":   protocolVersion,
 	})
-	select {
-	case c.send <- hello:
-	default:
+	if !c.send.offer(hello) {
 		return ws.Close(websocket.StatusInternalError, "send chan full at start")
 	}
 
