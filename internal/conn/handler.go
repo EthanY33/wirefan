@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -242,6 +243,11 @@ func (c *Conn) handlePublish(ctx context.Context, msg incoming) {
 	metrics.Published.Inc()
 	c.fanout.Broadcast(ctx, ch, out)
 	metrics.Latency.Observe(time.Since(start).Seconds())
+	// Yield so a subscriber's writePump gets a turn between frames. Without
+	// it readPump queues every frame already in its socket buffer for every
+	// subscriber before any writePump runs, and an admitted burst larger
+	// than sendQueueBytes closed conns that were reading normally.
+	runtime.Gosched()
 }
 
 // allowControl charges a subscribe or unsubscribe to the per-conn control

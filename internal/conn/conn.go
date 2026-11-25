@@ -33,11 +33,12 @@ const (
 	// rate limiters admit: the per-key burst of 200 (cmd/wirefan/main.go:
 	// run). Every conn on a key draws on that bucket, so the per-conn
 	// bursts below cannot exceed it between them. readPump handles a burst
-	// that is already in its socket buffer without yielding, so on one CPU
-	// every frame of it is queued before a subscriber's writePump gets a
-	// turn. At 64 slots a 100-frame burst closed subscribers that were
-	// reading normally. Each slot costs 24 bytes per conn whether it is
-	// used or not.
+	// that is already in its socket buffer in one run, so on one CPU every
+	// frame of it would be queued before a subscriber's writePump got a
+	// turn; at 64 slots a 100-frame burst closed subscribers that were
+	// reading normally. handlePublish therefore also yields after each
+	// admitted publish, so writePumps drain between the frames of a burst.
+	// Each slot costs 24 bytes per conn whether it is used or not.
 	sendChanSize = 256
 
 	// sendQueueBytes is the byte bound: room for 256 frames of 4 KiB.

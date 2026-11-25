@@ -462,7 +462,12 @@ key's limits admit (200), so such a burst cannot by itself fill the
 buffer of a subscriber that is reading. Two cases fall outside that:
 bursts from several keys that reach one subscriber at the same moment,
 and a burst of more than 64 messages that also totals more than 1 MiB,
-which fits only as far as the subscriber drains it while it arrives.
+which fits only as far as the subscriber drains it while it arrives. The
+server yields after each admitted publish so subscribers can drain
+between frames, which keeps a single connection's burst clean at any
+size the limits admit. Several connections publishing large bursts at the
+same moment on several CPUs, or on several keys, still depend on
+draining and can close subscribers that are reading.
 The first 64 queued messages are accepted whatever their size, so the
 most one connection can have queued is 64 messages of 64 KiB, about
 4 MiB.

@@ -564,6 +564,96 @@ func TestAdmittedBurstKeepsReadersConnected(t *testing.T) {
 	}
 }
 
+// TestAdmittedLargeFrameBurstKeepsReadersConnected is the regression for a
+// burst the rate limits admit that totals more than sendQueueBytes. One conn
+// writes its whole publish burst (100 frames of 16,000 bytes, about 1.5 MiB)
+// in a single TCP write, so readPump has every frame in its socket buffer. It
+// used to queue all of them for every subscriber before a writePump got a
+// turn, the byte bound refused the tail, and subscribers that were reading
+// the whole time were closed as slow consumers. readPump now yields after
+// each admitted publish, so no reader may be closed.
+func TestAdmittedLargeFrameBurstKeepsReadersConnected(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	const subscribers = 20
+	const burst = defaultConnPublishBurst
+	const payload = 16_000
+	wsURL := serveSharedRun(t)
+
+	type result struct {
+		events int
+		err    error
+	}
+	results := make(chan result, subscribers)
+	for i := 0; i < subscribers; i++ {
+		c := dialWS(t, wsURL)
+		c.SetReadLimit(1 << 20)
+		if _, _, err := c.Read(context.Background()); err != nil {
+			t.Fatalf("hello: %v", err)
+		}
+		sendJSON(t, c, map[string]any{"type": "subscribe", "channel": "public-big"})
+		if got := readJSON(t, c); got["type"] != "subscribed" {
+			t.Fatalf("ack: %+v", got)
+		}
+		go func(c *websocket.Conn) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			n := 0
+			for n < burst {
+				_, raw, err := c.Read(ctx)
+				if err != nil {
+					results <- result{n, err}
+					return
+				}
+				// marshalFrame sorts keys, so "type" comes last.
+				if bytes.HasSuffix(raw, []byte(`"type":"event"}`)) {
+					n++
+				}
+			}
+			results <- result{n, nil}
+		}(c)
+	}
+
+	// The publisher is raw so the whole burst can go out in one write. It
+	// is subscribed too (a publish needs that) and keeps reading its own
+	// echoes and answering pings.
+	nc, br := rawDial(t, wsURL)
+	rawSubscribe(t, nc, br, "public-big")
+	go func() {
+		for {
+			op, p, err := readRawFrame(br)
+			if err != nil {
+				return
+			}
+			if op == 0x9 {
+				_ = writeRawFrame(nc, 0xA, p)
+			}
+		}
+	}()
+	frame := []byte(`{"type":"publish","channel":"public-big","data":"` + strings.Repeat("x", payload) + `"}`)
+	var all bytes.Buffer
+	for i := 0; i < burst; i++ {
+		if err := writeRawFrame(&all, 0x1, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := nc.Write(all.Bytes()); err != nil {
+		t.Fatalf("burst write: %v", err)
+	}
+
+	lost := 0
+	for i := 0; i < subscribers; i++ {
+		if r := <-results; r.err != nil {
+			lost++
+			t.Logf("a reading conn got %d of %d events, then: %v", r.events, burst, r.err)
+		}
+	}
+	if lost != 0 {
+		t.Fatalf("%d of %d reading conns were cut off by one conn's admitted burst of %d frames of %d bytes",
+			lost, subscribers, burst, payload)
+	}
+}
+
 // TestSpammingConnCannotStarveKey is the G4 regression. Every conn on an API
 // key shares one per-key bucket, and the per-conn publish limit used to be
 // charged only after it (control ops had no per-conn limit at all). One
