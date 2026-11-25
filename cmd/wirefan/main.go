@@ -312,13 +312,24 @@ func parseFlags(args []string) (appConfig, error) {
 		// Origin host, or against scheme://host when the pattern contains
 		// "://". Test it the same way against a host that cannot be a real
 		// origin: a match means the pattern admits every origin.
-		probe := "wirefan-origin-probe.invalid"
+		probes := []string{"wirefan-origin-probe.invalid"}
 		if strings.Contains(o, "://") {
-			probe = "https://" + probe
+			// Scheme-restricted wildcards such as http://* or ws://* admit
+			// every origin of that scheme, so probe each scheme in turn.
+			probes = []string{
+				"https://wirefan-origin-probe.invalid",
+				"http://wirefan-origin-probe.invalid",
+				"wss://wirefan-origin-probe.invalid",
+				"ws://wirefan-origin-probe.invalid",
+			}
 		}
-		matchAll, err := path.Match(strings.ToLower(o), probe)
-		if err != nil {
-			return appConfig{}, fmt.Errorf("--allowed-origins entry %q is not a valid pattern: %w", o, err)
+		matchAll := false
+		for _, probe := range probes {
+			m, err := path.Match(strings.ToLower(o), probe)
+			if err != nil {
+				return appConfig{}, fmt.Errorf("--allowed-origins entry %q is not a valid pattern: %w", o, err)
+			}
+			matchAll = matchAll || m
 		}
 		if matchAll && !*dev {
 			if o == "*" {

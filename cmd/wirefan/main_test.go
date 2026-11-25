@@ -303,7 +303,7 @@ func TestVersionLineNamesVersionAndPlatform(t *testing.T) {
 }
 
 func TestParseFlagsRejectsMatchAllOriginsWithoutDev(t *testing.T) {
-	for _, p := range []string{"**", "*.*", "https://*", "*://*", "?*", "[", "https://ok.example,**"} {
+	for _, p := range []string{"**", "*.*", "https://*", "http://*", "ws://*", "wss://*", "*://*", "?*", "[", "https://ok.example,**"} {
 		if _, err := parseFlags([]string{"--allowed-origins=" + p}); err == nil {
 			t.Errorf("--allowed-origins=%s without --dev: expected error", p)
 		}
@@ -314,7 +314,7 @@ func TestParseFlagsRejectsMatchAllOriginsWithoutDev(t *testing.T) {
 			t.Errorf("--allowed-origins=%s with --dev: unexpected error: %v", p, err)
 		}
 	}
-	for _, p := range []string{"https://example.com", "*.example.com", "https://*.example.com"} {
+	for _, p := range []string{"https://example.com", "*.example.com", "https://*.example.com", "http://example.com"} {
 		if _, err := parseFlags([]string{"--allowed-origins=" + p}); err != nil {
 			t.Errorf("--allowed-origins=%s: unexpected error: %v", p, err)
 		}

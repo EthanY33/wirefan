@@ -85,7 +85,7 @@ make build            # or: go build -o bin/wirefan ./cmd/wirefan
 ./bin/wirefan --dev --allowed-origins='*'
 ```
 
-`--allowed-origins` is required; `*` and any other pattern that matches every origin (such as `https://*`) are only accepted together with `--dev`.
+`--allowed-origins` is required; `*` and any other pattern that matches every origin (such as `https://*` or `http://*`; scheme-only wildcards are refused too) are only accepted together with `--dev`.
 The admin token is never printed. On first boot wirefan writes it to
 `var/admin.token` (set `WIREFAN_STATE_DIR` to move it, or pass the token in
 `WIREFAN_ADMIN_TOKEN`). Use it to mint an API key on the loopback admin
