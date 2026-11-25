@@ -463,11 +463,18 @@ buffer of a subscriber that is reading. Two cases fall outside that:
 bursts from several keys that reach one subscriber at the same moment,
 and a burst of more than 64 messages that also totals more than 1 MiB,
 which fits only as far as the subscriber drains it while it arrives. The
-server yields after each admitted publish so subscribers can drain
-between frames, which keeps a single connection's burst clean at any
-size the limits admit. Several connections publishing large bursts at the
-same moment on several CPUs, or on several keys, still depend on
-draining and can close subscribers that are reading.
+server yields after each admitted publish, so every frame is handed to
+each subscriber's socket before the next one is queued. That keeps a
+single connection's burst clean only for subscribers whose connection
+takes the data as fast as it is published, such as a reverse proxy on
+the same host. A subscriber on a slower link, or any subscriber while
+the server is short of CPU, is still closed with 1008 once more than 64
+messages totalling more than 1 MiB are waiting for it, even though it is
+reading. A burst of at most 64 messages, or of less than 1 MiB in total,
+cannot be refused however slowly the subscriber drains. Several
+connections publishing large bursts at the same moment on several CPUs,
+or on several keys, still depend on draining and can close subscribers
+that are reading.
 The first 64 queued messages are accepted whatever their size, so the
 most one connection can have queued is 64 messages of 64 KiB, about
 4 MiB.

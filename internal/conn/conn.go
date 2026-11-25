@@ -37,7 +37,8 @@ const (
 	// frame of it would be queued before a subscriber's writePump got a
 	// turn; at 64 slots a 100-frame burst closed subscribers that were
 	// reading normally. handlePublish therefore also yields after each
-	// admitted publish, so writePumps drain between the frames of a burst.
+	// admitted publish, so writePumps drain between the frames of a burst, as
+	// far as each peer's socket takes the data.
 	// Each slot costs 24 bytes per conn whether it is used or not.
 	sendChanSize = 256
 
