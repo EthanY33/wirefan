@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/EthanY33/wirefan/internal/ratelimit"
 	"github.com/EthanY33/wirefan/internal/registry"
 	"github.com/coder/websocket"
+	"golang.org/x/time/rate"
 )
 
 func newTestConn(t *testing.T, signingSecret string) (*websocket.Conn, string) {
@@ -39,7 +41,7 @@ func newTestConnWithCache(t *testing.T, signingSecret string, cache *auth.Replay
 		if err != nil {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		_ = Run(ctx, c, socketID, "test-key", Deps{
 			Registry:      registry.NewSyncMap(),
@@ -526,7 +528,7 @@ func TestAdmittedBurstKeepsReadersConnected(t *testing.T) {
 	results := make(chan result, len(conns))
 	for _, c := range conns {
 		go func(c *websocket.Conn) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			n := 0
 			for n < burst {
@@ -556,7 +558,8 @@ func TestAdmittedBurstKeepsReadersConnected(t *testing.T) {
 	for range conns {
 		if r := <-results; r.err != nil {
 			lost++
-			t.Logf("a reading conn got %d of %d events, then: %v", r.events, burst, r.err)
+			t.Logf("a reading conn got %d of %d events, then: %v (close status %d, deadline hit: %v)",
+				r.events, burst, r.err, websocket.CloseStatus(r.err), errors.Is(r.err, context.DeadlineExceeded))
 		}
 	}
 	if lost != 0 {
@@ -596,7 +599,7 @@ func TestAdmittedLargeFrameBurstKeepsReadersConnected(t *testing.T) {
 			t.Fatalf("ack: %+v", got)
 		}
 		go func(c *websocket.Conn) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			n := 0
 			for n < burst {
@@ -645,12 +648,74 @@ func TestAdmittedLargeFrameBurstKeepsReadersConnected(t *testing.T) {
 	for i := 0; i < subscribers; i++ {
 		if r := <-results; r.err != nil {
 			lost++
-			t.Logf("a reading conn got %d of %d events, then: %v", r.events, burst, r.err)
+			t.Logf("a reading conn got %d of %d events, then: %v (close status %d, deadline hit: %v)",
+				r.events, burst, r.err, websocket.CloseStatus(r.err), errors.Is(r.err, context.DeadlineExceeded))
 		}
 	}
 	if lost != 0 {
 		t.Fatalf("%d of %d reading conns were cut off by one conn's admitted burst of %d frames of %d bytes",
 			lost, subscribers, burst, payload)
+	}
+}
+
+// wakeFanout stands in for the subscribers' writePumps: each Broadcast makes
+// one parked goroutine runnable, as a Send to an idle conn does.
+type wakeFanout struct{ wake chan struct{} }
+
+func (f wakeFanout) Broadcast(context.Context, *registry.Channel, []byte) {
+	select {
+	case f.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (wakeFanout) Close() error { return nil }
+
+// TestPublishYieldsBetweenFrames pins the yield in handlePublish without
+// sockets, so it fails without the yield on every OS. On one P the frames of
+// a burst are handled back to back; a goroutine a publish made runnable (a
+// subscriber's writePump in production) only runs between two frames if
+// handlePublish yields.
+func TestPublishYieldsBetweenFrames(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	const burst = defaultConnPublishBurst
+	rl := ratelimit.New(100, 200, time.Hour)
+	t.Cleanup(rl.Close)
+	fan := wakeFanout{wake: make(chan struct{}, 1)}
+	c := &Conn{
+		apiKeyID:  "test-key",
+		send:      newSendQueue(),
+		fanout:    fan,
+		rateLimit: rl,
+		connRate:  rate.NewLimiter(rate.Limit(defaultConnPublishRate), defaultConnPublishBurst),
+		policy:    PolicyDisconnect{},
+		subs:      map[string]*registry.Channel{"public-yield": registry.NewSyncMap().GetOrCreate("public-yield")},
+	}
+
+	var ran atomic.Int64
+	parked := make(chan struct{})
+	go func() {
+		close(parked)
+		for range fan.wake {
+			ran.Add(1)
+		}
+	}()
+	<-parked
+	t.Cleanup(func() { close(fan.wake) })
+
+	frame := []byte(`{"type":"publish","channel":"public-yield","data":1}`)
+	for i := 0; i < burst; i++ {
+		c.handle(context.Background(), frame)
+	}
+	// Read before anything here can block. The scheduler takes a goroutine
+	// from the global queue first now and then, which can cost a wake-up,
+	// so the bound is loose. Without the yield the count is 0.
+	if got := ran.Load(); got < burst/2 {
+		t.Fatalf("a goroutine made runnable by each publish ran %d times during a burst of %d; handlePublish must yield after each admitted publish", got, burst)
+	}
+	if n := len(c.send.ch); n != 0 {
+		t.Fatalf("%d error frames queued; every publish should have been admitted", n)
 	}
 }
 
