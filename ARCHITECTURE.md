@@ -304,6 +304,13 @@ Tests live next to the code they cover (`*_test.go`). Highlights:
   `/v1/auth/sign` input checks.
 - `internal/server/upgrade_test.go`: key check, trusted proxies and
   `X-Forwarded-For`, per-IP cap (IPv6 by /64).
+- `internal/server/auth_refusal_test.go`: the refusing side of the
+  credential checks (wrong secret, revoked key, wrong admin token,
+  disallowed Origin, replayed token).
+- `internal/server/server_test.go`: request read and response write
+  timeouts on the listeners New builds, and WebSockets outliving them.
+- `internal/server/store_error_test.go`: a key store read failure answers
+  503, not 401, on /v1/connect and /v1/auth/sign.
 - `internal/conn/handler_test.go`: protocol message dispatch, tokens,
   limits, error-frame `op`/`channel`, payloads not inflated by escaping.
 - `internal/conn/pumps_test.go`: keepalive.
@@ -312,6 +319,7 @@ Tests live next to the code they cover (`*_test.go`). Highlights:
 - `internal/conn/conn_test.go`: `Run` teardown (oversize message, key
   closed before `Hub.Add`, close handshake stalled mid-frame).
 - `internal/conn/policy_test.go`: backpressure policies in isolation.
+- `internal/conn/sendqueue_test.go`: send queue frame and byte bounds.
 - `internal/fanout/*_test.go`: each fanout impl has its own tests (the
   leak test in `internal/server` runs under both).
 - `internal/hub/*_test.go`: `Drain`, `CloseKey`, `Add` refusal, channel
